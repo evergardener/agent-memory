@@ -48,6 +48,31 @@ class AgentMemoryProvider(MemoryProvider):
             "Treat recalled items as context with source references, not infallible truth."
         )
 
+    def get_config_schema(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "key": "api_url",
+                "description": "Local Agent Memory API URL",
+                "required": True,
+                "default": "http://127.0.0.1:7788",
+                "env_var": "AGENT_MEMORY_API_URL",
+            },
+            {
+                "key": "service_token",
+                "description": "Agent Memory service token",
+                "secret": True,
+                "required": True,
+                "env_var": "AGENT_MEMORY_SERVICE_TOKEN",
+            },
+            {
+                "key": "namespace",
+                "description": "Shared namespace across Hermes profiles",
+                "required": True,
+                "default": "hermes:user-primary",
+                "env_var": "AGENT_MEMORY_NAMESPACE",
+            },
+        ]
+
     def on_turn_start(self, turn_number: int, message: str, **kwargs: Any) -> None:
         self.turn_number = turn_number
 
@@ -201,6 +226,26 @@ class AgentMemoryProvider(MemoryProvider):
                     "required": ["entry_id", "operation"],
                 },
             },
+            {
+                "name": "agent_memory_current_state",
+                "description": "View deterministic interaction state and active current facts.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "agent_memory_update_current_state",
+                "description": "Set, update, or resolve a time-bounded current state item.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["set", "update", "resolve"]},
+                        "topic_key": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "expires_at": {"type": "string"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["action", "topic_key", "reason"],
+                },
+            },
         ]
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs: Any) -> str:
@@ -242,7 +287,45 @@ class AgentMemoryProvider(MemoryProvider):
             except ApiUnavailable:
                 return json.dumps({"error": "service_unavailable"})
             return json.dumps(result, ensure_ascii=False)
+        if tool_name == "agent_memory_current_state":
+            try:
+                result = self.client.get(
+                    "/api/v1/state", {"shared_namespace": self.shared_namespace}
+                )
+            except ApiUnavailable:
+                return json.dumps({"error": "service_unavailable"})
+            return json.dumps(result, ensure_ascii=False)
+        if tool_name == "agent_memory_update_current_state":
+            payload = {
+                "context": self._context(),
+                "action": str(args["action"]),
+                "topic_key": str(args["topic_key"]),
+                "summary": args.get("summary"),
+                "expires_at": args.get("expires_at"),
+                "reason": str(args["reason"]),
+            }
+            try:
+                result = self.client.post("/api/v1/state/items", payload)
+            except ApiResponseError as error:
+                return json.dumps({"error": error.code.lower()})
+            except ApiUnavailable:
+                return json.dumps({"error": "service_unavailable"})
+            return json.dumps(result, ensure_ascii=False)
         return json.dumps({"error": "unsupported_tool"})
+
+    def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
+        try:
+            result = self.client.get(
+                "/api/v1/state", {"shared_namespace": self.shared_namespace}
+            )
+        except ApiUnavailable:
+            return ""
+        continuities = result.get("continuities") or []
+        summaries = [str(item.get("summary") or "") for item in continuities[:3]]
+        summaries = [item for item in summaries if item]
+        if not summaries:
+            return ""
+        return "Agent Memory continuity (evidence-linked): " + " | ".join(summaries)
 
     def on_session_switch(self, new_session_id: str, **kwargs: Any) -> None:
         self.session_id = new_session_id
