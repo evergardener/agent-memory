@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-memory"
+version = "1.0.0rc1"
+description = "Evidence-first local memory service for Hermes Agent"
+requires-python = ">=3.12"
+dependencies = [
+  "cryptography>=44,<50",
+  "fastapi>=0.115,<1",
+  "litellm>=1.70,<2",
+  "psycopg[binary,pool]>=3.2,<4",
+  "pydantic-settings>=2.7,<3",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28,<1",
+  "pytest>=8.3,<9",
+  "pytest-cov>=6,<8",
+  "ruff>=0.11,<1",
+]
+migrations = [
+  "alembic>=1.14,<2",
+  "sqlalchemy>=2.0,<3",
+]
+
+[project.scripts]
+agent-memory-api = "agent_memory.api:main"
+agent-memory-worker = "agent_memory.worker:main"
+agent-memory-verify-vault = "agent_memory.vault_verify:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_memory"]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers"
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+markers = ["integration: requires the project Docker Compose stack"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["spikes"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

@@ -1,0 +1,88 @@
+name: agent-memory
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_DB: agent_memory
+      POSTGRES_USER: agent_memory
+      POSTGRES_PASSWORD: ${AGENT_MEMORY_DB_PASSWORD:?set AGENT_MEMORY_DB_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent_memory -d agent_memory"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - ./data/postgres:/var/lib/postgresql
+    networks: [backend]
+    restart: unless-stopped
+
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment: &app-env
+      AGENT_MEMORY_DATABASE_URL: postgresql://agent_memory:${AGENT_MEMORY_DB_PASSWORD}@postgres:5432/agent_memory
+      AGENT_MEMORY_SERVICE_TOKEN: ${AGENT_MEMORY_SERVICE_TOKEN:?set AGENT_MEMORY_SERVICE_TOKEN}
+      AGENT_MEMORY_NAMESPACE: ${AGENT_MEMORY_NAMESPACE:-hermes:user-primary}
+      AGENT_MEMORY_LOG_LEVEL: ${AGENT_MEMORY_LOG_LEVEL:-INFO}
+      AGENT_MEMORY_WORKER_POLL_SECONDS: ${AGENT_MEMORY_WORKER_POLL_SECONDS:-0.5}
+      AGENT_MEMORY_WORKER_LEASE_SECONDS: ${AGENT_MEMORY_WORKER_LEASE_SECONDS:-60}
+      AGENT_MEMORY_VAULT_ROOT_KEY_FILE: ${AGENT_MEMORY_VAULT_ROOT_KEY_FILE:-/run/secrets/vault_root_key}
+      AGENT_MEMORY_UI_PASSWORD_HASH: ${AGENT_MEMORY_UI_PASSWORD_HASH:?set AGENT_MEMORY_UI_PASSWORD_HASH}
+      AGENT_MEMORY_UI_SESSION_SECRET: ${AGENT_MEMORY_UI_SESSION_SECRET:?set AGENT_MEMORY_UI_SESSION_SECRET}
+      AGENT_MEMORY_REPORT_INTERVAL_DAYS: ${AGENT_MEMORY_REPORT_INTERVAL_DAYS:-7}
+      AGENT_MEMORY_CANDIDATE_RETENTION_DAYS: ${AGENT_MEMORY_CANDIDATE_RETENTION_DAYS:-30}
+      AGENT_MEMORY_CURRENT_STATE_DAYS: ${AGENT_MEMORY_CURRENT_STATE_DAYS:-7}
+      AGENT_MEMORY_WEATHER_STATE_HOURS: ${AGENT_MEMORY_WEATHER_STATE_HOURS:-24}
+      AGENT_MEMORY_CONTINUITY_DAYS: ${AGENT_MEMORY_CONTINUITY_DAYS:-14}
+      AGENT_MEMORY_STAGE_DORMANT_DAYS: ${AGENT_MEMORY_STAGE_DORMANT_DAYS:-90}
+      AGENT_MEMORY_STAGE_FORGET_DAYS: ${AGENT_MEMORY_STAGE_FORGET_DAYS:-365}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+    restart: "no"
+
+  api:
+    build: .
+    command: ["agent-memory-api"]
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${AGENT_MEMORY_API_PORT:-7788}:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/live').read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [backend, edge]
+    secrets: [vault_root_key]
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: ["agent-memory-worker"]
+    environment:
+      <<: *app-env
+      AGENT_MEMORY_MODEL_ENABLED: ${AGENT_MEMORY_MODEL_ENABLED:-false}
+      AGENT_MEMORY_MODEL_NAME: ${AGENT_MEMORY_MODEL_NAME:-}
+      AGENT_MEMORY_MODEL_API_BASE: ${AGENT_MEMORY_MODEL_API_BASE:-}
+      AGENT_MEMORY_MODEL_API_KEY: ${AGENT_MEMORY_MODEL_API_KEY:-}
+      AGENT_MEMORY_MODEL_TIMEOUT_SECONDS: ${AGENT_MEMORY_MODEL_TIMEOUT_SECONDS:-30}
+      AGENT_MEMORY_MODEL_MAX_RETRIES: ${AGENT_MEMORY_MODEL_MAX_RETRIES:-2}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks: [backend]
+    restart: unless-stopped
+
+networks:
+  backend:
+    internal: true
+  edge:
+
+secrets:
+  vault_root_key:
+    file: ./secrets/vault_root_key

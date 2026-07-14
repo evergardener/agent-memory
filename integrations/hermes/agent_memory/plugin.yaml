@@ -1,0 +1,4 @@
+name: agent_memory
+version: 0.1.0-dev
+description: Evidence-first local memory provider backed by Agent Memory for Hermes.
+kind: exclusive

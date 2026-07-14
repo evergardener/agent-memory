@@ -1,0 +1,4 @@
+name: agent_memory_probe
+version: 0.0.1
+description: In-memory integration probe for the agent-memory project.
+kind: exclusive

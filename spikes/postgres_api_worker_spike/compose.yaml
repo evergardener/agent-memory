@@ -1,0 +1,73 @@
+name: agent-memory-spike
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_DB: agent_memory
+      POSTGRES_USER: agent_memory
+      POSTGRES_PASSWORD: spike-only-password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent_memory -d agent_memory"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - spike-db:/var/lib/postgresql
+      - ./sql:/docker-entrypoint-initdb.d:ro
+
+  api:
+    build: ./service
+    command: ["python", "-m", "app.api"]
+    environment: &service-env
+      DATABASE_URL: postgresql://agent_memory:spike-only-password@postgres:5432/agent_memory
+      SERVICE_TOKEN: spike-service-token
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health').read()"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    build: ./service
+    command: ["python", "-m", "app.worker"]
+    environment: *service-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  tests:
+    build: ./service
+    command: ["python", "-m", "app.verify"]
+    environment:
+      <<: *service-env
+      API_URL: http://api:8080
+    depends_on:
+      api:
+        condition: service_healthy
+      worker:
+        condition: service_started
+
+  recovery-tests:
+    image: pgvector/pgvector:pg18
+    environment:
+      PGPASSWORD: spike-only-password
+    command:
+      - bash
+      - -euc
+      - |
+        pg_dump -h postgres -U agent_memory -d agent_memory -Fc -f /tmp/agent-memory.dump
+        createdb -h postgres -U agent_memory agent_memory_restored
+        pg_restore -h postgres -U agent_memory -d agent_memory_restored /tmp/agent-memory.dump
+        test "$$(psql -h postgres -U agent_memory -d agent_memory_restored -Atc 'SELECT count(*) FROM evidence.events')" = "3"
+        test "$$(psql -h postgres -U agent_memory -d agent_memory_restored -Atc "SELECT count(*) FROM ops.jobs WHERE status = 'done'")" = "3"
+        echo '{"status":"PASS","check":"pg_dump_restore"}'
+    depends_on:
+      tests:
+        condition: service_completed_successfully
+
+volumes:
+  spike-db:
