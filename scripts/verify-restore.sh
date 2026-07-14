@@ -28,15 +28,25 @@ cleanup
 live_counts="$("${COMPOSE[@]}" exec -T postgres psql -U agent_memory -d agent_memory -qAtc \
   "SELECT (SELECT count(*) FROM evidence.events)||':'||
           (SELECT count(*) FROM memory.facts)||':'||
+          (SELECT count(*) FROM memory.episodes)||':'||
+          (SELECT count(*) FROM memory.arcs)||':'||
           (SELECT count(*) FROM ops.jobs)||':'||
           (SELECT count(*) FROM vault.entries)||':'||
-          (SELECT count(*) FROM vault.grants);")"
+          (SELECT count(*) FROM vault.grants)||':'||
+          (SELECT count(*) FROM state.interaction_snapshots)||':'||
+          (SELECT count(*) FROM state.settings)||':'||
+          (SELECT count(*) FROM reports.consolidation);")"
 restored_counts="$("${COMPOSE[@]}" exec -T postgres psql -U agent_memory -d "$VERIFY_DB" -qAtc \
   "SELECT (SELECT count(*) FROM evidence.events)||':'||
           (SELECT count(*) FROM memory.facts)||':'||
+          (SELECT count(*) FROM memory.episodes)||':'||
+          (SELECT count(*) FROM memory.arcs)||':'||
           (SELECT count(*) FROM ops.jobs)||':'||
           (SELECT count(*) FROM vault.entries)||':'||
-          (SELECT count(*) FROM vault.grants);")"
+          (SELECT count(*) FROM vault.grants)||':'||
+          (SELECT count(*) FROM state.interaction_snapshots)||':'||
+          (SELECT count(*) FROM state.settings)||':'||
+          (SELECT count(*) FROM reports.consolidation);")"
 
 if [[ "$live_counts" != "$restored_counts" ]]; then
   echo "Restore count mismatch: live=$live_counts restored=$restored_counts" >&2

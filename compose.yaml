@@ -18,9 +18,11 @@ services:
     restart: unless-stopped
 
   migrate:
+    image: agent-memory-migrate:${AGENT_MEMORY_VERSION:-1.0.0-rc.1}
     build: .
     command: ["alembic", "upgrade", "head"]
     environment: &app-env
+      AGENT_MEMORY_VERSION: ${AGENT_MEMORY_VERSION:-1.0.0-rc.1}
       AGENT_MEMORY_DATABASE_URL: postgresql://agent_memory:${AGENT_MEMORY_DB_PASSWORD}@postgres:5432/agent_memory
       AGENT_MEMORY_SERVICE_TOKEN: ${AGENT_MEMORY_SERVICE_TOKEN:?set AGENT_MEMORY_SERVICE_TOKEN}
       AGENT_MEMORY_NAMESPACE: ${AGENT_MEMORY_NAMESPACE:-hermes:user-primary}
@@ -44,6 +46,7 @@ services:
     restart: "no"
 
   api:
+    image: agent-memory-api:${AGENT_MEMORY_VERSION:-1.0.0-rc.1}
     build: .
     command: ["agent-memory-api"]
     environment: *app-env
@@ -62,6 +65,7 @@ services:
     restart: unless-stopped
 
   worker:
+    image: agent-memory-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.1}
     build: .
     command: ["agent-memory-worker"]
     environment:
