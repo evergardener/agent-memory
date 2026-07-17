@@ -3,6 +3,9 @@ import {
   api,
   ConsolidationReport,
   GraphData,
+  QualityReport,
+  ReviewQueue,
+  ReviewQueueItem,
   StateData,
   VaultEntry,
   VaultGrant
@@ -10,6 +13,31 @@ import {
 import { StarMap } from "./StarMap";
 
 const emptyGraph: GraphData = { nodes: [], edges: [] };
+const emptyReviewQueue: ReviewQueue = {
+  items: [],
+  total: 0,
+  limit: 25,
+  offset: 0,
+  profiles: []
+};
+const REVIEW_PAGE_SIZE = 25;
+const ENTITY_TYPES = ["person", "agent", "project", "service", "location", "organization", "tool", "technology", "device", "concept", "event", "other"];
+type GovernanceAction = "correct" | "forget" | "isolate" | "purge";
+type EntityGovernanceAction =
+  | { kind: "merge" }
+  | { kind: "split" }
+  | { kind: "attach" }
+  | { kind: "detach"; factId: string; factName: string }
+  | { kind: "unmerge"; sourceId: string; sourceName: string };
+
+const GALAXY_LABELS: Record<string, string> = {
+  long_term: "长期记忆",
+  stage: "阶段记忆",
+  current: "当前状态",
+  episode: "情节",
+  arc: "长期脉络",
+  vault: "保护资源"
+};
 
 function Login({ onLogin }: { onLogin: () => void }) {
   const [password, setPassword] = useState("");
@@ -53,23 +81,60 @@ export default function App() {
   const [trace, setTrace] = useState<Record<string, unknown> | null>(null);
   const [stateData, setStateData] = useState<StateData | null>(null);
   const [reports, setReports] = useState<ConsolidationReport[]>([]);
+  const [qualityReport, setQualityReport] = useState<QualityReport | null>(null);
+  const [reviewQueue, setReviewQueue] = useState<ReviewQueue>(emptyReviewQueue);
+  const [reviewReason, setReviewReason] = useState<"all" | "candidate" | "untrusted_tool">("all");
+  const [reviewProfile, setReviewProfile] = useState("all");
+  const [reviewOffset, setReviewOffset] = useState(0);
   const [tab, setTab] = useState<"map" | "state" | "reports" | "vault">("map");
   const [message, setMessage] = useState("");
+  const [search, setSearch] = useState("");
+  const [profileFilter, setProfileFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [stateFilter, setStateFilter] = useState("all");
+  const [timeFilter, setTimeFilter] = useState("all");
+  const [activityFilter, setActivityFilter] = useState("all");
+  const [sensitivityFilter, setSensitivityFilter] = useState("all");
+  const [showNoise, setShowNoise] = useState(false);
+  const [showStardust, setShowStardust] = useState(false);
+  const [showNotebook, setShowNotebook] = useState(true);
+  const [viewGalaxy, setViewGalaxy] = useState<string | null>(null);
+  const [motionEnabled, setMotionEnabled] = useState(() => {
+    const saved = window.localStorage.getItem("agent-memory:entity-motion");
+    if (saved) return saved === "dynamic";
+    return !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  });
+  const [governanceAction, setGovernanceAction] = useState<GovernanceAction | null>(null);
+  const [governanceStatement, setGovernanceStatement] = useState("");
+  const [governanceReason, setGovernanceReason] = useState("");
+  const [purgeConfirmation, setPurgeConfirmation] = useState("");
+  const [governanceBusy, setGovernanceBusy] = useState(false);
+  const [entityGovernance, setEntityGovernance] = useState<EntityGovernanceAction | null>(null);
+  const [entityReason, setEntityReason] = useState("");
+  const [mergeTarget, setMergeTarget] = useState("");
+  const [splitName, setSplitName] = useState("");
+  const [splitType, setSplitType] = useState("other");
+  const [splitFactIds, setSplitFactIds] = useState<string[]>([]);
+  const [attachFactId, setAttachFactId] = useState("");
+  const [entityBusy, setEntityBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      const [graphData, vaultEntries, activeGrants, status, reportItems] = await Promise.all([
+      await api.configure();
+      const [graphData, vaultEntries, activeGrants, status, reportItems, quality] = await Promise.all([
         api.graph(),
         api.vaultEntries(),
         api.vaultGrants(),
         api.state(),
-        api.reports()
+        api.reports(),
+        api.qualityReport()
       ]);
       setGraph(graphData);
       setVault(vaultEntries);
       setGrants(activeGrants);
       setStateData(status);
       setReports(reportItems);
+      setQualityReport(quality);
       setAuthenticated(true);
     } catch (error) {
       if ((error as Error & { status?: number }).status === 401) setAuthenticated(false);
@@ -81,6 +146,33 @@ export default function App() {
     refresh();
   }, [refresh]);
 
+  const loadReviewQueue = useCallback(async () => {
+    if (!authenticated) return;
+    try {
+      const result = await api.reviewQueue({
+        reason: reviewReason,
+        sourceProfile: reviewProfile === "all" ? undefined : reviewProfile,
+        limit: REVIEW_PAGE_SIZE,
+        offset: reviewOffset
+      });
+      if (result.items.length === 0 && result.total > 0 && reviewOffset > 0) {
+        setReviewOffset(Math.floor((result.total - 1) / REVIEW_PAGE_SIZE) * REVIEW_PAGE_SIZE);
+        return;
+      }
+      setReviewQueue(result);
+    } catch (error) {
+      setMessage(`治理队列加载失败：${String(error)}`);
+    }
+  }, [authenticated, reviewOffset, reviewProfile, reviewReason]);
+
+  useEffect(() => {
+    loadReviewQueue();
+  }, [loadReviewQueue]);
+
+  useEffect(() => {
+    window.localStorage.setItem("agent-memory:entity-motion", motionEnabled ? "dynamic" : "static");
+  }, [motionEnabled]);
+
   const counts = useMemo(
     () => ({
       facts: graph.nodes.filter((node) => node.data.kind === "fact").length,
@@ -90,52 +182,292 @@ export default function App() {
     [graph]
   );
 
+  const profiles = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          graph.nodes
+            .map((node) => node.data.source_profile)
+            .filter((profile): profile is string => Boolean(profile))
+        )
+      ).sort(),
+    [graph]
+  );
+
+  const entityOptions = useMemo(
+    () => graph.nodes
+      .filter((node) => node.data.kind === "entity" && node.data.record_id !== selected?.record_id)
+      .map((node) => node.data)
+      .sort((left, right) => (left.label || "").localeCompare(right.label || "")),
+    [graph, selected?.record_id]
+  );
+
+  const selectedEntityFacts = useMemo(() => {
+    if (selected?.kind !== "entity") return [];
+    const factIds = new Set(
+      graph.edges
+        .filter((edge) => edge.data.kind === "evidence" && edge.data.source === selected.id)
+        .map((edge) => edge.data.target)
+    );
+    return graph.nodes
+      .filter((node) => factIds.has(node.data.id) && node.data.kind === "fact")
+      .map((node) => node.data);
+  }, [graph, selected]);
+
+  const availableEntityFacts = useMemo(() => {
+    const attached = new Set(selectedEntityFacts.map((fact) => fact.record_id));
+    return graph.nodes
+      .map((node) => node.data)
+      .filter((data) => data.kind === "fact" && !attached.has(data.record_id))
+      .sort((left, right) => (right.updated_at || "").localeCompare(left.updated_at || ""));
+  }, [graph, selectedEntityFacts]);
+
+  const selectedMergedAliases = useMemo(() => {
+    if (selected?.kind !== "entity" || !selected.merged_aliases) return [] as Array<{ id: string; name: string }>;
+    try {
+      return JSON.parse(selected.merged_aliases) as Array<{ id: string; name: string }>;
+    } catch {
+      return [] as Array<{ id: string; name: string }>;
+    }
+  }, [selected]);
+
+  const filteredGraph = useMemo(() => {
+    const normalizedSearch = search.trim().toLocaleLowerCase();
+    const allowedNodes = graph.nodes.filter(
+      (node) => {
+        if (stateFilter !== "all" && node.data.state === stateFilter) return true;
+        if (
+          stateFilter === "all" &&
+          ["isolated", "forgotten", "superseded", "purge_requested"].includes(
+            node.data.state || ""
+          )
+        ) return false;
+        return showNoise || !["automated", "internal", "interaction", "untrusted"].includes(
+          node.data.visibility || "normal"
+        );
+      }
+    );
+    const allowedIds = new Set(allowedNodes.map((node) => node.data.id));
+    const scoped =
+      Boolean(normalizedSearch) ||
+      profileFilter !== "all" ||
+      typeFilter !== "all" ||
+      stateFilter !== "all" ||
+      timeFilter !== "all" ||
+      activityFilter !== "all" ||
+      sensitivityFilter !== "all";
+    let visibleIds = new Set(allowedIds);
+
+    if (scoped) {
+      visibleIds = new Set(
+        allowedNodes
+          .filter((node) => {
+            const data = node.data;
+            if (data.kind === "core") return false;
+            if (
+              normalizedSearch &&
+              !`${data.label || ""} ${data.source_profile || ""} ${data.fact_type || ""}`
+                .toLocaleLowerCase()
+                .includes(normalizedSearch)
+            ) return false;
+            if (profileFilter !== "all" && data.source_profile !== profileFilter) return false;
+            if (typeFilter !== "all" && data.fact_type !== typeFilter && data.kind !== typeFilter) return false;
+            if (stateFilter !== "all" && data.state !== stateFilter) return false;
+            if (activityFilter !== "all" && data.activity !== activityFilter) return false;
+            if (sensitivityFilter !== "all" && data.sensitivity !== sensitivityFilter) return false;
+            if (timeFilter !== "all") {
+              const updatedAt = Date.parse(data.updated_at || "");
+              const maximumAgeDays = Number(timeFilter);
+              if (!Number.isFinite(updatedAt) || updatedAt < Date.now() - maximumAgeDays * 86_400_000) return false;
+            }
+            return true;
+          })
+          .map((node) => node.data.id)
+      );
+      const seedIds = new Set(visibleIds);
+      for (const edge of graph.edges) {
+        const { source, target } = edge.data;
+        if (seedIds.has(source) && allowedIds.has(target)) visibleIds.add(target);
+        if (seedIds.has(target) && allowedIds.has(source)) visibleIds.add(source);
+      }
+    }
+
+    const edges = graph.edges.filter(
+      (edge) => visibleIds.has(edge.data.source) && visibleIds.has(edge.data.target)
+    );
+    const connectedIds = new Set(edges.flatMap((edge) => [edge.data.source, edge.data.target]));
+    const nodes = allowedNodes.filter(
+      (node) =>
+        visibleIds.has(node.data.id) &&
+        (connectedIds.has(node.data.id) || node.data.kind === "fact" || node.data.kind === "vault")
+    );
+    return { nodes, edges };
+  }, [activityFilter, graph, profileFilter, search, sensitivityFilter, showNoise, stateFilter, timeFilter, typeFilter]);
+
+  const searchEntityResults = useMemo(
+    () => search.trim()
+      ? filteredGraph.nodes.filter((node) => node.data.kind === "entity").slice(0, 12)
+      : [],
+    [filteredGraph, search]
+  );
+
+  const selectNode = useCallback((data: Record<string, string> | null) => {
+    setSelected(data);
+    setTrace(null);
+  }, []);
+
+  const enterUniverse = useCallback(() => {
+    setSearch("");
+    setProfileFilter("all");
+    setTypeFilter("all");
+    setStateFilter("all");
+    setTimeFilter("all");
+    setActivityFilter("all");
+    setSensitivityFilter("all");
+    setViewGalaxy(null);
+    setSelected(null);
+  }, []);
+
+  const enterGalaxy = useCallback((galaxyId: string) => {
+    setSearch("");
+    setProfileFilter("all");
+    setStateFilter("all");
+    setTimeFilter("all");
+    setActivityFilter("all");
+    setSensitivityFilter("all");
+    setTypeFilter(galaxyId);
+    setViewGalaxy(galaxyId);
+    setSelected(null);
+  }, []);
+
   async function loadTrace() {
     if (selected?.kind !== "fact") return;
-    setTrace(await api.trace(selected.record_id));
+    try {
+      setTrace(await api.trace(selected.record_id));
+      setMessage("");
+    } catch (error) {
+      setMessage(`证据追溯失败：${String(error)}`);
+    }
   }
 
-  async function changeState(action: "forget" | "isolate") {
+  function openGovernance(action: GovernanceAction) {
     if (selected?.kind !== "fact") return;
-    const reason = window.prompt(action === "forget" ? "忘记原因" : "删除关联原因");
-    if (!reason) return;
-    await api.changeState(selected.record_id, action, reason);
-    setSelected(null);
-    await refresh();
+    setGovernanceAction(action);
+    setGovernanceStatement(selected.label || "");
+    setGovernanceReason("");
+    setPurgeConfirmation("");
+    setMessage("");
   }
 
-  async function correct() {
-    if (selected?.kind !== "fact") return;
-    const statement = window.prompt("修正后的事实", selected.label);
-    if (!statement || statement === selected.label) return;
-    const reason = window.prompt("修正原因") || "User correction from star map";
-    await api.correct(selected.record_id, statement, reason);
-    setSelected(null);
-    await refresh();
+  async function submitGovernance(event: FormEvent) {
+    event.preventDefault();
+    if (!selected || selected.kind !== "fact" || !governanceAction) return;
+    setGovernanceBusy(true);
+    try {
+      if (governanceAction === "correct") {
+        await api.correct(selected.record_id, governanceStatement.trim(), governanceReason.trim());
+      } else if (governanceAction === "purge") {
+        if (purgeConfirmation.trim() !== selected.record_id) {
+          setMessage("记忆 ID 不匹配，未执行永久清除。");
+          return;
+        }
+        await api.purge(selected.record_id, governanceReason.trim());
+      } else {
+        await api.changeState(selected.record_id, governanceAction, governanceReason.trim());
+      }
+      const completed = governanceAction;
+      setGovernanceAction(null);
+      setSelected(null);
+      setTrace(null);
+      await refresh();
+      await loadReviewQueue();
+      setMessage(
+        completed === "correct"
+          ? "记忆已修正，新版本正在重建。"
+          : completed === "forget"
+            ? "记忆已忘记，不再参与普通召回。"
+            : completed === "isolate"
+              ? "记忆已删除关联，不再参与召回。"
+              : "永久清除请求已提交。"
+      );
+    } catch (error) {
+      setMessage(`治理操作失败：${String(error)}`);
+    } finally {
+      setGovernanceBusy(false);
+    }
   }
 
-  async function purge() {
-    if (selected?.kind !== "fact") return;
-    const confirmation = window.prompt(`永久清除不可恢复。请输入记忆 ID：\n${selected.record_id}`);
-    if (confirmation !== selected.record_id) return;
-    const reason = window.prompt("永久清除原因") || "User requested permanent purge";
-    await api.purge(selected.record_id, reason);
-    setSelected(null);
-    await refresh();
+  function openEntityGovernance(action: EntityGovernanceAction) {
+    if (selected?.kind !== "entity") return;
+    setEntityGovernance(action);
+    setEntityReason("");
+    setMergeTarget(entityOptions[0]?.record_id || "");
+    setSplitName("");
+    setSplitType(ENTITY_TYPES.includes(selected.entity_type || "") ? selected.entity_type : "other");
+    setSplitFactIds([]);
+    setAttachFactId(availableEntityFacts[0]?.record_id || "");
+    setMessage("");
+  }
+
+  async function submitEntityGovernance(event: FormEvent) {
+    event.preventDefault();
+    if (!selected || selected.kind !== "entity" || !entityGovernance) return;
+    setEntityBusy(true);
+    try {
+      if (entityGovernance.kind === "merge") {
+        await api.mergeEntity(selected.record_id, mergeTarget, entityReason.trim());
+      } else if (entityGovernance.kind === "split") {
+        await api.splitEntity(
+          selected.record_id,
+          splitName.trim(),
+          splitType,
+          splitFactIds,
+          entityReason.trim()
+        );
+      } else if (entityGovernance.kind === "unmerge") {
+        await api.unmergeEntity(entityGovernance.sourceId, entityReason.trim());
+      } else {
+        await api.changeEntityRelation(
+          selected.record_id,
+          entityGovernance.kind === "attach" ? attachFactId : entityGovernance.factId,
+          entityGovernance.kind,
+          entityReason.trim()
+        );
+      }
+      const completed = entityGovernance.kind;
+      setEntityGovernance(null);
+      setSelected(null);
+      await refresh();
+      setMessage(
+        completed === "merge"
+          ? "实体已合并；原始实体与关联仍保留，可随时撤销。"
+          : completed === "split"
+            ? "所选事实已拆分为新实体，派生记忆正在重建。"
+            : completed === "unmerge"
+              ? "实体合并已撤销，原有关联已恢复。"
+              : completed === "attach"
+                ? "事实关系已添加，派生记忆正在重建。"
+                : "事实关系已解除，原始证据保持不变。"
+      );
+    } catch (error) {
+      setMessage(`实体治理失败：${String(error)}`);
+    } finally {
+      setEntityBusy(false);
+    }
   }
 
   if (authenticated === null) return <main className="loading">正在连接本地记忆库…</main>;
   if (!authenticated) return <Login onLogin={refresh} />;
 
   return (
-    <main className="app-shell">
-      <header>
+    <main className={`app-shell ${tab === "map" ? "universe-shell" : ""}`}>
+      {tab !== "map" && <header>
         <div>
           <p className="eyebrow">AGENT MEMORY · HERMES</p>
           <h1>记忆星图</h1>
         </div>
         <nav>
-          <button className={tab === "map" ? "active" : ""} onClick={() => setTab("map")}>
+          <button onClick={() => setTab("map")}>
             星图
           </button>
           <button className={tab === "state" ? "active" : ""} onClick={() => setTab("state")}>
@@ -156,47 +488,164 @@ export default function App() {
             退出
           </button>
         </nav>
-      </header>
+      </header>}
 
-      <section className="stats">
+      {tab !== "map" && <section className="stats">
         <span><strong>{counts.facts}</strong> 记忆</span>
         <span><strong>{counts.entities}</strong> 实体</span>
         <span><strong>{counts.protected}</strong> 受保护资源</span>
-      </section>
+      </section>}
 
       {message && <div className="banner">{message}</div>}
 
       {tab === "map" ? (
         <section className="workspace">
-          <StarMap graph={graph} onSelect={setSelected} />
-          <aside className="detail-panel">
-            {selected ? (
-              <>
+          <div className="map-stage">
+            <button className="universe-breadcrumb" type="button" onClick={enterUniverse}>
+              {viewGalaxy ? `宇宙 › ${GALAXY_LABELS[viewGalaxy] || viewGalaxy}` : "宇宙"}
+            </button>
+            <div className="universe-topbar">
+              <span className="universe-title">MEMORY UNIVERSE</span>
+              <nav className="galaxy-pills" aria-label="记忆星系">
+                {[["all", "全部"], ["long_term", "长期"], ["stage", "阶段"], ["current", "当前"], ["episode", "情节"], ["arc", "脉络"], ["vault", "保护"]].map(([value, label]) => (
+                  <button key={value} type="button" className={(value === "all" ? !viewGalaxy : viewGalaxy === value) ? "active" : ""} onClick={() => value === "all" ? enterUniverse() : enterGalaxy(value)}>{label}</button>
+                ))}
+              </nav>
+              <span className="topbar-separator" />
+              <button
+                className={`motion-toggle ${motionEnabled ? "active" : ""}`}
+                type="button"
+                title={motionEnabled ? "实体动态已开启，点击切换为静止" : "实体已静止，点击开启动态"}
+                aria-label={motionEnabled ? "关闭实体动态" : "开启实体动态"}
+                aria-pressed={motionEnabled}
+                onClick={() => setMotionEnabled((value) => !value)}
+              >{motionEnabled ? "动" : "静"}</button>
+              <button className={`stardust-button ${showStardust ? "active" : ""}`} type="button" title="星尘 · 筛选与观测" aria-label="打开星尘筛选" onClick={() => setShowStardust((value) => !value)}>✦</button>
+              <span className="universe-count">{filteredGraph.nodes.filter((node) => node.data.kind === "entity").length}</span>
+            </div>
+            <nav className="universe-navigation" aria-label="记忆系统页面">
+              <button type="button" onClick={() => setTab("state")}>状态</button>
+              <button type="button" onClick={() => setTab("reports")}>报告</button>
+              <button type="button" onClick={() => setTab("vault")}>Vault</button>
+              <button type="button" aria-label="退出" onClick={async () => { await api.logout(); setAuthenticated(false); }}>↗</button>
+            </nav>
+            <StarMap
+              graph={filteredGraph}
+              viewGalaxy={viewGalaxy}
+              motionEnabled={motionEnabled}
+              onSelect={selectNode}
+              onGalaxySelect={enterGalaxy}
+              onUniverse={enterUniverse}
+            />
+            <section className={`universe-notebook ${showNotebook ? "open" : ""}`}>
+              <button className="panel-heading" type="button" onClick={() => setShowNotebook((value) => !value)}><span>观星手记</span><i>{showNotebook ? "⌄" : "⌃"}</i></button>
+              {showNotebook && <div className="notebook-body">
+                <p>Hermes 跨 profile 的原始证据、事实、情节与长期脉络。</p>
+                <div className="notebook-stats"><span><strong>{counts.facts}</strong> 记忆</span><span><strong>{counts.entities}</strong> 实体</span><span><strong>{counts.protected}</strong> 保护</span></div>
+                <div className="notebook-legend"><span><i className="legend-entity" />实体恒星</span><span><i className="legend-fact" />实体关系</span><span><i className="legend-episode" />事实注释</span><span><i className="legend-vault" />保护标记</span></div>
+              </div>}
+            </section>
+            <p className="universe-hint">拖拽平移 · 滚轮缩放 · 点击星体查看详情 · 连线越亮关联越强</p>
+            {showStardust && <div className="stardust-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowStardust(false); }}>
+              <section className="stardust-lens" role="dialog" aria-modal="true" aria-label="星尘筛选">
+                <header className="stardust-header"><div><span>✦</span><strong>星尘</strong><small>观测与筛选</small></div><button type="button" aria-label="关闭" onClick={() => setShowStardust(false)}>×</button></header>
+                <div className="stardust-controls">
+                  <label className="map-search"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索项目、实体或记忆…" aria-label="搜索星图" autoFocus /></label>
+                  <div className="filter-grid">
+                    <label>来源 profile<select value={profileFilter} onChange={(event) => setProfileFilter(event.target.value)} aria-label="profile 过滤"><option value="all">全部 profile</option>{profiles.map((profile) => <option key={profile} value={profile}>{profile}</option>)}</select></label>
+                    <label>类别<select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} aria-label="类别过滤"><option value="all">全部类别</option><option value="long_term">长期事实</option><option value="stage">阶段事实</option><option value="current">当前状态</option><option value="observed">环境观察</option><option value="episode">情节</option><option value="arc">长期脉络</option><option value="vault">受保护资源</option><option value="entity">实体</option></select></label>
+                    <label>记忆状态<select value={stateFilter} onChange={(event) => setStateFilter(event.target.value)} aria-label="记忆状态过滤"><option value="all">全部状态</option><option value="active">活跃</option><option value="candidate">待确认</option><option value="forgotten">已忘记</option><option value="isolated">已脱离</option><option value="superseded">已替代</option></select></label>
+                    <label>时间<select value={timeFilter} onChange={(event) => setTimeFilter(event.target.value)} aria-label="时间过滤"><option value="all">全部时间</option><option value="1">最近 24 小时</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option><option value="365">最近一年</option></select></label>
+                    <label>活跃度<select value={activityFilter} onChange={(event) => setActivityFilter(event.target.value)} aria-label="活跃度过滤"><option value="all">全部活跃度</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></label>
+                    <label>敏感性<select value={sensitivityFilter} onChange={(event) => setSensitivityFilter(event.target.value)} aria-label="敏感性过滤"><option value="all">全部敏感性</option><option value="normal">普通</option><option value="redacted">已脱敏</option><option value="protected">受保护</option></select></label>
+                  </div>
+                  <label className="noise-toggle"><input type="checkbox" checked={showNoise} onChange={(event) => setShowNoise(event.target.checked)} />显示测试、内部、不可信工具与低价值问询记录</label>
+                </div>
+                {searchEntityResults.length > 0 && <div className="entity-search-results" aria-label="实体搜索结果">
+                  <span>匹配实体</span>
+                  {searchEntityResults.map((node) => <button key={node.data.id} type="button" onClick={() => {
+                    selectNode(node.data);
+                    setShowStardust(false);
+                  }}>
+                    <strong>{node.data.label}</strong>
+                    <small>{node.data.entity_type || "other"}</small>
+                  </button>)}
+                </div>}
+                <div className="stardust-summary"><span>可见信号</span><strong>{filteredGraph.nodes.length}</strong><small>共 {graph.nodes.length} 个星体</small></div>
+                <footer>选择星系可快速聚焦 · 点击空白区域关闭</footer>
+              </section>
+            </div>}
+            <aside className={`detail-panel ${selected ? "show" : ""}`} aria-hidden={!selected}>
+              {selected && <>
+                <button className="detail-close" type="button" aria-label="关闭详情" onClick={() => selectNode(null)}>×</button>
                 <p className="eyebrow">{selected.kind}</p>
                 <h2>{selected.label}</h2>
                 {selected.hint && <p className="vault-hint">{selected.hint}</p>}
                 <dl>
                   {selected.state && <><dt>状态</dt><dd>{selected.state}</dd></>}
                   {selected.source_profile && <><dt>来源</dt><dd>{selected.source_profile}</dd></>}
+                  {selected.fact_type && <><dt>类型</dt><dd>{selected.fact_type}</dd></>}
+                  {selected.confidence && <><dt>可信度</dt><dd>{Math.round(Number(selected.confidence) * 100)}%</dd></>}
+                  {selected.evidence_count && <><dt>证据数</dt><dd>{selected.evidence_count}</dd></>}
+                  {selected.activity && <><dt>活跃度</dt><dd>{{ high: "高", medium: "中", low: "低" }[selected.activity] || selected.activity}</dd></>}
+                  {selected.sensitivity && <><dt>敏感性</dt><dd>{{ normal: "普通", redacted: "已脱敏", protected: "受保护" }[selected.sensitivity] || selected.sensitivity}</dd></>}
+                  {selected.extraction_method && <><dt>抽取方式</dt><dd>{selected.extraction_method}</dd></>}
+                  {selected.extraction_version && <><dt>抽取版本</dt><dd>{selected.extraction_version}</dd></>}
+                  {selected.model_name && <><dt>整理模型</dt><dd>{selected.model_name}</dd></>}
+                  {selected.updated_at && <><dt>更新</dt><dd>{new Date(selected.updated_at).toLocaleString()}</dd></>}
                 </dl>
-                {selected.kind === "fact" && (
-                  <div className="actions">
-                    <button onClick={loadTrace}>追溯证据</button>
-                    <button onClick={correct}>修正</button>
-                    <button onClick={() => changeState("forget")}>忘记</button>
-                    <button className="danger" onClick={() => changeState("isolate")}>删除关联</button>
-                    <button className="danger purge" onClick={purge}>永久清除</button>
+                {selected.kind === "fact" && <div className="actions">
+                    <button type="button" onClick={loadTrace}>追溯证据</button>
+                    <button type="button" onClick={() => openGovernance("correct")}>修正</button>
+                    <button type="button" onClick={() => openGovernance("forget")}>忘记</button>
+                    <button type="button" className="danger" onClick={() => openGovernance("isolate")}>删除关联</button>
+                    <button type="button" className="danger purge" onClick={() => openGovernance("purge")}>永久清除</button>
+                  </div>}
+                {selected.kind === "entity" && <>
+                  <div className="actions entity-actions">
+                    <button
+                      type="button"
+                      onClick={() => openEntityGovernance({ kind: "merge" })}
+                      disabled={entityOptions.length === 0}
+                    >合并到…</button>
+                    <button
+                      type="button"
+                      onClick={() => openEntityGovernance({ kind: "split" })}
+                      disabled={selectedEntityFacts.length === 0}
+                    >拆分事实</button>
+                    <button
+                      type="button"
+                      onClick={() => openEntityGovernance({ kind: "attach" })}
+                      disabled={availableEntityFacts.length === 0}
+                    >关联事实…</button>
                   </div>
-                )}
+                  {selectedEntityFacts.length > 0 && <section className="entity-relations">
+                    <h3>直接事实关系</h3>
+                    {selectedEntityFacts.slice(0, 12).map((fact) => <div key={fact.record_id}>
+                      <span title={fact.label}>{fact.label}</span>
+                      <button type="button" onClick={() => openEntityGovernance({
+                        kind: "detach",
+                        factId: fact.record_id,
+                        factName: fact.label
+                      })}>解除</button>
+                    </div>)}
+                  </section>}
+                  {selectedMergedAliases.length > 0 && <section className="merged-aliases">
+                    <h3>已合并实体</h3>
+                    {selectedMergedAliases.map((alias) => <div key={alias.id}>
+                      <span>{alias.name}</span>
+                      <button type="button" onClick={() => openEntityGovernance({
+                        kind: "unmerge",
+                        sourceId: alias.id,
+                        sourceName: alias.name
+                      })}>撤销合并</button>
+                    </div>)}
+                  </section>}
+                </>}
                 {trace && <pre>{JSON.stringify(trace, null, 2)}</pre>}
-              </>
-            ) : (
-              <div className="empty-detail">
-                <span>✦</span>
-                <p>选择星体查看证据、版本与治理操作</p>
-              </div>
-            )}
-          </aside>
+              </>}
+            </aside>
+          </div>
         </section>
       ) : tab === "vault" ? (
         <VaultPanel
@@ -208,7 +657,183 @@ export default function App() {
       ) : tab === "state" ? (
         <StatePanel data={stateData} onChange={refresh} />
       ) : (
-        <ReportsPanel reports={reports} />
+        <ReportsPanel
+          reports={reports}
+          quality={qualityReport}
+          queue={reviewQueue}
+          reason={reviewReason}
+          profile={reviewProfile}
+          onReasonChange={(value) => {
+            setReviewReason(value);
+            setReviewOffset(0);
+          }}
+          onProfileChange={(value) => {
+            setReviewProfile(value);
+            setReviewOffset(0);
+          }}
+          onPageChange={setReviewOffset}
+          onReview={(memory) => {
+            setSelected({
+              id: `fact:${memory.memory_id}`,
+              record_id: memory.memory_id,
+              kind: "fact",
+              label: memory.statement,
+              fact_type: memory.fact_type,
+              state: memory.state,
+              source_profile: memory.source_profile,
+              confidence: String(memory.confidence),
+              evidence_count: String(memory.evidence_count),
+              extraction_method: memory.extraction_method,
+              updated_at: memory.updated_at
+            });
+            setTrace(null);
+            setShowNoise(true);
+            setTab("map");
+          }}
+        />
+      )}
+      {governanceAction && selected?.kind === "fact" && (
+        <div className="modal-backdrop">
+          <form className="governance-dialog" onSubmit={submitGovernance} role="dialog" aria-modal="true" aria-labelledby="governance-title">
+            <p className="eyebrow">MEMORY GOVERNANCE</p>
+            <h2 id="governance-title">
+              {governanceAction === "correct"
+                ? "修正记忆"
+                : governanceAction === "forget"
+                  ? "忘记记忆"
+                  : governanceAction === "isolate"
+                    ? "删除关联"
+                    : "永久清除"}
+            </h2>
+            <p className="dialog-memory">{selected.label}</p>
+            {governanceAction === "correct" && (
+              <label>
+                修正后的事实
+                <textarea
+                  value={governanceStatement}
+                  onChange={(event) => setGovernanceStatement(event.target.value)}
+                  required
+                  autoFocus
+                />
+              </label>
+            )}
+            {governanceAction === "forget" && (
+              <p className="dialog-explanation">普通对话不再主动召回；明确谈及该主题时仍可进行历史唤醒。</p>
+            )}
+            {governanceAction === "isolate" && (
+              <p className="dialog-explanation">从关联记忆中脱离，普通召回和明确主题召回均不再返回；只读证据仍保留。</p>
+            )}
+            {governanceAction === "purge" && (
+              <>
+                <p className="dialog-warning">永久清除不可恢复。请输入下面的完整记忆 ID 进行确认：</p>
+                <code>{selected.record_id}</code>
+                <label>
+                  确认记忆 ID
+                  <input
+                    value={purgeConfirmation}
+                    onChange={(event) => setPurgeConfirmation(event.target.value)}
+                    autoComplete="off"
+                    required
+                    autoFocus
+                  />
+                </label>
+              </>
+            )}
+            <label>
+              操作原因
+              <textarea
+                value={governanceReason}
+                onChange={(event) => setGovernanceReason(event.target.value)}
+                placeholder="该原因将写入治理审计"
+                required
+                autoFocus={governanceAction !== "correct" && governanceAction !== "purge"}
+              />
+            </label>
+            <div className="dialog-actions">
+              <button type="button" onClick={() => setGovernanceAction(null)} disabled={governanceBusy}>取消</button>
+              <button
+                type="submit"
+                className={governanceAction === "purge" || governanceAction === "isolate" ? "danger" : ""}
+                disabled={
+                  governanceBusy ||
+                  !governanceReason.trim() ||
+                  (governanceAction === "correct" && (!governanceStatement.trim() || governanceStatement.trim() === selected.label)) ||
+                  (governanceAction === "purge" && purgeConfirmation.trim() !== selected.record_id)
+                }
+              >
+                {governanceBusy ? "正在提交…" : "确认执行"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      {entityGovernance && selected?.kind === "entity" && (
+        <div className="modal-backdrop">
+          <form className="governance-dialog entity-dialog" onSubmit={submitEntityGovernance} role="dialog" aria-modal="true" aria-labelledby="entity-governance-title">
+            <p className="eyebrow">ENTITY GOVERNANCE</p>
+            <h2 id="entity-governance-title">
+              {entityGovernance.kind === "merge"
+                ? "合并实体"
+                : entityGovernance.kind === "split"
+                  ? "拆分实体"
+                  : entityGovernance.kind === "unmerge"
+                    ? "撤销实体合并"
+                    : entityGovernance.kind === "attach"
+                      ? "关联事实"
+                      : "解除事实关系"}
+            </h2>
+            <p className="dialog-memory">{selected.label}</p>
+            {entityGovernance.kind === "merge" && <>
+              <p className="dialog-explanation">原实体、证据和关联不会删除；系统只把它解析到所选规范实体，可从目标实体详情撤销。</p>
+              <label>合并到
+                <select value={mergeTarget} onChange={(event) => setMergeTarget(event.target.value)} required autoFocus>
+                  {entityOptions.map((entity) => <option key={entity.record_id} value={entity.record_id}>{entity.label} · {entity.entity_type || "other"}</option>)}
+                </select>
+              </label>
+            </>}
+            {entityGovernance.kind === "split" && <>
+              <p className="dialog-explanation">只有勾选的事实关联会移动到新实体；原始证据保持不变。</p>
+              <label>新实体名称<input value={splitName} onChange={(event) => setSplitName(event.target.value)} maxLength={256} required autoFocus /></label>
+              <label>实体类型<select value={splitType} onChange={(event) => setSplitType(event.target.value)}>
+                {ENTITY_TYPES.map((value) => <option key={value} value={value}>{value}</option>)}
+              </select></label>
+              <fieldset className="split-facts"><legend>移入新实体的事实</legend>
+                {selectedEntityFacts.map((fact) => <label key={fact.record_id}>
+                  <input
+                    type="checkbox"
+                    checked={splitFactIds.includes(fact.record_id)}
+                    onChange={(event) => setSplitFactIds((current) => event.target.checked
+                      ? [...current, fact.record_id]
+                      : current.filter((id) => id !== fact.record_id))}
+                  />
+                  <span>{fact.label}</span>
+                </label>)}
+              </fieldset>
+            </>}
+            {entityGovernance.kind === "unmerge" && <p className="dialog-explanation">
+              将恢复“{entityGovernance.sourceName}”为独立实体，其原始事实关联会重新显示。
+            </p>}
+            {entityGovernance.kind === "attach" && <>
+              <p className="dialog-explanation">只建立可撤销的实体—事实关系，不会修改原始证据或事实正文。</p>
+              <label>选择事实<select value={attachFactId} onChange={(event) => setAttachFactId(event.target.value)} required autoFocus>
+                {availableEntityFacts.map((fact) => <option key={fact.record_id} value={fact.record_id}>{fact.label}</option>)}
+              </select></label>
+            </>}
+            {entityGovernance.kind === "detach" && <p className="dialog-explanation">
+              将解除与“{entityGovernance.factName}”的关系；事实与原始证据仍会保留。
+            </p>}
+            <label>操作原因<textarea value={entityReason} onChange={(event) => setEntityReason(event.target.value)} placeholder="该原因将写入治理审计" required /></label>
+            <div className="dialog-actions">
+              <button type="button" onClick={() => setEntityGovernance(null)} disabled={entityBusy}>取消</button>
+              <button type="submit" disabled={
+                entityBusy || !entityReason.trim() ||
+                (entityGovernance.kind === "merge" && !mergeTarget) ||
+                (entityGovernance.kind === "split" && (!splitName.trim() || splitFactIds.length === 0)) ||
+                (entityGovernance.kind === "attach" && !attachFactId)
+              }>{entityBusy ? "正在提交…" : "确认执行"}</button>
+            </div>
+          </form>
+        </div>
       )}
     </main>
   );
@@ -356,16 +981,82 @@ function StatePanel({ data, onChange }: { data: StateData | null; onChange: () =
   );
 }
 
-function ReportsPanel({ reports }: { reports: ConsolidationReport[] }) {
+function ReportsPanel({
+  reports,
+  quality,
+  queue,
+  reason,
+  profile,
+  onReasonChange,
+  onProfileChange,
+  onPageChange,
+  onReview
+}: {
+  reports: ConsolidationReport[];
+  quality: QualityReport | null;
+  queue: ReviewQueue;
+  reason: "all" | "candidate" | "untrusted_tool";
+  profile: string;
+  onReasonChange: (value: "all" | "candidate" | "untrusted_tool") => void;
+  onProfileChange: (value: string) => void;
+  onPageChange: (offset: number) => void;
+  onReview: (memory: ReviewQueueItem) => void;
+}) {
+  const page = Math.floor(queue.offset / queue.limit) + 1;
+  const pages = Math.max(1, Math.ceil(queue.total / queue.limit));
   return (
     <section className="reports-page">
       <div className="page-intro"><p className="eyebrow">DEFAULT · EVERY 7 DAYS</p><h2>整理报告</h2><p>后台整理结果仅保存在星图，默认不主动外发。</p></div>
       {reports.length === 0 ? <p className="muted">尚无整理报告。</p> : reports.map((report) => (
         <article className="report-card" key={report.id}>
           <div><strong>{new Date(report.period_start).toLocaleDateString()} – {new Date(report.period_end).toLocaleDateString()}</strong><span>生成于 {new Date(report.created_at).toLocaleString()}</span></div>
-          <dl><dt>新增证据</dt><dd>{report.summary.evidence_added}</dd><dt>工具确认</dt><dd>{report.summary.tool_results}</dd><dt>敏感脱敏</dt><dd>{report.summary.redactions}</dd><dt>待确认</dt><dd>{report.summary.pending_confirmation}</dd></dl>
+          <dl><dt>新增证据</dt><dd>{report.summary.evidence_added}</dd><dt>工具结果</dt><dd>{report.summary.tool_results}</dd><dt>敏感脱敏</dt><dd>{report.summary.redactions}</dd><dt>待确认</dt><dd>{report.summary.pending_confirmation}</dd><dt>不可信工具事实</dt><dd>{report.summary.untrusted_tool_facts ?? "—"}</dd></dl>
         </article>
       ))}
+      {quality && <section className={`quality-card ${quality.automatic_ready ? "ready" : "blocked"}`}>
+        <div>
+          <p className="eyebrow">IMPORT QUALITY · AGGREGATES ONLY</p>
+          <h3>导入质量门禁</h3>
+          <strong>{quality.automatic_ready ? "自动门禁通过，仍需人工抽检" : "尚不允许进入主记忆"}</strong>
+          <span>生成于 {new Date(quality.generated_at).toLocaleString()}</span>
+        </div>
+        <dl>
+          <dt>证据可追溯</dt><dd>{quality.metrics.traceable_facts}/{quality.metrics.facts}</dd>
+          <dt>模型原子事实</dt><dd>{quality.metrics.model_atomic_facts}</dd>
+          <dt>逐字跨度有效</dt><dd>{quality.metrics.valid_atomic_spans}</dd>
+          <dt>实体提及跨度</dt><dd>{quality.metrics.valid_entity_mentions}/{quality.metrics.entity_mentions}</dd>
+          <dt>重复事实支撑</dt><dd>{quality.metrics.duplicate_fact_support}</dd>
+          <dt>普通事实敏感泄漏</dt><dd>{quality.metrics.raw_sensitive_facts}</dd>
+          <dt>不可信工具事实</dt><dd>{quality.metrics.untrusted_tool_facts}</dd>
+        </dl>
+        <div className="quality-gates">
+          {Object.entries(quality.gates).map(([name, passed]) => <span key={name} className={passed ? "passed" : "failed"}>{passed ? "✓" : "×"} {name}</span>)}
+        </div>
+        <p>该报告只输出统计量，不返回真实对话正文。人工抽检通过前，系统始终保持 promotion_ready=false。</p>
+      </section>}
+      <section className="review-queue">
+        <div><h3>待治理记忆</h3><p>不可信工具结果不会再自动提升。历史记录保留证据，需由你决定更正、忘记或脱离。</p></div>
+        <div className="review-toolbar">
+          <label>治理原因<select value={reason} onChange={(event) => onReasonChange(event.target.value as typeof reason)}><option value="all">全部</option><option value="untrusted_tool">不可信工具</option><option value="candidate">待确认</option></select></label>
+          <label>来源 profile<select value={profile} onChange={(event) => onProfileChange(event.target.value)}><option value="all">全部 profile</option>{queue.profiles.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+          <span>共 {queue.total} 条 · 第 {page}/{pages} 页</span>
+        </div>
+        {queue.items.length === 0 ? <p className="muted">当前没有待治理记忆。</p> : (
+          <div className="review-list">
+            {queue.items.map((item) => (
+              <button key={item.memory_id} type="button" onClick={() => onReview(item)}>
+                <span>{item.review_reasons.includes("untrusted_tool") ? "不可信工具" : "待确认"} · {item.fact_type || "事实"}</span>
+                <strong>{item.statement}</strong>
+                <small>{item.source_profile || "未知来源"} · {item.tool_names.join(", ") || "用户证据"} · 点击查看证据与治理</small>
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="review-pagination">
+          <button type="button" disabled={queue.offset === 0} onClick={() => onPageChange(Math.max(0, queue.offset - queue.limit))}>上一页</button>
+          <button type="button" disabled={queue.offset + queue.limit >= queue.total} onClick={() => onPageChange(queue.offset + queue.limit)}>下一页</button>
+        </div>
+      </section>
     </section>
   );
 }
@@ -425,19 +1116,14 @@ function VaultPanel({
       </form>
       <div className="vault-list">
         {entries.map((entry) => (
-          <article key={entry.id}>
-            <div><span className="lock">◆</span><h3>{entry.display_label}</h3><p>{entry.redacted_hint}</p></div>
-            <div className="grant-row">
-              <input
-                value={grantProfile[entry.id] || ""}
-                onChange={(event) => setGrantProfile({ ...grantProfile, [entry.id]: event.target.value })}
-                placeholder="Hermes profile"
-              />
-              <button onClick={() => grant(entry.id)}>
-                授权 15 分钟
-              </button>
-            </div>
-          </article>
+          <VaultEntryCard
+            key={entry.id}
+            entry={entry}
+            grantProfile={grantProfile[entry.id] || ""}
+            onGrantProfile={(value) => setGrantProfile({ ...grantProfile, [entry.id]: value })}
+            onGrant={() => grant(entry.id)}
+            onChange={onChange}
+          />
         ))}
       </div>
       <section className="grant-list">
@@ -461,5 +1147,130 @@ function VaultPanel({
         )}
       </section>
     </section>
+  );
+}
+
+function VaultEntryCard({
+  entry,
+  grantProfile,
+  onGrantProfile,
+  onGrant,
+  onChange
+}: {
+  entry: VaultEntry;
+  grantProfile: string;
+  onGrantProfile: (value: string) => void;
+  onGrant: () => Promise<void>;
+  onChange: () => Promise<void>;
+}) {
+  const [password, setPassword] = useState("");
+  const [displayLabel, setDisplayLabel] = useState(entry.display_label);
+  const [redactedHint, setRedactedHint] = useState(entry.redacted_hint);
+  const [replacement, setReplacement] = useState("");
+  const [revealed, setRevealed] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setDisplayLabel(entry.display_label);
+    setRedactedHint(entry.redacted_hint);
+  }, [entry.display_label, entry.redacted_hint]);
+
+  useEffect(() => {
+    if (!revealed) return;
+    const timer = window.setTimeout(() => setRevealed(""), 60_000);
+    return () => window.clearTimeout(timer);
+  }, [revealed]);
+
+  async function perform(action: () => Promise<unknown>, success: string) {
+    setBusy(true);
+    setMessage("");
+    try {
+      await action();
+      setPassword("");
+      setMessage(success);
+      await onChange();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "操作失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reveal() {
+    await perform(async () => {
+      const result = await api.revealVaultEntry(entry.id, password);
+      setRevealed(result.secret_value);
+    }, "明文将在 60 秒后自动隐藏");
+  }
+
+  async function updateMetadata() {
+    await perform(
+      () => api.updateVaultEntry(entry.id, displayLabel, redactedHint, password),
+      "显示信息已更新"
+    );
+  }
+
+  async function replaceSecret() {
+    await perform(async () => {
+      await api.replaceVaultSecret(entry.id, replacement, password);
+      setReplacement("");
+      setRevealed("");
+    }, "敏感值已替换，旧授权已全部撤销");
+  }
+
+  async function toggleStatus() {
+    const next = entry.status === "active" ? "disabled" : "active";
+    await perform(
+      () => api.setVaultEntryStatus(entry.id, next, password),
+      next === "active" ? "条目已启用" : "条目已停用，授权已撤销"
+    );
+  }
+
+  async function remove() {
+    if (!window.confirm(`永久删除“${entry.display_label}”？密文和所有授权将无法恢复。`)) return;
+    await perform(
+      () => api.deleteVaultEntry(entry.id, password),
+      "条目已永久删除"
+    );
+  }
+
+  return (
+    <article className={entry.status === "disabled" ? "vault-disabled" : ""}>
+      <div className="vault-card-title">
+        <span className="lock">◆</span>
+        <h3>{entry.display_label}</h3>
+        <span className="vault-status">{entry.status === "active" ? "已启用" : "已停用"}</span>
+        <p>{entry.redacted_hint}</p>
+      </div>
+      <div className="grant-row">
+        <input
+          value={grantProfile}
+          onChange={(event) => onGrantProfile(event.target.value)}
+          placeholder="Hermes profile"
+          disabled={entry.status !== "active" || busy}
+        />
+        <button type="button" onClick={onGrant} disabled={entry.status !== "active" || busy}>
+          授权 15 分钟
+        </button>
+      </div>
+      <details className="vault-management">
+        <summary>人工管理</summary>
+        <p className="vault-warning">以下操作只在本地 UI 执行，并需再次输入管理密码。</p>
+        <label>显示名称<input value={displayLabel} onChange={(event) => setDisplayLabel(event.target.value)} /></label>
+        <label>脱敏提示<input value={redactedHint} onChange={(event) => setRedactedHint(event.target.value)} /></label>
+        <button type="button" onClick={updateMetadata} disabled={busy || !password}>保存显示信息</button>
+        <label>替换敏感值<input type="password" value={replacement} onChange={(event) => setReplacement(event.target.value)} autoComplete="new-password" /></label>
+        <button type="button" onClick={replaceSecret} disabled={busy || !password || !replacement}>替换并撤销授权</button>
+        <label>管理密码<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></label>
+        <div className="vault-actions">
+          <button type="button" onClick={reveal} disabled={busy || !password}>查看 60 秒</button>
+          <button type="button" onClick={toggleStatus} disabled={busy || !password}>{entry.status === "active" ? "停用" : "启用"}</button>
+          <button type="button" className="danger" onClick={remove} disabled={busy || !password}>永久删除</button>
+        </div>
+        {revealed && <div className="vault-revealed"><code>{revealed}</code><button type="button" onClick={() => setRevealed("")}>立即隐藏</button></div>}
+        {message && <p className="vault-message" role="status">{message}</p>}
+      </details>
+    </article>
   );
 }
