@@ -28,7 +28,7 @@ services:
       AGENT_MEMORY_NAMESPACE: ${AGENT_MEMORY_NAMESPACE:-hermes:user-primary}
       AGENT_MEMORY_LOG_LEVEL: ${AGENT_MEMORY_LOG_LEVEL:-INFO}
       AGENT_MEMORY_WORKER_POLL_SECONDS: ${AGENT_MEMORY_WORKER_POLL_SECONDS:-0.5}
-      AGENT_MEMORY_WORKER_LEASE_SECONDS: ${AGENT_MEMORY_WORKER_LEASE_SECONDS:-60}
+      AGENT_MEMORY_WORKER_LEASE_SECONDS: ${AGENT_MEMORY_WORKER_LEASE_SECONDS:-180}
       AGENT_MEMORY_VAULT_ROOT_KEY_FILE: ${AGENT_MEMORY_VAULT_ROOT_KEY_FILE:-/run/secrets/vault_root_key}
       AGENT_MEMORY_UI_PASSWORD_HASH: ${AGENT_MEMORY_UI_PASSWORD_HASH:?set AGENT_MEMORY_UI_PASSWORD_HASH}
       AGENT_MEMORY_UI_SESSION_SECRET: ${AGENT_MEMORY_UI_SESSION_SECRET:?set AGENT_MEMORY_UI_SESSION_SECRET}
@@ -39,6 +39,9 @@ services:
       AGENT_MEMORY_CONTINUITY_DAYS: ${AGENT_MEMORY_CONTINUITY_DAYS:-14}
       AGENT_MEMORY_STAGE_DORMANT_DAYS: ${AGENT_MEMORY_STAGE_DORMANT_DAYS:-90}
       AGENT_MEMORY_STAGE_FORGET_DAYS: ${AGENT_MEMORY_STAGE_FORGET_DAYS:-365}
+      AGENT_MEMORY_MODEL_BACKFILL_BATCH_SIZE: ${AGENT_MEMORY_MODEL_BACKFILL_BATCH_SIZE:-25}
+      AGENT_MEMORY_MODEL_MAX_ATOMIC_FACTS: ${AGENT_MEMORY_MODEL_MAX_ATOMIC_FACTS:-8}
+      AGENT_MEMORY_TRUSTED_OBSERVATION_TOOL_ALLOWLIST: ${AGENT_MEMORY_TRUSTED_OBSERVATION_TOOL_ALLOWLIST:-terminal,exec,execute_code,shell,health_probe}
     depends_on:
       postgres:
         condition: service_healthy
@@ -64,6 +67,69 @@ services:
     secrets: [vault_root_key]
     restart: unless-stopped
 
+  import-api:
+    profiles: ["import"]
+    image: agent-memory-api:${AGENT_MEMORY_VERSION:-1.0.0-rc.1}
+    build: .
+    command: ["agent-memory-api"]
+    environment:
+      <<: *app-env
+      AGENT_MEMORY_NAMESPACE: ${AGENT_MEMORY_IMPORT_NAMESPACE:-hermes:import-staging}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${AGENT_MEMORY_IMPORT_API_PORT:-7790}:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready').read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [backend, edge]
+    secrets: [vault_root_key]
+    restart: "no"
+
+  import-worker:
+    profiles: ["import"]
+    image: agent-memory-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.1}
+    build: .
+    command: ["agent-memory-worker"]
+    environment:
+      <<: *app-env
+      AGENT_MEMORY_NAMESPACE: ${AGENT_MEMORY_IMPORT_NAMESPACE:-hermes:import-staging}
+      AGENT_MEMORY_MODEL_ENABLED: ${AGENT_MEMORY_IMPORT_MODEL_ENABLED:-false}
+      AGENT_MEMORY_WORKER_ROLE: core
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks: [backend]
+    restart: "no"
+
+  import-model-worker:
+    profiles: ["import"]
+    image: agent-memory-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.1}
+    build: .
+    command: ["agent-memory-worker"]
+    environment:
+      <<: *app-env
+      AGENT_MEMORY_NAMESPACE: ${AGENT_MEMORY_IMPORT_NAMESPACE:-hermes:import-staging}
+      AGENT_MEMORY_WORKER_ROLE: model
+      AGENT_MEMORY_MODEL_ENABLED: ${AGENT_MEMORY_IMPORT_MODEL_ENABLED:-false}
+      AGENT_MEMORY_MODEL_NAME: ${AGENT_MEMORY_MODEL_NAME:-}
+      AGENT_MEMORY_MODEL_API_BASE: ${AGENT_MEMORY_MODEL_API_BASE:-}
+      AGENT_MEMORY_MODEL_API_KEY: ${AGENT_MEMORY_MODEL_API_KEY:-}
+      AGENT_MEMORY_MODEL_TIMEOUT_SECONDS: ${AGENT_MEMORY_MODEL_TIMEOUT_SECONDS:-30}
+      AGENT_MEMORY_MODEL_MAX_RETRIES: ${AGENT_MEMORY_MODEL_MAX_RETRIES:-2}
+      AGENT_MEMORY_MODEL_ALLOW_EXTERNAL_DATA: ${AGENT_MEMORY_MODEL_ALLOW_EXTERNAL_DATA:-false}
+      AGENT_MEMORY_MODEL_EVALUATION_MODE: ${AGENT_MEMORY_MODEL_EVALUATION_MODE:-false}
+      AGENT_MEMORY_MODEL_EVALUATION_PLAN_SHA: ${AGENT_MEMORY_MODEL_EVALUATION_PLAN_SHA:-}
+      AGENT_MEMORY_MODEL_EVALUATION_TURN_ALLOWLIST: ${AGENT_MEMORY_MODEL_EVALUATION_TURN_ALLOWLIST:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks: [backend, edge]
+    restart: "no"
+
   worker:
     image: agent-memory-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.1}
     build: .
@@ -71,21 +137,43 @@ services:
     environment:
       <<: *app-env
       AGENT_MEMORY_MODEL_ENABLED: ${AGENT_MEMORY_MODEL_ENABLED:-false}
-      AGENT_MEMORY_MODEL_NAME: ${AGENT_MEMORY_MODEL_NAME:-}
-      AGENT_MEMORY_MODEL_API_BASE: ${AGENT_MEMORY_MODEL_API_BASE:-}
-      AGENT_MEMORY_MODEL_API_KEY: ${AGENT_MEMORY_MODEL_API_KEY:-}
-      AGENT_MEMORY_MODEL_TIMEOUT_SECONDS: ${AGENT_MEMORY_MODEL_TIMEOUT_SECONDS:-30}
-      AGENT_MEMORY_MODEL_MAX_RETRIES: ${AGENT_MEMORY_MODEL_MAX_RETRIES:-2}
+      AGENT_MEMORY_WORKER_ROLE: core
     depends_on:
       migrate:
         condition: service_completed_successfully
     networks: [backend]
     restart: unless-stopped
 
+  model-worker:
+    image: agent-memory-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.1}
+    build: .
+    command: ["agent-memory-worker"]
+    environment:
+      <<: *app-env
+      AGENT_MEMORY_WORKER_ROLE: model
+      AGENT_MEMORY_MODEL_ENABLED: ${AGENT_MEMORY_MODEL_ENABLED:-false}
+      AGENT_MEMORY_MODEL_NAME: ${AGENT_MEMORY_MODEL_NAME:-}
+      AGENT_MEMORY_MODEL_API_BASE: ${AGENT_MEMORY_MODEL_API_BASE:-}
+      AGENT_MEMORY_MODEL_API_KEY: ${AGENT_MEMORY_MODEL_API_KEY:-}
+      AGENT_MEMORY_MODEL_TIMEOUT_SECONDS: ${AGENT_MEMORY_MODEL_TIMEOUT_SECONDS:-30}
+      AGENT_MEMORY_MODEL_MAX_RETRIES: ${AGENT_MEMORY_MODEL_MAX_RETRIES:-2}
+      AGENT_MEMORY_MODEL_ALLOW_EXTERNAL_DATA: ${AGENT_MEMORY_MODEL_ALLOW_EXTERNAL_DATA:-false}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks: [backend, edge]
+    restart: unless-stopped
+
 networks:
   backend:
     internal: true
+    ipam:
+      config:
+        - subnet: 172.16.240.0/24
   edge:
+    ipam:
+      config:
+        - subnet: 172.16.241.0/24
 
 secrets:
   vault_root_key:

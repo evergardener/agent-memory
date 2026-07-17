@@ -156,6 +156,197 @@ def list_entries(connection: Connection, namespace_key: str) -> list[dict]:
         return cursor.fetchall()
 
 
+def reveal_entry(
+    connection: Connection,
+    crypto: VaultCrypto,
+    *,
+    namespace_key: str,
+    entry_id: UUID,
+    actor_id: str,
+    reason: str,
+    correlation_id: UUID,
+) -> str | None:
+    namespace_id = stable_uuid("namespace", namespace_key)
+    with connection.cursor(row_factory=dict_row) as cursor:
+        cursor.execute(
+            """SELECT * FROM vault.entries
+               WHERE id=%s AND namespace_id=%s AND status <> 'deleted'""",
+            (entry_id, namespace_id),
+        )
+        row = cursor.fetchone()
+    if row is None:
+        return None
+    secret = crypto.decrypt(
+        entry_id=entry_id,
+        kind=row["kind"],
+        ciphertext=row["ciphertext"],
+        data_nonce=row["data_nonce"],
+        wrapped_dek=row["wrapped_dek"],
+        wrap_nonce=row["wrap_nonce"],
+        key_version=row["key_version"],
+    )
+    connection.execute(
+        """INSERT INTO audit.events(
+             id,namespace_id,actor_type,actor_id,action,target_type,target_id,reason,correlation_id
+           ) VALUES (%s,%s,'user',%s,'vault.reveal','vault_entry',%s,%s,%s)""",
+        (new_uuid(), namespace_id, actor_id, entry_id, reason, correlation_id),
+    )
+    return secret
+
+
+def update_entry_metadata(
+    connection: Connection,
+    *,
+    namespace_key: str,
+    entry_id: UUID,
+    display_label: str,
+    redacted_hint: str,
+    actor_id: str,
+    reason: str,
+    correlation_id: UUID,
+) -> bool:
+    namespace_id = stable_uuid("namespace", namespace_key)
+    updated = connection.execute(
+        """UPDATE vault.entries
+           SET display_label=%s,redacted_hint=%s,updated_at=now()
+           WHERE id=%s AND namespace_id=%s AND status <> 'deleted'
+           RETURNING id""",
+        (display_label, redacted_hint, entry_id, namespace_id),
+    ).fetchone()
+    if updated is None:
+        return False
+    connection.execute(
+        """INSERT INTO audit.events(
+             id,namespace_id,actor_type,actor_id,action,target_type,target_id,reason,correlation_id
+           ) VALUES (%s,%s,'user',%s,'vault.metadata.update','vault_entry',%s,%s,%s)""",
+        (new_uuid(), namespace_id, actor_id, entry_id, reason, correlation_id),
+    )
+    return True
+
+
+def replace_entry_secret(
+    connection: Connection,
+    crypto: VaultCrypto,
+    *,
+    namespace_key: str,
+    entry_id: UUID,
+    secret_value: str,
+    actor_id: str,
+    reason: str,
+    correlation_id: UUID,
+) -> bool:
+    namespace_id = stable_uuid("namespace", namespace_key)
+    row = connection.execute(
+        """SELECT kind FROM vault.entries
+           WHERE id=%s AND namespace_id=%s AND status <> 'deleted'""",
+        (entry_id, namespace_id),
+    ).fetchone()
+    if row is None:
+        return False
+    encrypted = crypto.encrypt(entry_id, row[0], secret_value)
+    connection.execute(
+        """UPDATE vault.entries SET ciphertext=%s,data_nonce=%s,wrapped_dek=%s,
+             wrap_nonce=%s,key_version=%s,updated_at=now()
+           WHERE id=%s AND namespace_id=%s""",
+        (
+            encrypted.ciphertext,
+            encrypted.data_nonce,
+            encrypted.wrapped_dek,
+            encrypted.wrap_nonce,
+            encrypted.key_version,
+            entry_id,
+            namespace_id,
+        ),
+    )
+    connection.execute(
+        """UPDATE vault.grants SET revoked_at=now()
+           WHERE entry_id=%s AND namespace_id=%s AND revoked_at IS NULL""",
+        (entry_id, namespace_id),
+    )
+    connection.execute(
+        """INSERT INTO audit.events(
+             id,namespace_id,actor_type,actor_id,action,target_type,target_id,reason,correlation_id
+           ) VALUES (%s,%s,'user',%s,'vault.secret.replace','vault_entry',%s,%s,%s)""",
+        (new_uuid(), namespace_id, actor_id, entry_id, reason, correlation_id),
+    )
+    return True
+
+
+def set_entry_status(
+    connection: Connection,
+    *,
+    namespace_key: str,
+    entry_id: UUID,
+    new_status: str,
+    actor_id: str,
+    reason: str,
+    correlation_id: UUID,
+) -> bool:
+    namespace_id = stable_uuid("namespace", namespace_key)
+    updated = connection.execute(
+        """UPDATE vault.entries SET status=%s,updated_at=now()
+           WHERE id=%s AND namespace_id=%s AND status <> 'deleted' AND status <> %s
+           RETURNING id""",
+        (new_status, entry_id, namespace_id, new_status),
+    ).fetchone()
+    if updated is None:
+        return False
+    if new_status == "disabled":
+        connection.execute(
+            """UPDATE vault.grants SET revoked_at=now()
+               WHERE entry_id=%s AND namespace_id=%s AND revoked_at IS NULL""",
+            (entry_id, namespace_id),
+        )
+    connection.execute(
+        """INSERT INTO audit.events(
+             id,namespace_id,actor_type,actor_id,action,target_type,target_id,reason,correlation_id
+           ) VALUES (%s,%s,'user',%s,%s,'vault_entry',%s,%s,%s)""",
+        (
+            new_uuid(),
+            namespace_id,
+            actor_id,
+            f"vault.{new_status}",
+            entry_id,
+            reason,
+            correlation_id,
+        ),
+    )
+    return True
+
+
+def delete_entry(
+    connection: Connection,
+    *,
+    namespace_key: str,
+    entry_id: UUID,
+    actor_id: str,
+    reason: str,
+    correlation_id: UUID,
+) -> bool:
+    namespace_id = stable_uuid("namespace", namespace_key)
+    exists = connection.execute(
+        "SELECT 1 FROM vault.entries WHERE id=%s AND namespace_id=%s",
+        (entry_id, namespace_id),
+    ).fetchone()
+    if exists is None:
+        return False
+    connection.execute(
+        """INSERT INTO audit.events(
+             id,namespace_id,actor_type,actor_id,action,target_type,target_id,reason,correlation_id
+           ) VALUES (%s,%s,'user',%s,'vault.delete','vault_entry',%s,%s,%s)""",
+        (new_uuid(), namespace_id, actor_id, entry_id, reason, correlation_id),
+    )
+    connection.execute(
+        "DELETE FROM vault.grants WHERE entry_id=%s AND namespace_id=%s",
+        (entry_id, namespace_id),
+    )
+    connection.execute(
+        "DELETE FROM vault.entries WHERE id=%s AND namespace_id=%s",
+        (entry_id, namespace_id),
+    )
+    return True
+
+
 def list_active_grants(connection: Connection, namespace_key: str) -> list[dict]:
     namespace_id = stable_uuid("namespace", namespace_key)
     with connection.cursor(row_factory=dict_row) as cursor:

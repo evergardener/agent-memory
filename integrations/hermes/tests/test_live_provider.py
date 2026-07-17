@@ -1,3 +1,4 @@
+import http.cookiejar
 import importlib
 import json
 import os
@@ -6,6 +7,7 @@ import shutil
 import tempfile
 import time
 import unittest
+import urllib.request
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,8 +17,68 @@ from agent.memory_manager import MemoryManager
 from integrations.hermes.agent_memory.provider import AgentMemoryProvider
 
 
+class CapturingClient:
+    service_token = "test-token"
+
+    def __init__(self) -> None:
+        self.posts: list[tuple[str, dict]] = []
+
+    def post(self, path: str, payload: dict) -> dict:
+        self.posts.append((path, payload))
+        return {}
+
+
 class LiveHermesProviderTests(unittest.TestCase):
+    def test_internal_memory_tool_results_are_not_reingested(self) -> None:
+        client = CapturingClient()
+        provider = AgentMemoryProvider(client=client)
+        provider.initialize("session-1", agent_identity="coding")
+        provider.on_turn_start(1, "trace the source")
+        provider.sync_turn(
+            "trace the source",
+            "The source is available.",
+            messages=[
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "agent_memory_trace_source",
+                                "arguments": '{"memory_id":"00000000-0000-0000-0000-000000000000"}',
+                            }
+                        },
+                        {
+                            "function": {
+                                "name": "health_probe",
+                                "arguments": '{"service":"relay"}',
+                            }
+                        },
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "name": "agent_memory_trace_source",
+                    "content": '{"evidence":[{"redacted_payload":{"content":"secret"}}]}',
+                },
+                {"role": "tool", "name": "health_probe", "content": "healthy"},
+            ],
+        )
+
+        events = client.posts[0][1]["events"]
+        tool_events = [event for event in events if event["type"].startswith("tool_")]
+        self.assertEqual([event["tool_name"] for event in tool_events], ["health_probe"] * 2)
+        self.assertNotIn("redacted_payload", json.dumps(events))
+
+    @unittest.skipUnless(
+        os.getenv("AGENT_MEMORY_LIVE_PROVIDER_TESTS") == "1",
+        "set AGENT_MEMORY_LIVE_PROVIDER_TESTS=1 against the isolated test API",
+    )
     def test_memory_manager_writes_and_cross_profile_recalls(self) -> None:
+        namespace = os.getenv("AGENT_MEMORY_NAMESPACE", "")
+        self.assertTrue(
+            namespace.startswith("hermes:automated-tests"),
+            f"live provider regression refuses namespace: {namespace}",
+        )
         run_id = uuid.uuid4().hex[:12]
         personal = AgentMemoryProvider()
         personal_manager = MemoryManager()
@@ -51,7 +113,7 @@ class LiveHermesProviderTests(unittest.TestCase):
         else:
             self.fail("formal provider did not recall persisted cross-profile evidence")
         self.assertIn("profile: personal", recalled)
-        self.assertIn("sources:", recalled)
+        self.assertIn("evidence_ids:", recalled)
 
         memory_match = re.search(r"memory: ([0-9a-f-]+)", recalled)
         self.assertIsNotNone(memory_match)
@@ -60,6 +122,8 @@ class LiveHermesProviderTests(unittest.TestCase):
             coding.handle_tool_call("agent_memory_trace_source", {"memory_id": memory_id})
         )
         self.assertTrue(traced["evidence"])
+        self.assertEqual(traced["evidence"][0]["external_session_id"], f"personal-{run_id}")
+        self.assertEqual(traced["evidence"][0]["source_profile"], "personal")
 
         corrected_statement = f"project:Nebula-{run_id} uses service:relay-new-{run_id}."
         corrected = json.loads(
@@ -73,11 +137,38 @@ class LiveHermesProviderTests(unittest.TestCase):
             )
         )
         self.assertEqual(corrected["state"], "superseded")
+        corrected_trace = json.loads(
+            coding.handle_tool_call(
+                "agent_memory_trace_source",
+                {"memory_id": corrected["replacement_memory_id"]},
+            )
+        )
+        self.assertTrue(corrected_trace["evidence"])
+        self.assertEqual(corrected_trace["evidence"][0]["support_kind"], "historical_context")
+        self.assertEqual(corrected_trace["governance"][0]["action"], "memory.correct")
         corrected_recall = coding.prefetch(f"relay-new-{run_id}")
         self.assertIn(corrected_statement, corrected_recall)
 
         vault_secret = f"live-vault-secret-{run_id}"
-        entry = personal.client.post(
+        cookie_jar = http.cookiejar.CookieJar()
+        ui = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+        base_url = os.environ["AGENT_MEMORY_API_URL"].rstrip("/")
+
+        def ui_post(path: str, payload: dict) -> dict:
+            request = urllib.request.Request(
+                base_url + path,
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with ui.open(request, timeout=2) as response:
+                return json.load(response)
+
+        ui_post(
+            "/api/v1/ui/login",
+            {"password": os.getenv("AGENT_MEMORY_UI_TEST_PASSWORD", "change-me")},
+        )
+        entry = ui_post(
             "/api/v1/vault/entries",
             {
                 "context": personal._context(),
@@ -87,7 +178,7 @@ class LiveHermesProviderTests(unittest.TestCase):
                 "secret_value": vault_secret,
             },
         )
-        personal.client.post(
+        ui_post(
             f"/api/v1/vault/entries/{entry['entry_id']}/grants",
             {
                 "context": personal._context(),

@@ -115,7 +115,24 @@ class EvidenceTraceItem(BaseModel):
     event_type: str
     occurred_at: datetime
     source_profile: str
+    source_instance: str
+    source_id: UUID
+    internal_session_id: UUID
+    external_session_id: str
+    external_turn_id: str
+    support_kind: str
+    weight: float
     redacted_payload: dict[str, Any]
+
+
+class GovernanceTraceItem(BaseModel):
+    action: str
+    actor_type: str
+    actor_id: str
+    reason: str | None
+    correlation_id: UUID
+    metadata_redacted: dict[str, Any]
+    created_at: datetime
 
 
 class MemoryTraceResponse(BaseModel):
@@ -124,7 +141,82 @@ class MemoryTraceResponse(BaseModel):
     state: str
     version: int
     supersedes_memory_id: UUID | None
+    extraction_method: str | None = None
+    extraction_version: str | None = None
+    model_name: str | None = None
+    evidence_span_start: int | None = None
+    evidence_span_end: int | None = None
     evidence: list[EvidenceTraceItem]
+    governance: list[GovernanceTraceItem]
+
+
+class ReviewQueueItem(BaseModel):
+    memory_id: UUID
+    statement: str
+    fact_type: str
+    state: str
+    source_profile: str
+    confidence: float
+    evidence_count: int
+    updated_at: datetime
+    extraction_method: str
+    review_reasons: list[Literal["candidate", "untrusted_tool"]]
+    tool_names: list[str]
+
+
+class ReviewQueueResponse(BaseModel):
+    items: list[ReviewQueueItem]
+    total: int
+    limit: int
+    offset: int
+    profiles: list[str]
+
+
+class EntityMergeRequest(BaseModel):
+    context: ProviderContext
+    target_entity_id: UUID
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class EntitySplitRequest(BaseModel):
+    context: ProviderContext
+    canonical_name: str = Field(min_length=1, max_length=256)
+    entity_type: str = Field(default="other", min_length=1, max_length=64)
+    fact_ids: list[UUID] = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class EntityGovernanceRequest(BaseModel):
+    context: ProviderContext
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class EntityGovernanceResponse(BaseModel):
+    entity_id: UUID
+    state: Literal["active", "merged"]
+    canonical_entity_id: UUID | None = None
+    created_entity_id: UUID | None = None
+    affected_fact_count: int = 0
+    correlation_id: UUID
+
+
+class EntityRelationResponse(BaseModel):
+    entity_id: UUID
+    fact_id: UUID
+    state: Literal["attached", "detached"]
+    correlation_id: UUID
+
+
+class QualityReportResponse(BaseModel):
+    namespace: str
+    generated_at: datetime
+    automatic_ready: bool
+    promotion_ready: bool
+    manual_review_required: bool
+    gates: dict[str, bool]
+    metrics: dict[str, int | float | None]
+    classifications: dict[str, int]
+    decision: Literal["AUTOMATIC_GATES_FAILED", "MANUAL_REVIEW_REQUIRED"]
 
 
 class VaultEntryCreate(BaseModel):
@@ -148,6 +240,53 @@ class VaultEntrySummary(BaseModel):
 
 class VaultEntryCreated(BaseModel):
     entry_id: UUID
+    correlation_id: UUID
+
+
+class VaultEntryMetadataUpdate(BaseModel):
+    context: ProviderContext
+    display_label: str = Field(min_length=1, max_length=256)
+    redacted_hint: str = Field(min_length=1, max_length=512)
+    password: SecretStr = Field(min_length=1, max_length=1000)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class VaultEntryRevealRequest(BaseModel):
+    context: ProviderContext
+    password: SecretStr = Field(min_length=1, max_length=1000)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class VaultEntryRevealResponse(BaseModel):
+    entry_id: UUID
+    secret_value: str
+    correlation_id: UUID
+
+
+class VaultEntryReplaceRequest(BaseModel):
+    context: ProviderContext
+    secret_value: SecretStr = Field(min_length=1, max_length=100000)
+    password: SecretStr = Field(min_length=1, max_length=1000)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class VaultEntryStatusRequest(BaseModel):
+    context: ProviderContext
+    status: Literal["active", "disabled"]
+    password: SecretStr = Field(min_length=1, max_length=1000)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class VaultEntryDeleteRequest(BaseModel):
+    context: ProviderContext
+    confirm_entry_id: UUID
+    password: SecretStr = Field(min_length=1, max_length=1000)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class VaultEntryActionResponse(BaseModel):
+    entry_id: UUID
+    state: str
     correlation_id: UUID
 
 
@@ -208,6 +347,11 @@ class UiLoginRequest(BaseModel):
 
 class UiLoginResponse(BaseModel):
     authenticated: bool
+
+
+class UiConfigResponse(BaseModel):
+    namespace: str
+    version: str
 
 
 class CurrentStateRequest(BaseModel):

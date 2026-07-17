@@ -61,21 +61,17 @@ curl --fail --silent "http://127.0.0.1:${AGENT_MEMORY_API_PORT:-7788}/health/rea
 architecture="$(docker image inspect "agent-memory-api:$VERSION" --format '{{.Architecture}}')"
 image_id="$(docker image inspect "agent-memory-api:$VERSION" --format '{{.Id}}')"
 
-stage "formal API integration"
-env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYDANTIC_DISABLE_PLUGINS=__all__ \
-  AGENT_MEMORY_INTEGRATION=1 \
-  AGENT_MEMORY_TEST_API_URL="http://127.0.0.1:${AGENT_MEMORY_API_PORT:-7788}" \
-  .venv/bin/pytest -q -m integration
+stage "atomic extraction database self-test"
+"${COMPOSE[@]}" exec -T worker agent-memory-verify-atomic
 
-stage "live Hermes provider"
-PYTHONPATH="$HERMES_AGENT_ROOT:$PWD" \
-AGENT_MEMORY_API_URL="http://127.0.0.1:${AGENT_MEMORY_API_PORT:-7788}" \
-"$HERMES_AGENT_ROOT/venv/bin/python" -m unittest \
-  integrations.hermes.tests.test_live_provider -v
+stage "derived memory sanitization database self-test"
+"${COMPOSE[@]}" exec -T worker agent-memory-verify-sanitizer
 
-stage "worker recovery and outage"
+stage "isolated API, Hermes provider, and outage regression"
+bash scripts/verify-isolated-regression.sh "$ENV_FILE"
+
+stage "worker lease recovery"
 bash scripts/verify-worker-recovery.sh "$ENV_FILE"
-bash scripts/verify-worker-outage.sh "$ENV_FILE"
 stage "backup restore and Vault decrypt"
 backup_dir="$(bash scripts/backup.sh "$ENV_FILE")"
 bash scripts/verify-restore.sh "$backup_dir" "$ENV_FILE"

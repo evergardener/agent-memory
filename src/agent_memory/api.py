@@ -3,26 +3,38 @@ import os
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .db import Database
 from .graph import load_graph
+from .quality import build_quality_report
 from .repository import (
+    change_entity_fact_relation,
     correct_memory,
     ingest_turn,
+    list_review_queue,
+    merge_entity,
     recall,
     request_memory_purge,
     set_memory_state,
+    split_entity,
     trace_memory,
+    unmerge_entity,
 )
 from .schemas import (
     CorrectionRequest,
     CurrentStateRequest,
+    EntityGovernanceRequest,
+    EntityGovernanceResponse,
+    EntityMergeRequest,
+    EntityRelationResponse,
+    EntitySplitRequest,
     IngestTurnRequest,
     IngestTurnResponse,
     MemoryActionRequest,
@@ -30,17 +42,27 @@ from .schemas import (
     MemoryTraceResponse,
     PurgeRequest,
     PurgeResponse,
+    QualityReportResponse,
     RecallRequest,
     RecallResponse,
+    ReviewQueueResponse,
     StateConfigRequest,
     StateResetRequest,
     StateSimulationRequest,
+    UiConfigResponse,
     UiLoginRequest,
     UiLoginResponse,
     VaultAccessRequest,
     VaultAccessResponse,
+    VaultEntryActionResponse,
     VaultEntryCreate,
     VaultEntryCreated,
+    VaultEntryDeleteRequest,
+    VaultEntryMetadataUpdate,
+    VaultEntryReplaceRequest,
+    VaultEntryRevealRequest,
+    VaultEntryRevealResponse,
+    VaultEntryStatusRequest,
     VaultEntrySummary,
     VaultGrantCreate,
     VaultGrantResponse,
@@ -57,15 +79,27 @@ from .state_views import (
     simulate_interaction_state,
     update_state_config,
 )
-from .ui_auth import COOKIE_NAME, create_session, require_api_access, verify_password
+from .ui_auth import (
+    COOKIE_NAME,
+    create_session,
+    require_api_access,
+    require_service_access,
+    require_ui_session,
+    verify_password,
+)
 from .vault import (
     VaultCrypto,
     access_entry,
     create_entry,
     create_grant,
+    delete_entry,
     list_active_grants,
     list_entries,
+    replace_entry_secret,
+    reveal_entry,
     revoke_grant,
+    set_entry_status,
+    update_entry_metadata,
 )
 
 logger = logging.getLogger(__name__)
@@ -116,6 +150,19 @@ def ui_login(request_body: UiLoginRequest, response: Response):
 def ui_logout(response: Response):
     response.delete_cookie(COOKIE_NAME, path="/")
     return UiLoginResponse(authenticated=False)
+
+
+@app.get(
+    "/api/v1/ui/config",
+    response_model=UiConfigResponse,
+    dependencies=[Depends(require_api_access)],
+)
+def ui_config():
+    settings = get_settings()
+    return UiConfigResponse(
+        namespace=settings.namespace,
+        version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.1"),
+    )
 
 
 @app.get("/health/live")
@@ -183,6 +230,134 @@ def trace_endpoint(memory_id: str, shared_namespace: str, request: Request):
         result = trace_memory(connection, shared_namespace, parsed_id)
     if result is None:
         raise HTTPException(status_code=404, detail="NOT_FOUND")
+    return result
+
+
+@app.get(
+    "/api/v1/memories/review",
+    response_model=ReviewQueueResponse,
+    dependencies=[Depends(require_api_access)],
+)
+def review_queue_endpoint(
+    request: Request,
+    shared_namespace: str,
+    reason: Literal["all", "candidate", "untrusted_tool"] = "all",
+    source_profile: str | None = Query(default=None, min_length=1, max_length=128),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    _check_namespace(shared_namespace)
+    settings = get_settings()
+    with request.app.state.database.connection() as connection:
+        return list_review_queue(
+            connection,
+            namespace_key=shared_namespace,
+            trusted_tools=settings.trusted_observation_tools,
+            reason=reason,
+            source_profile=source_profile,
+            limit=limit,
+            offset=offset,
+        )
+
+
+def _entity_governance_error(error: ValueError) -> HTTPException:
+    detail = str(error)
+    status = 409 if detail in {
+        "ENTITY_ALREADY_MERGED",
+        "ENTITY_MERGE_CYCLE",
+        "ENTITY_NAME_CONFLICT",
+        "ENTITY_RELATION_ALREADY_ATTACHED",
+        "ENTITY_RELATION_NOT_ATTACHED",
+    } else 422
+    return HTTPException(status_code=status, detail=detail)
+
+
+@app.post(
+    "/api/v1/entities/{entity_id}/merge",
+    response_model=EntityGovernanceResponse,
+    dependencies=[Depends(require_api_access)],
+)
+def merge_entity_endpoint(entity_id: UUID, request_body: EntityMergeRequest, request: Request):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            result = merge_entity(connection, entity_id, request_body)
+    except ValueError as error:
+        raise _entity_governance_error(error) from error
+    if result is None:
+        raise HTTPException(status_code=404, detail="ENTITY_NOT_FOUND")
+    return result
+
+
+@app.post(
+    "/api/v1/entities/{entity_id}/unmerge",
+    response_model=EntityGovernanceResponse,
+    dependencies=[Depends(require_api_access)],
+)
+def unmerge_entity_endpoint(
+    entity_id: UUID, request_body: EntityGovernanceRequest, request: Request
+):
+    _check_namespace(request_body.context.shared_namespace)
+    with request.app.state.database.connection() as connection:
+        result = unmerge_entity(
+            connection,
+            namespace_key=request_body.context.shared_namespace,
+            entity_id=entity_id,
+            actor_id=request_body.context.source_profile,
+            reason=request_body.reason,
+            correlation_id=request_body.context.correlation_id,
+        )
+    if result is None:
+        raise HTTPException(status_code=404, detail="ENTITY_NOT_MERGED")
+    return result
+
+
+@app.post(
+    "/api/v1/entities/{entity_id}/split",
+    response_model=EntityGovernanceResponse,
+    dependencies=[Depends(require_api_access)],
+)
+def split_entity_endpoint(entity_id: UUID, request_body: EntitySplitRequest, request: Request):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            result = split_entity(connection, entity_id, request_body)
+    except ValueError as error:
+        raise _entity_governance_error(error) from error
+    if result is None:
+        raise HTTPException(status_code=404, detail="ENTITY_NOT_FOUND")
+    return result
+
+
+@app.post(
+    "/api/v1/entities/{entity_id}/facts/{fact_id}/{action}",
+    response_model=EntityRelationResponse,
+    dependencies=[Depends(require_api_access)],
+)
+def change_entity_fact_relation_endpoint(
+    entity_id: UUID,
+    fact_id: UUID,
+    action: Literal["attach", "detach"],
+    request_body: EntityGovernanceRequest,
+    request: Request,
+):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            result = change_entity_fact_relation(
+                connection,
+                namespace_key=request_body.context.shared_namespace,
+                entity_id=entity_id,
+                fact_id=fact_id,
+                action=action,
+                actor_id=request_body.context.source_profile,
+                reason=request_body.reason,
+                correlation_id=request_body.context.correlation_id,
+            )
+    except ValueError as error:
+        raise _entity_governance_error(error) from error
+    if result is None:
+        raise HTTPException(status_code=404, detail="ENTITY_OR_FACT_NOT_FOUND")
     return result
 
 
@@ -293,11 +468,16 @@ def _check_namespace(namespace: str) -> None:
         raise HTTPException(status_code=403, detail="NAMESPACE_DENIED")
 
 
+def _verify_vault_reauthentication(password: str) -> None:
+    if not verify_password(password, get_settings().ui_password_hash):
+        raise HTTPException(status_code=401, detail="VAULT_REAUTHENTICATION_REQUIRED")
+
+
 @app.post(
     "/api/v1/vault/entries",
     response_model=VaultEntryCreated,
     status_code=201,
-    dependencies=[Depends(require_api_access)],
+    dependencies=[Depends(require_ui_session)],
 )
 def create_vault_entry(request_body: VaultEntryCreate, request: Request):
     _check_namespace(request_body.context.shared_namespace)
@@ -322,7 +502,7 @@ def create_vault_entry(request_body: VaultEntryCreate, request: Request):
 @app.get(
     "/api/v1/vault/entries",
     response_model=list[VaultEntrySummary],
-    dependencies=[Depends(require_api_access)],
+    dependencies=[Depends(require_ui_session)],
 )
 def list_vault_entries(shared_namespace: str, request: Request):
     _check_namespace(shared_namespace)
@@ -331,10 +511,163 @@ def list_vault_entries(shared_namespace: str, request: Request):
 
 
 @app.post(
+    "/api/v1/vault/entries/{entry_id}/reveal",
+    response_model=VaultEntryRevealResponse,
+    dependencies=[Depends(require_ui_session)],
+)
+def reveal_vault_entry(
+    entry_id: UUID,
+    request_body: VaultEntryRevealRequest,
+    request: Request,
+    response: Response,
+):
+    _check_namespace(request_body.context.shared_namespace)
+    _verify_vault_reauthentication(request_body.password.get_secret_value())
+    with request.app.state.database.connection() as connection:
+        secret = reveal_entry(
+            connection,
+            _vault_crypto(),
+            namespace_key=request_body.context.shared_namespace,
+            entry_id=entry_id,
+            actor_id=request_body.context.source_profile,
+            reason=request_body.reason,
+            correlation_id=request_body.context.correlation_id,
+        )
+    if secret is None:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return VaultEntryRevealResponse(
+        entry_id=entry_id,
+        secret_value=secret,
+        correlation_id=request_body.context.correlation_id,
+    )
+
+
+@app.patch(
+    "/api/v1/vault/entries/{entry_id}",
+    response_model=VaultEntryActionResponse,
+    dependencies=[Depends(require_ui_session)],
+)
+def update_vault_entry_metadata(
+    entry_id: UUID, request_body: VaultEntryMetadataUpdate, request: Request
+):
+    _check_namespace(request_body.context.shared_namespace)
+    _verify_vault_reauthentication(request_body.password.get_secret_value())
+    with request.app.state.database.connection() as connection:
+        updated = update_entry_metadata(
+            connection,
+            namespace_key=request_body.context.shared_namespace,
+            entry_id=entry_id,
+            display_label=request_body.display_label,
+            redacted_hint=request_body.redacted_hint,
+            actor_id=request_body.context.source_profile,
+            reason=request_body.reason,
+            correlation_id=request_body.context.correlation_id,
+        )
+    if not updated:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    return VaultEntryActionResponse(
+        entry_id=entry_id,
+        state="updated",
+        correlation_id=request_body.context.correlation_id,
+    )
+
+
+@app.post(
+    "/api/v1/vault/entries/{entry_id}/replace",
+    response_model=VaultEntryActionResponse,
+    dependencies=[Depends(require_ui_session)],
+)
+def replace_vault_entry_secret(
+    entry_id: UUID, request_body: VaultEntryReplaceRequest, request: Request
+):
+    _check_namespace(request_body.context.shared_namespace)
+    _verify_vault_reauthentication(request_body.password.get_secret_value())
+    with request.app.state.database.connection() as connection:
+        updated = replace_entry_secret(
+            connection,
+            _vault_crypto(),
+            namespace_key=request_body.context.shared_namespace,
+            entry_id=entry_id,
+            secret_value=request_body.secret_value.get_secret_value(),
+            actor_id=request_body.context.source_profile,
+            reason=request_body.reason,
+            correlation_id=request_body.context.correlation_id,
+        )
+    if not updated:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    return VaultEntryActionResponse(
+        entry_id=entry_id,
+        state="replaced",
+        correlation_id=request_body.context.correlation_id,
+    )
+
+
+@app.post(
+    "/api/v1/vault/entries/{entry_id}/status",
+    response_model=VaultEntryActionResponse,
+    dependencies=[Depends(require_ui_session)],
+)
+def change_vault_entry_status(
+    entry_id: UUID, request_body: VaultEntryStatusRequest, request: Request
+):
+    _check_namespace(request_body.context.shared_namespace)
+    _verify_vault_reauthentication(request_body.password.get_secret_value())
+    with request.app.state.database.connection() as connection:
+        updated = set_entry_status(
+            connection,
+            namespace_key=request_body.context.shared_namespace,
+            entry_id=entry_id,
+            new_status=request_body.status,
+            actor_id=request_body.context.source_profile,
+            reason=request_body.reason,
+            correlation_id=request_body.context.correlation_id,
+        )
+    if not updated:
+        raise HTTPException(status_code=404, detail="NOT_FOUND_OR_UNCHANGED")
+    return VaultEntryActionResponse(
+        entry_id=entry_id,
+        state=request_body.status,
+        correlation_id=request_body.context.correlation_id,
+    )
+
+
+@app.post(
+    "/api/v1/vault/entries/{entry_id}/delete",
+    response_model=VaultEntryActionResponse,
+    dependencies=[Depends(require_ui_session)],
+)
+def delete_vault_entry(
+    entry_id: UUID, request_body: VaultEntryDeleteRequest, request: Request
+):
+    _check_namespace(request_body.context.shared_namespace)
+    if request_body.confirm_entry_id != entry_id:
+        raise HTTPException(status_code=409, detail="DELETE_CONFIRMATION_MISMATCH")
+    _verify_vault_reauthentication(request_body.password.get_secret_value())
+    with request.app.state.database.connection() as connection:
+        deleted = delete_entry(
+            connection,
+            namespace_key=request_body.context.shared_namespace,
+            entry_id=entry_id,
+            actor_id=request_body.context.source_profile,
+            reason=request_body.reason,
+            correlation_id=request_body.context.correlation_id,
+        )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    return VaultEntryActionResponse(
+        entry_id=entry_id,
+        state="deleted",
+        correlation_id=request_body.context.correlation_id,
+    )
+
+
+@app.post(
     "/api/v1/vault/entries/{entry_id}/grants",
     response_model=VaultGrantResponse,
     status_code=201,
-    dependencies=[Depends(require_api_access)],
+    dependencies=[Depends(require_ui_session)],
 )
 def create_vault_grant(entry_id: UUID, request_body: VaultGrantCreate, request: Request):
     _check_namespace(request_body.context.shared_namespace)
@@ -365,7 +698,7 @@ def create_vault_grant(entry_id: UUID, request_body: VaultGrantCreate, request: 
 @app.get(
     "/api/v1/vault/grants",
     response_model=list[VaultGrantSummary],
-    dependencies=[Depends(require_api_access)],
+    dependencies=[Depends(require_ui_session)],
 )
 def list_vault_grants(shared_namespace: str, request: Request):
     _check_namespace(shared_namespace)
@@ -376,7 +709,7 @@ def list_vault_grants(shared_namespace: str, request: Request):
 @app.post(
     "/api/v1/vault/grants/{grant_id}/revoke",
     response_model=MemoryActionResponse,
-    dependencies=[Depends(require_api_access)],
+    dependencies=[Depends(require_ui_session)],
 )
 def revoke_vault_grant(grant_id: UUID, request_body: MemoryActionRequest, request: Request):
     _check_namespace(request_body.context.shared_namespace)
@@ -401,7 +734,7 @@ def revoke_vault_grant(grant_id: UUID, request_body: MemoryActionRequest, reques
 @app.post(
     "/api/v1/vault/requests",
     response_model=VaultAccessResponse,
-    dependencies=[Depends(require_api_access)],
+    dependencies=[Depends(require_service_access)],
 )
 def request_vault_access(request_body: VaultAccessRequest, request: Request):
     _check_namespace(request_body.context.shared_namespace)
@@ -487,6 +820,22 @@ def consolidation_reports(shared_namespace: str, request: Request, limit: int = 
         raise HTTPException(status_code=422, detail="VALIDATION_ERROR")
     with request.app.state.database.connection() as connection:
         return list_reports(connection, shared_namespace, limit)
+
+
+@app.get(
+    "/api/v1/reports/quality",
+    response_model=QualityReportResponse,
+    dependencies=[Depends(require_api_access)],
+)
+def quality_report(shared_namespace: str, request: Request):
+    _check_namespace(shared_namespace)
+    settings = get_settings()
+    with request.app.state.database.connection() as connection:
+        return build_quality_report(
+            connection,
+            namespace_key=shared_namespace,
+            trusted_tools=settings.trusted_observation_tools,
+        )
 
 
 static_directory = Path(__file__).with_name("static")

@@ -1,13 +1,26 @@
+import json
+import re
 from uuid import UUID
 
 from psycopg import Connection
 from psycopg.rows import dict_row
 
+from .classification import QUERY_ONLY_PATTERN
+from .config import get_settings
 from .ids import stable_uuid
+from .redaction import redact_text
+
+AUTOMATED_TEST_PATTERN = re.compile(
+    r"(?:AutomatedUAT-|ModelOutageUAT-|worker-outage-|Nebula-[0-9a-f]{12}|"
+    r"(?:derived|lifecycle)-[0-9a-f]{12}|Live provider [0-9a-f]{12}|"
+    r"Integration credential [0-9a-f]{12}|(?:relay|postgres|weather-current)-[0-9a-f]{12})",
+    re.IGNORECASE,
+)
 
 
 def load_graph(connection: Connection, namespace_key: str) -> dict:
     namespace_id = stable_uuid("namespace", namespace_key)
+    trusted_tools = list(get_settings().trusted_observation_tools)
     nodes: list[dict] = [
         {"data": {"id": "core:user", "label": "User", "kind": "core"}},
         {"data": {"id": "core:hermes", "label": "Hermes", "kind": "core"}},
@@ -19,50 +32,122 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
                 "source": "core:user",
                 "target": "core:hermes",
                 "kind": "core",
+                "strength": "1.0",
             }
         }
     ]
     with connection.cursor(row_factory=dict_row) as cursor:
         cursor.execute(
-            """SELECT id,canonical_name,entity_type,merge_state
-               FROM memory.entities WHERE namespace_id=%s""",
+            """SELECT e.id,e.canonical_name,e.entity_type,e.merge_state,
+                      COALESCE(
+                        jsonb_agg(jsonb_build_object('id',a.id,'name',a.canonical_name)
+                                  ORDER BY a.canonical_name)
+                          FILTER (WHERE a.id IS NOT NULL),'[]'::jsonb
+                      ) AS merged_aliases
+               FROM memory.entities e
+               LEFT JOIN memory.entities a ON a.canonical_entity_id=e.id
+               WHERE e.namespace_id=%s AND e.canonical_entity_id IS NULL
+               GROUP BY e.id,e.canonical_name,e.entity_type,e.merge_state""",
             (namespace_id,),
         )
         for entity in cursor.fetchall():
+            visibility = (
+                "automated"
+                if AUTOMATED_TEST_PATTERN.search(entity["canonical_name"])
+                else "normal"
+            )
             nodes.append(
                 {
                     "data": {
                         "id": f"entity:{entity['id']}",
                         "record_id": str(entity["id"]),
-                        "label": entity["canonical_name"],
+                        "label": redact_text(entity["canonical_name"]).text,
                         "kind": "entity",
                         "entity_type": entity["entity_type"],
                         "state": entity["merge_state"],
+                        "merged_aliases": json.dumps(
+                            entity["merged_aliases"], ensure_ascii=False
+                        ),
+                        "visibility": visibility,
                     }
                 }
             )
         cursor.execute(
-            """SELECT id,statement,memory_state,fact_type,source_profile
-               FROM memory.facts WHERE namespace_id=%s AND memory_state <> 'purge_requested'
-               ORDER BY updated_at DESC LIMIT 500""",
-            (namespace_id,),
+            """SELECT f.id,f.statement,f.memory_state,f.fact_type,f.source_profile,
+                      f.confidence,f.updated_at,count(DISTINCT fe.event_id) AS evidence_count,
+                      f.extraction_method,f.extraction_version,f.model_name,
+                      COALESCE(bool_or(
+                        e.event_type='tool_result' AND
+                        COALESCE(e.redacted_payload->>'tool_name','') ~*
+                          '^(agent_memory_.+|session_search|search_files|read_file|memory)$'
+                      ),false) AS internal_memory_tool,
+                      COALESCE(bool_or(
+                        e.event_type='tool_result' AND
+                        NOT (lower(COALESCE(e.redacted_payload->>'tool_name','')) = ANY(%s))
+                      ),false) AS untrusted_tool,
+                      COALESCE(bool_or(rf.event_id IS NOT NULL),false) AS sensitive
+               FROM memory.facts f
+               LEFT JOIN memory.fact_evidence fe ON fe.fact_id=f.id
+               LEFT JOIN evidence.events e ON e.id=fe.event_id
+               LEFT JOIN evidence.redaction_findings rf ON rf.event_id=e.id
+               WHERE f.namespace_id=%s AND f.memory_state <> 'purge_requested'
+               GROUP BY f.id
+               ORDER BY f.updated_at DESC LIMIT 500""",
+            (trusted_tools, namespace_id),
         )
+        fact_strengths: dict[UUID, float] = {}
         for fact in cursor.fetchall():
+            evidence_count = int(fact["evidence_count"] or 0)
+            strength = min(
+                1.0,
+                0.25 + float(fact["confidence"]) * 0.55 + min(4, evidence_count) * 0.05,
+            )
+            fact_strengths[fact["id"]] = strength
+            activity = (
+                "high"
+                if evidence_count >= 3 or float(fact["confidence"]) >= 0.85
+                else "medium"
+                if evidence_count >= 2 or float(fact["confidence"]) >= 0.65
+                else "low"
+            )
+            visibility = (
+                "internal"
+                if fact["internal_memory_tool"]
+                else "untrusted"
+                if fact["untrusted_tool"]
+                else "automated"
+                if AUTOMATED_TEST_PATTERN.search(fact["statement"])
+                else "interaction"
+                if QUERY_ONLY_PATTERN.search(fact["statement"])
+                else "normal"
+            )
             nodes.append(
                 {
                     "data": {
                         "id": f"fact:{fact['id']}",
                         "record_id": str(fact["id"]),
-                        "label": fact["statement"],
+                        "label": redact_text(fact["statement"]).text,
                         "kind": "fact",
                         "fact_type": fact["fact_type"],
                         "state": fact["memory_state"],
                         "source_profile": fact["source_profile"],
+                        "confidence": f"{float(fact['confidence']):.2f}",
+                        "evidence_count": str(evidence_count),
+                        "updated_at": fact["updated_at"].isoformat(),
+                        "extraction_method": fact["extraction_method"],
+                        "extraction_version": fact["extraction_version"],
+                        "model_name": fact["model_name"] or "",
+                        "activity": activity,
+                        "sensitivity": "redacted" if fact["sensitive"] else "normal",
+                        "visibility": visibility,
                     }
                 }
             )
         cursor.execute(
-            """SELECT fact_id,entity_id FROM memory.fact_entities mfe
+            """SELECT DISTINCT mfe.fact_id,
+                      COALESCE(e.canonical_entity_id,e.id) AS entity_id
+               FROM memory.fact_entities mfe
+               JOIN memory.entities e ON e.id=mfe.entity_id
                JOIN memory.facts f ON f.id=mfe.fact_id WHERE f.namespace_id=%s""",
             (namespace_id,),
         )
@@ -74,6 +159,7 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
                         "source": f"entity:{relation['entity_id']}",
                         "target": f"fact:{relation['fact_id']}",
                         "kind": "evidence",
+                        "strength": f"{fact_strengths.get(relation['fact_id'], 0.45):.2f}",
                     }
                 }
             )
@@ -82,8 +168,10 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
             ("arc", "arcs", "arc_facts", "arc_id"),
         ):
             cursor.execute(
-                f"""SELECT id,entity_id,title,summary,state FROM memory.{table}
-                      WHERE namespace_id=%s""",
+                f"""SELECT d.id,COALESCE(e.canonical_entity_id,e.id) AS entity_id,
+                            d.title,d.summary,d.state
+                     FROM memory.{table} d JOIN memory.entities e ON e.id=d.entity_id
+                     WHERE d.namespace_id=%s""",
                 (namespace_id,),
             )
             for derived in cursor.fetchall():
@@ -92,8 +180,8 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
                         "data": {
                             "id": f"{kind}:{derived['id']}",
                             "record_id": str(derived["id"]),
-                            "label": derived["title"],
-                            "summary": derived["summary"],
+                            "label": redact_text(derived["title"]).text,
+                            "summary": redact_text(derived["summary"]).text,
                             "kind": kind,
                             "state": derived["state"],
                         }
@@ -106,6 +194,7 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
                             "source": f"entity:{derived['entity_id']}",
                             "target": f"{kind}:{derived['id']}",
                             "kind": "derived",
+                            "strength": "0.72",
                         }
                     }
                 )
@@ -123,6 +212,9 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
                             "source": f"{kind}:{link['derived_id']}",
                             "target": f"fact:{link['fact_id']}",
                             "kind": "derived",
+                            "strength": (
+                                f"{max(0.55, fact_strengths.get(link['fact_id'], 0.55)):.2f}"
+                            ),
                         }
                     }
                 )
@@ -140,10 +232,11 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
                         "data": {
                             "id": f"vault:{item['id']}",
                             "record_id": str(item["id"]),
-                            "label": item["display_label"],
-                            "hint": item["redacted_hint"],
+                            "label": redact_text(item["display_label"]).text,
+                            "hint": redact_text(item["redacted_hint"]).text,
                             "kind": "vault",
                             "state": item["status"],
+                            "sensitivity": "protected",
                         }
                     }
                 )
@@ -156,6 +249,7 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
                             "source": f"vault:{item['id']}",
                             "target": f"{item['target_type']}:{item['target_id']}",
                             "kind": "protected",
+                            "strength": "0.88",
                         }
                     }
                 )

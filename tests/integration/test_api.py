@@ -1,3 +1,4 @@
+import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -17,13 +18,21 @@ pytestmark = [
 
 API_URL = os.getenv("AGENT_MEMORY_TEST_API_URL", "http://127.0.0.1:7788")
 TOKEN = os.getenv("AGENT_MEMORY_SERVICE_TOKEN", "replace-with-a-long-random-token")
+TEST_NAMESPACE = os.getenv("AGENT_MEMORY_TEST_NAMESPACE", "hermes:automated-api-tests")
 CANARY = "integration-secret-value"
 RUN_ID = uuid4().hex[:12]
+
+if os.getenv("AGENT_MEMORY_INTEGRATION") == "1" and not TEST_NAMESPACE.startswith(
+    "hermes:automated-tests"
+):
+    raise RuntimeError(
+        "Integration tests refuse non-automated namespaces; use hermes:automated-tests"
+    )
 
 
 def context(profile: str, turn: str) -> dict:
     return {
-        "shared_namespace": "hermes:user-primary",
+        "shared_namespace": TEST_NAMESPACE,
         "source_profile": profile,
         "source_instance": "integration-test",
         "external_session_id": f"session-{profile}",
@@ -53,6 +62,15 @@ def recall(query: str, profile: str = "default", intent: str = "conversation") -
     )
     response.raise_for_status()
     return response.json()
+
+
+def get(path: str, params: dict) -> httpx.Response:
+    return httpx.get(
+        API_URL + path,
+        params=params,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        timeout=10,
+    )
 
 
 def test_ingest_is_idempotent_redacted_and_cross_profile_recallable():
@@ -87,6 +105,7 @@ def test_ingest_is_idempotent_redacted_and_cross_profile_recallable():
                 {
                     "type": "tool_result",
                     "sequence": 1,
+                    "tool_name": "health_probe",
                     "content": f"service:{service_marker} health check passed",
                 }
             ],
@@ -123,6 +142,257 @@ def test_authentication_and_namespace_are_enforced():
     }
     denied = post("/api/v1/recall", payload)
     assert denied.status_code == 403
+
+
+def test_entity_merge_unmerge_and_split_are_reversible_and_namespace_scoped():
+    source_name = f"EntitySource-{RUN_ID}"
+    target_name = f"EntityTarget-{RUN_ID}"
+    split_name = f"EntitySplit-{RUN_ID}"
+
+    def ingest_project(name: str, suffix: str) -> None:
+        response = post(
+            "/api/v1/ingest/turn",
+            {
+                "context": context("entity-governance", f"entity-{suffix}-{RUN_ID}"),
+                "idempotency_key": f"entity-governance-{suffix}-{RUN_ID}",
+                "occurred_at": datetime.now(UTC).isoformat(),
+                "events": [{
+                    "type": "user_message",
+                    "sequence": 1,
+                    "content": f"project:{name} decision {suffix} is confirmed",
+                }],
+            },
+        )
+        response.raise_for_status()
+
+    ingest_project(source_name, "alpha")
+    ingest_project(source_name, "beta")
+    ingest_project(target_name, "target")
+
+    graph = None
+    for _ in range(40):
+        response = get("/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE})
+        response.raise_for_status()
+        graph = response.json()
+        labels = {node["data"].get("label") for node in graph["nodes"]}
+        if {source_name, target_name}.issubset(labels):
+            break
+        time.sleep(0.25)
+    else:
+        pytest.fail("worker did not create entity governance fixtures")
+
+    entities = {
+        node["data"]["label"]: node["data"]
+        for node in graph["nodes"]
+        if node["data"].get("kind") == "entity"
+    }
+    source = entities[source_name]
+    target = entities[target_name]
+    source_fact_ids = {
+        edge["data"]["target"].removeprefix("fact:")
+        for edge in graph["edges"]
+        if edge["data"].get("source") == source["id"]
+        and edge["data"].get("kind") == "evidence"
+    }
+    assert len(source_fact_ids) == 2
+
+    merge = post(
+        f"/api/v1/entities/{source['record_id']}/merge",
+        {
+            "context": context("entity-governance", f"merge-{RUN_ID}"),
+            "target_entity_id": target["record_id"],
+            "reason": "Integration test reversible entity merge",
+        },
+    )
+    merge.raise_for_status()
+    assert merge.json()["state"] == "merged"
+    assert merge.json()["canonical_entity_id"] == target["record_id"]
+
+    merged_graph = get(
+        "/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}
+    ).json()
+    merged_entities = {
+        node["data"]["label"]: node["data"]
+        for node in merged_graph["nodes"]
+        if node["data"].get("kind") == "entity"
+    }
+    assert source_name not in merged_entities
+    aliases = json.loads(merged_entities[target_name]["merged_aliases"])
+    assert {alias["name"] for alias in aliases} >= {source_name}
+    target_fact_ids = {
+        edge["data"]["target"].removeprefix("fact:")
+        for edge in merged_graph["edges"]
+        if edge["data"].get("source") == target["id"]
+        and edge["data"].get("kind") == "evidence"
+    }
+    assert source_fact_ids <= target_fact_ids
+    assert any(source_name in item["text"] for item in recall(target_name)["items"])
+
+    unmerge = post(
+        f"/api/v1/entities/{source['record_id']}/unmerge",
+        {
+            "context": context("entity-governance", f"unmerge-{RUN_ID}"),
+            "reason": "Integration test undo entity merge",
+        },
+    )
+    unmerge.raise_for_status()
+    assert unmerge.json()["state"] == "active"
+
+    split_fact_id = sorted(source_fact_ids)[0]
+    split = post(
+        f"/api/v1/entities/{source['record_id']}/split",
+        {
+            "context": context("entity-governance", f"split-{RUN_ID}"),
+            "canonical_name": split_name,
+            "entity_type": "project",
+            "fact_ids": [split_fact_id],
+            "reason": "Integration test selective entity split",
+        },
+    )
+    split.raise_for_status()
+    assert split.json()["affected_fact_count"] == 1
+    assert split.json()["created_entity_id"]
+
+    split_graph = get("/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}).json()
+    split_entity_node = next(
+        node["data"] for node in split_graph["nodes"]
+        if node["data"].get("label") == split_name
+    )
+    assert any(
+        edge["data"].get("source") == split_entity_node["id"]
+        and edge["data"].get("target") == f"fact:{split_fact_id}"
+        for edge in split_graph["edges"]
+    )
+
+    attached = post(
+        f"/api/v1/entities/{target['record_id']}/facts/{split_fact_id}/attach",
+        {
+            "context": context("entity-governance", f"relation-attach-{RUN_ID}"),
+            "reason": "Integration test manual relation attachment",
+        },
+    )
+    attached.raise_for_status()
+    assert attached.json()["state"] == "attached"
+    assert any(
+        edge["data"].get("source") == target["id"]
+        and edge["data"].get("target") == f"fact:{split_fact_id}"
+        for edge in get(
+            "/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}
+        ).json()["edges"]
+    )
+    detached = post(
+        f"/api/v1/entities/{target['record_id']}/facts/{split_fact_id}/detach",
+        {
+            "context": context("entity-governance", f"relation-detach-{RUN_ID}"),
+            "reason": "Integration test manual relation detachment",
+        },
+    )
+    detached.raise_for_status()
+    assert detached.json()["state"] == "detached"
+    assert not any(
+        edge["data"].get("source") == target["id"]
+        and edge["data"].get("target") == f"fact:{split_fact_id}"
+        for edge in get(
+            "/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}
+        ).json()["edges"]
+    )
+
+    denied = post(
+        f"/api/v1/entities/{source['record_id']}/merge",
+        {
+            "context": {
+                **context("entity-governance", f"wrong-namespace-{RUN_ID}"),
+                "shared_namespace": "hermes:wrong",
+            },
+            "target_entity_id": target["record_id"],
+            "reason": "Must be denied",
+        },
+    )
+    assert denied.status_code == 403
+
+
+def test_quality_report_is_aggregate_only_and_never_auto_promotes():
+    response = get(
+        "/api/v1/reports/quality", {"shared_namespace": TEST_NAMESPACE}
+    )
+    response.raise_for_status()
+    report = response.json()
+    assert report["namespace"] == TEST_NAMESPACE
+    assert report["promotion_ready"] is False
+    assert report["manual_review_required"] is True
+    assert report["metrics"]["facts"] >= 1
+    assert report["metrics"]["traceable_facts"] == report["metrics"]["facts"]
+    assert report["metrics"]["raw_sensitive_facts"] == 0
+    assert set(report["gates"]) >= {
+        "evidence_traceability",
+        "model_atomic_coverage",
+        "atomic_span_integrity",
+    }
+    serialized = json.dumps(report)
+    assert "redacted_payload" not in serialized
+    assert "statement" not in serialized
+
+    denied = get(
+        "/api/v1/reports/quality", {"shared_namespace": "hermes:wrong"}
+    )
+    assert denied.status_code == 403
+
+
+def test_review_queue_is_paginated_filterable_and_namespace_scoped():
+    profile = f"review-{RUN_ID}"
+    marker = f"ReviewQueue-{RUN_ID}"
+    response = post(
+        "/api/v1/ingest/turn",
+        {
+            "context": context(profile, f"review-turn-{RUN_ID}"),
+            "idempotency_key": f"review-queue-{RUN_ID}",
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "events": [
+                {
+                    "type": "user_message",
+                    "sequence": index,
+                    "content": f"{marker} candidate item {index}",
+                }
+                for index in range(7)
+            ],
+        },
+    )
+    response.raise_for_status()
+    parameters = {
+        "shared_namespace": TEST_NAMESPACE,
+        "reason": "candidate",
+        "source_profile": profile,
+        "limit": 3,
+    }
+    for _ in range(60):
+        first_page = get("/api/v1/memories/review", {**parameters, "offset": 0})
+        first_page.raise_for_status()
+        if first_page.json()["total"] >= 7:
+            break
+        time.sleep(0.25)
+    else:
+        pytest.fail("review queue did not project candidate facts")
+    second_page = get("/api/v1/memories/review", {**parameters, "offset": 3})
+    second_page.raise_for_status()
+    first = first_page.json()
+    second = second_page.json()
+    assert first["limit"] == 3 and first["offset"] == 0
+    assert second["offset"] == 3
+    assert profile in first["profiles"]
+    assert all("candidate" in item["review_reasons"] for item in first["items"])
+    assert {item["memory_id"] for item in first["items"]}.isdisjoint(
+        {item["memory_id"] for item in second["items"]}
+    )
+    denied = get(
+        "/api/v1/memories/review",
+        {"shared_namespace": "other", "limit": 3, "offset": 0},
+    )
+    assert denied.status_code == 403
+    invalid = get(
+        "/api/v1/memories/review",
+        {"shared_namespace": TEST_NAMESPACE, "limit": 201, "offset": 0},
+    )
+    assert invalid.status_code == 422
 
 
 def test_concurrent_duplicate_turn_has_one_winner():
@@ -181,7 +451,7 @@ def test_trace_correction_forget_and_isolate_semantics():
 
     trace = httpx.get(
         f"{API_URL}/api/v1/memory/{original['memory_id']}/trace",
-        params={"shared_namespace": "hermes:user-primary"},
+        params={"shared_namespace": TEST_NAMESPACE},
         headers={"Authorization": f"Bearer {TOKEN}"},
     )
     trace.raise_for_status()
@@ -235,6 +505,7 @@ def test_trace_correction_forget_and_isolate_semantics():
 
 def test_vault_requires_explicit_scoped_grant_and_supports_revocation():
     secret = f"vault-secret-{RUN_ID}"
+    replacement_secret = f"vault-secret-replaced-{RUN_ID}"
     linked_marker = f"vault-linked-memory-{RUN_ID}"
     linked_ingest = post(
         "/api/v1/ingest/turn",
@@ -247,7 +518,9 @@ def test_vault_requires_explicit_scoped_grant_and_supports_revocation():
     )
     linked_ingest.raise_for_status()
     linked_memory = wait_for_memory(linked_marker)
-    created = post(
+    ui = httpx.Client(base_url=API_URL)
+    ui.post("/api/v1/ui/login", json={"password": "change-me"}).raise_for_status()
+    bearer_management_denied = post(
         "/api/v1/vault/entries",
         {
             "context": context("user", f"vault-create-{RUN_ID}"),
@@ -258,13 +531,25 @@ def test_vault_requires_explicit_scoped_grant_and_supports_revocation():
             "linked_memory_id": linked_memory["memory_id"],
         },
     )
+    assert bearer_management_denied.status_code == 401
+    assert bearer_management_denied.json()["detail"] == "UI_SESSION_REQUIRED"
+    created = ui.post(
+        "/api/v1/vault/entries",
+        json={
+            "context": context("user", f"vault-create-ui-{RUN_ID}"),
+            "kind": "credential",
+            "display_label": f"Integration credential {RUN_ID}",
+            "redacted_hint": f"token …{RUN_ID[-4:]}",
+            "secret_value": secret,
+            "linked_memory_id": linked_memory["memory_id"],
+        },
+    )
     created.raise_for_status()
     entry_id = created.json()["entry_id"]
 
-    listed = httpx.get(
-        f"{API_URL}/api/v1/vault/entries",
-        params={"shared_namespace": "hermes:user-primary"},
-        headers={"Authorization": f"Bearer {TOKEN}"},
+    listed = ui.get(
+        "/api/v1/vault/entries",
+        params={"shared_namespace": TEST_NAMESPACE},
     )
     listed.raise_for_status()
     summary = next(item for item in listed.json() if item["id"] == entry_id)
@@ -273,7 +558,7 @@ def test_vault_requires_explicit_scoped_grant_and_supports_revocation():
 
     graph = httpx.get(
         f"{API_URL}/api/v1/graph/subgraph",
-        params={"shared_namespace": "hermes:user-primary"},
+        params={"shared_namespace": TEST_NAMESPACE},
         headers={"Authorization": f"Bearer {TOKEN}"},
     )
     graph.raise_for_status()
@@ -293,9 +578,10 @@ def test_vault_requires_explicit_scoped_grant_and_supports_revocation():
     assert denied.status_code == 403
     assert denied.json()["detail"] == "VAULT_GRANT_REQUIRED"
 
-    grant = post(
+    assert ui.post("/api/v1/vault/requests", json=request_payload).status_code == 401
+    grant = ui.post(
         f"/api/v1/vault/entries/{entry_id}/grants",
-        {
+        json={
             "context": context("user", f"vault-grant-{RUN_ID}"),
             "operation": "reveal_to_model",
             "target_profile": "coding",
@@ -306,10 +592,9 @@ def test_vault_requires_explicit_scoped_grant_and_supports_revocation():
     grant.raise_for_status()
     grant_id = grant.json()["grant_id"]
 
-    active_grants = httpx.get(
-        f"{API_URL}/api/v1/vault/grants",
-        params={"shared_namespace": "hermes:user-primary"},
-        headers={"Authorization": f"Bearer {TOKEN}"},
+    active_grants = ui.get(
+        "/api/v1/vault/grants",
+        params={"shared_namespace": TEST_NAMESPACE},
     )
     active_grants.raise_for_status()
     assert any(
@@ -328,21 +613,105 @@ def test_vault_requires_explicit_scoped_grant_and_supports_revocation():
     assert allowed.json()["secret_value"] == secret
     assert allowed.json()["grant_id"] == grant_id
 
-    revoked = post(
+    revoked = ui.post(
         f"/api/v1/vault/grants/{grant_id}/revoke",
-        {
+        json={
             "context": context("user", f"vault-revoke-{RUN_ID}"),
             "reason": "integration revoke",
         },
     )
     revoked.raise_for_status()
     assert post("/api/v1/vault/requests", request_payload).status_code == 403
-    remaining_grants = httpx.get(
-        f"{API_URL}/api/v1/vault/grants",
-        params={"shared_namespace": "hermes:user-primary"},
-        headers={"Authorization": f"Bearer {TOKEN}"},
+    remaining_grants = ui.get(
+        "/api/v1/vault/grants",
+        params={"shared_namespace": TEST_NAMESPACE},
     )
     assert all(item["id"] != grant_id for item in remaining_grants.json())
+
+    wrong_reauth = ui.post(
+        f"/api/v1/vault/entries/{entry_id}/reveal",
+        json={
+            "context": context("user", f"vault-reveal-wrong-{RUN_ID}"),
+            "password": "wrong",
+            "reason": "integration wrong reauthentication",
+        },
+    )
+    assert wrong_reauth.status_code == 401
+    revealed = ui.post(
+        f"/api/v1/vault/entries/{entry_id}/reveal",
+        json={
+            "context": context("user", f"vault-reveal-{RUN_ID}"),
+            "password": "change-me",
+            "reason": "integration manual reveal",
+        },
+    )
+    revealed.raise_for_status()
+    assert revealed.json()["secret_value"] == secret
+    assert revealed.headers["cache-control"] == "no-store"
+
+    updated = ui.patch(
+        f"/api/v1/vault/entries/{entry_id}",
+        json={
+            "context": context("user", f"vault-metadata-{RUN_ID}"),
+            "display_label": f"Updated credential {RUN_ID}",
+            "redacted_hint": f"updated …{RUN_ID[-4:]}",
+            "password": "change-me",
+            "reason": "integration metadata update",
+        },
+    )
+    updated.raise_for_status()
+
+    replaced = ui.post(
+        f"/api/v1/vault/entries/{entry_id}/replace",
+        json={
+            "context": context("user", f"vault-replace-{RUN_ID}"),
+            "secret_value": replacement_secret,
+            "password": "change-me",
+            "reason": "integration secret replacement",
+        },
+    )
+    replaced.raise_for_status()
+    revealed_after_replace = ui.post(
+        f"/api/v1/vault/entries/{entry_id}/reveal",
+        json={
+            "context": context("user", f"vault-reveal-replaced-{RUN_ID}"),
+            "password": "change-me",
+            "reason": "integration verify replacement",
+        },
+    )
+    assert revealed_after_replace.json()["secret_value"] == replacement_secret
+
+    for state in ("disabled", "active"):
+        status_response = ui.post(
+            f"/api/v1/vault/entries/{entry_id}/status",
+            json={
+                "context": context("user", f"vault-status-{state}-{RUN_ID}"),
+                "status": state,
+                "password": "change-me",
+                "reason": f"integration set {state}",
+            },
+        )
+        status_response.raise_for_status()
+        assert status_response.json()["state"] == state
+
+    deleted = ui.post(
+        f"/api/v1/vault/entries/{entry_id}/delete",
+        json={
+            "context": context("user", f"vault-delete-{RUN_ID}"),
+            "confirm_entry_id": entry_id,
+            "password": "change-me",
+            "reason": "integration permanent deletion",
+        },
+    )
+    deleted.raise_for_status()
+    assert all(
+        item["id"] != entry_id
+        for item in ui.get(
+            "/api/v1/vault/entries", params={"shared_namespace": TEST_NAMESPACE}
+        ).json()
+    )
+    assert post("/api/v1/vault/requests", request_payload).status_code == 403
+    ui.close()
 
 
 def test_ui_login_uses_http_only_cookie_for_graph_access():
@@ -355,7 +724,7 @@ def test_ui_login_uses_http_only_cookie_for_graph_access():
         assert "HttpOnly" in cookie and "SameSite=strict" in cookie
         graph = client.get(
             "/api/v1/graph/subgraph",
-            params={"shared_namespace": "hermes:user-primary"},
+            params={"shared_namespace": TEST_NAMESPACE},
         )
         graph.raise_for_status()
         assert graph.json()["nodes"]
@@ -380,6 +749,7 @@ def test_lifecycle_state_continuity_and_report_are_available():
                 {
                     "type": "tool_result",
                     "sequence": 2,
+                    "tool_name": "health_probe",
                     "content": f"今天上海天气有雨 {weather_marker}",
                 },
                 {
@@ -396,12 +766,12 @@ def test_lifecycle_state_continuity_and_report_are_available():
     for _ in range(40):
         status = httpx.get(
             f"{API_URL}/api/v1/state",
-            params={"shared_namespace": "hermes:user-primary"},
+            params={"shared_namespace": TEST_NAMESPACE},
             headers=headers,
         )
         reports = httpx.get(
             f"{API_URL}/api/v1/reports/consolidation",
-            params={"shared_namespace": "hermes:user-primary"},
+            params={"shared_namespace": TEST_NAMESPACE},
             headers=headers,
         )
         current_items = status.json().get("current_items") or []
@@ -471,7 +841,7 @@ def test_lifecycle_state_continuity_and_report_are_available():
     assert configured.json()["drift_hours"] == 48
     before_simulation = httpx.get(
         f"{API_URL}/api/v1/state",
-        params={"shared_namespace": "hermes:user-primary"},
+        params={"shared_namespace": TEST_NAMESPACE},
         headers=headers,
     ).json()["interaction"]["calculated_at"]
     simulated = post(
@@ -486,7 +856,7 @@ def test_lifecycle_state_continuity_and_report_are_available():
     assert simulated.json()["axes"]["arousal"] > 0.3
     after_simulation = httpx.get(
         f"{API_URL}/api/v1/state",
-        params={"shared_namespace": "hermes:user-primary"},
+        params={"shared_namespace": TEST_NAMESPACE},
         headers=headers,
     ).json()["interaction"]["calculated_at"]
     assert after_simulation == before_simulation
@@ -573,7 +943,7 @@ def test_permanent_purge_requires_confirmation_and_physically_removes_memory():
     for _ in range(40):
         traced = httpx.get(
             f"{API_URL}/api/v1/memory/{memory['memory_id']}/trace",
-            params={"shared_namespace": "hermes:user-primary"},
+            params={"shared_namespace": TEST_NAMESPACE},
             headers=headers,
         )
         if traced.status_code == 404:
@@ -620,7 +990,7 @@ def test_evidence_linked_episode_and_arc_rebuild_after_correction():
     for _ in range(60):
         graph = httpx.get(
             graph_url,
-            params={"shared_namespace": "hermes:user-primary"},
+            params={"shared_namespace": TEST_NAMESPACE},
             headers=headers,
         )
         derived_kinds = {
@@ -633,6 +1003,12 @@ def test_evidence_linked_episode_and_arc_rebuild_after_correction():
         time.sleep(0.25)
     else:
         pytest.fail("episode and arc were not consolidated")
+    entity_node = next(
+        node
+        for node in graph.json()["nodes"]
+        if node["data"]["kind"] == "entity" and node["data"]["label"] == entity
+    )
+    assert entity_node["data"]["visibility"] == "automated"
 
     for _ in range(40):
         derived_recall = recall(entity)
@@ -648,7 +1024,7 @@ def test_evidence_linked_episode_and_arc_rebuild_after_correction():
     assert all(item["source_profile"] == "derived" for item in derived_items)
     derived_trace = httpx.get(
         f"{API_URL}/api/v1/memory/{derived_items[0]['memory_id']}/trace",
-        params={"shared_namespace": "hermes:user-primary"},
+        params={"shared_namespace": TEST_NAMESPACE},
         headers=headers,
     )
     derived_trace.raise_for_status()
@@ -667,7 +1043,7 @@ def test_evidence_linked_episode_and_arc_rebuild_after_correction():
     for _ in range(60):
         graph = httpx.get(
             graph_url,
-            params={"shared_namespace": "hermes:user-primary"},
+            params={"shared_namespace": TEST_NAMESPACE},
             headers=headers,
         )
         matching_episodes = [

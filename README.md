@@ -42,6 +42,33 @@ python3 scripts/hermes-plugin.py uninstall --hermes-home "${HERMES_HOME:-$HOME/.
 
 脚本只覆盖带 `.agent-memory-managed` 标记的插件目录，不会删除同名非托管目录。完整说明见 [`integrations/hermes/README.md`](integrations/hermes/README.md)。
 
+### 导入既有 Hermes 对话
+
+历史效果验收优先使用 Hermes 官方完整 JSONL 导出；Markdown、仅用户提示词和 trace
+格式不作为记忆证据导入。先由 Hermes 强制脱敏并在本地预览清单：
+
+```bash
+hermes sessions export data/imports/raw/hermes.jsonl \
+  --format jsonl --redact --newer-than 30d --min-messages 2
+uv run agent-memory-import-hermes data/imports/raw/hermes.jsonl \
+  --profile personal
+```
+
+预览只输出会话、回合、事件、时间范围、敏感命中数和 SHA-256，不输出对话正文。
+确认后按需启动隔离的导入 API/worker，并使用预览中的 SHA-256 执行：
+
+```bash
+docker compose --env-file .env --profile import up -d import-api import-worker
+set -a; source .env; set +a
+uv run agent-memory-import-hermes data/imports/raw/hermes.jsonl \
+  --profile personal --apply --confirm-sha256 '<preview-sha256>'
+docker compose --env-file .env --profile import stop import-api import-worker
+```
+
+暂存星图位于 `http://127.0.0.1:7790/`，不会出现在主命名空间。只有暂存质量通过后，
+才允许把同一份已确认文件显式导入 `hermes:user-primary`；完整边界、失败恢复和验收项见
+[`docs/V1.0-Hermes历史对话导入设计.md`](docs/V1.0-Hermes历史对话导入设计.md)。
+
 ## 配置与模型
 
 保留、休眠、忘记、当前事实 TTL、报告周期、端口和 worker 租约均在 `.env` 配置，默认值及含义见 [`docs/V1.0-运行与配置设计.md`](docs/V1.0-运行与配置设计.md)。互动状态的轴名称、范围、初始值、启停、漂移、阈值和 profile override 在星图“当前状态”页面持久化管理。
@@ -55,7 +82,8 @@ AGENT_MEMORY_MODEL_API_BASE=http://your-local-endpoint/v1
 AGENT_MEMORY_MODEL_API_KEY=your-key
 ```
 
-模型配置和 API key 只注入 worker；证据先脱敏再进入任何模型请求。
+启用后，核心 worker 先完成不依赖模型的确定性投影，独立 model-worker 再异步验证候选；
+API key 只注入 model-worker，证据先脱敏再进入任何模型请求。
 
 ## 升级
 
@@ -71,6 +99,25 @@ curl --fail http://127.0.0.1:7788/health/ready
 
 `migrate` 容器必须成功退出后 API/worker 才会启动。不要修改已经执行过的迁移文件，也不要跳过版本升级路径。
 
+### 历史派生记忆敏感值净化
+
+质量报告若显示 `raw_sensitive_facts > 0`，先备份，再执行只读预览。预览只输出数量、规则类型和
+确认 SHA，不输出记忆正文：
+
+```bash
+docker compose --env-file .env run --rm --no-deps api agent-memory-sanitize-derived
+```
+
+核对备份和预览后，使用当次输出的 SHA 二次确认。源 evidence 不修改；事实、情节、脉络和检索投影
+仅替换敏感片段，写入安全审计并触发派生层重建：
+
+```bash
+docker compose --env-file .env run --rm --no-deps api \
+  agent-memory-sanitize-derived --apply --confirm-sha256 '<preview-sha256>'
+```
+
+预览与执行之间数据变化会使 SHA 失效，必须重新预览。该命令只允许处理当前容器配置的 namespace。
+
 ## 备份与恢复验证
 
 ```bash
@@ -81,6 +128,14 @@ bash scripts/verify-restore.sh "$backup_dir" .env
 备份包含 PostgreSQL 自包含 dump、Compose、运行配置、锁文件、版本和校验和。`secrets/vault_root_key` 必须通过独立安全介质保存，不能只放在数据库备份旁；丢失后 Vault 密文不可恢复。恢复脚本会创建临时空数据库，比较 evidence、fact、episode、arc、job、Vault、状态和报告计数，并实际解密 Vault 后自动清理临时库。
 
 ## 测试与发布检查
+
+自动 API、真实 Hermes Provider 和 Worker 停机回归必须通过
+`scripts/verify-isolated-regression.sh` 使用 `127.0.0.1:7789` 与
+`hermes:automated-tests`。测试代码和故障脚本会拒绝
+`hermes:user-primary` 等非自动化 namespace；普通单元测试不会连接真实 Provider。
+历史自动化记录默认不进入星图投影，但可通过“显示测试、内部与低价值问询记录”查看。
+合成数据仍用于幂等、安全和故障回归；真实脱敏 Hermes 历史用于分类、关联、召回和星图效果验收，
+两者不能互相替代。
 
 开发回归：
 

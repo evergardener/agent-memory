@@ -11,6 +11,7 @@ from agent.memory_provider import MemoryProvider
 from .client import AgentMemoryHttpClient, ApiResponseError, ApiUnavailable
 
 logger = logging.getLogger(__name__)
+INTERNAL_MEMORY_TOOL_PREFIX = "agent_memory_"
 
 
 class AgentMemoryProvider(MemoryProvider):
@@ -108,9 +109,13 @@ class AgentMemoryProvider(MemoryProvider):
             sources = ",".join(item.get("source_ids") or [])
             lines.append(
                 f"- {item.get('text', '')} "
-                f"(memory: {item.get('memory_id')}, sources: {sources}, "
+                f"(memory: {item.get('memory_id')}, evidence_ids: {sources}, "
                 f"profile: {item.get('source_profile')})"
             )
+        lines.append(
+            "Evidence IDs identify Agent Memory evidence events, not Hermes session IDs. "
+            "Use agent_memory_trace_source with the memory ID to obtain session metadata."
+        )
         return "\n".join(lines)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -132,6 +137,9 @@ class AgentMemoryProvider(MemoryProvider):
         for message in messages or []:
             for tool_call in message.get("tool_calls") or []:
                 function = tool_call.get("function") or {}
+                tool_name = str(function.get("name") or "unknown")
+                if tool_name.startswith(INTERNAL_MEMORY_TOOL_PREFIX):
+                    continue
                 raw_arguments = function.get("arguments") or {}
                 try:
                     arguments = (
@@ -146,18 +154,21 @@ class AgentMemoryProvider(MemoryProvider):
                         "type": "tool_call",
                         "sequence": sequence,
                         "content": "",
-                        "tool_name": str(function.get("name") or "unknown"),
+                        "tool_name": tool_name,
                         "arguments": arguments,
                     }
                 )
                 sequence += 1
             if message.get("role") == "tool":
+                tool_name = str(message.get("name") or "unknown")
+                if tool_name.startswith(INTERNAL_MEMORY_TOOL_PREFIX):
+                    continue
                 events.append(
                     {
                         "type": "tool_result",
                         "sequence": sequence,
                         "content": str(message.get("content") or ""),
-                        "tool_name": str(message.get("name") or "unknown"),
+                        "tool_name": tool_name,
                     }
                 )
                 sequence += 1
@@ -189,7 +200,10 @@ class AgentMemoryProvider(MemoryProvider):
             },
             {
                 "name": "agent_memory_trace_source",
-                "description": "Trace a recalled memory to its redacted source evidence.",
+                "description": (
+                    "Trace a recalled memory to redacted evidence and its Hermes session metadata. "
+                    "Recall evidence IDs are Agent Memory event IDs, not Hermes session IDs."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {"memory_id": {"type": "string"}},

@@ -3,10 +3,18 @@ set -euo pipefail
 
 ENV_FILE="${1:-.env}"
 COMPOSE=(docker compose --env-file "$ENV_FILE")
+set -a
+source "$ENV_FILE"
+set +a
+primary_namespace="${AGENT_MEMORY_NAMESPACE:-hermes:user-primary}"
+primary_namespace_sql="${primary_namespace//\'/\'\'}"
 
 job_id="$("${COMPOSE[@]}" exec -T postgres psql -U agent_memory -d agent_memory -qAtc "
 WITH source AS (
-  SELECT namespace_id,id AS event_id FROM evidence.events ORDER BY created_at DESC LIMIT 1
+  SELECT e.namespace_id,e.id AS event_id
+  FROM evidence.events e JOIN core.namespaces n ON n.id=e.namespace_id
+  WHERE n.stable_key='$primary_namespace_sql'
+  ORDER BY e.created_at DESC LIMIT 1
 )
 INSERT INTO ops.jobs(
   id,namespace_id,kind,idempotency_key,input_ref,status,lease_until,attempt_count

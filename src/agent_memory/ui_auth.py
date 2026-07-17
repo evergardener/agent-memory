@@ -79,3 +79,19 @@ def require_api_access(request: Request, authorization: str | None = Header(defa
     if session and verify_session(session, settings.ui_session_secret.get_secret_value()):
         return
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="UNAUTHENTICATED")
+
+
+def require_service_access(authorization: str | None = Header(default=None)) -> None:
+    settings = get_settings()
+    expected = f"Bearer {settings.service_token.get_secret_value()}"
+    if authorization is not None and hmac.compare_digest(authorization, expected):
+        return
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="SERVICE_TOKEN_REQUIRED")
+
+
+def require_ui_session(request: Request) -> None:
+    settings = get_settings()
+    session = request.cookies.get(COOKIE_NAME, "")
+    if session and verify_session(session, settings.ui_session_secret.get_secret_value()):
+        return
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="UI_SESSION_REQUIRED")
