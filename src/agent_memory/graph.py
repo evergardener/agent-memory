@@ -12,10 +12,17 @@ from .redaction import redact_text
 
 AUTOMATED_TEST_PATTERN = re.compile(
     r"(?:AutomatedUAT-|ModelOutageUAT-|worker-outage-|Nebula-[0-9a-f]{12}|"
-    r"(?:derived|lifecycle)-[0-9a-f]{12}|Live provider [0-9a-f]{12}|"
-    r"Integration credential [0-9a-f]{12}|(?:relay|postgres|weather-current)-[0-9a-f]{12})",
+    r"(?:agent-memory|derived|lifecycle|purge-target)-[0-9a-f]{12}|"
+    r"Live provider [0-9a-f]{12}|Integration credential [0-9a-f]{12}|"
+    r"(?:relay|postgres|weather-current)-[0-9a-f]{12}|"
+    r"(?:SplitWorkerProbe|ModelProbe)-\d{14}|outage-relay|"
+    r"Aurora-UAT(?:-\d+-[A-Z])?|aurora-uat|[A-Z]+-UAT-READY)",
     re.IGNORECASE,
 )
+
+
+def node_visibility(label: str, *, automated_source: bool = False) -> str:
+    return "automated" if automated_source or AUTOMATED_TEST_PATTERN.search(label) else "normal"
 
 
 def load_graph(connection: Connection, namespace_key: str) -> dict:
@@ -36,9 +43,25 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
             }
         }
     ]
+    entity_visibility: dict[UUID, str] = {}
     with connection.cursor(row_factory=dict_row) as cursor:
         cursor.execute(
             """SELECT e.id,e.canonical_name,e.entity_type,e.merge_state,
+                      EXISTS (
+                        SELECT 1
+                        FROM memory.fact_entities source_fe
+                        JOIN memory.fact_evidence source_fev
+                          ON source_fev.fact_id=source_fe.fact_id
+                        JOIN evidence.events source_event
+                          ON source_event.id=source_fev.event_id
+                        JOIN core.turns source_turn ON source_turn.id=source_event.turn_id
+                        JOIN core.sessions source_session
+                          ON source_session.id=source_turn.session_id
+                        JOIN core.sources source
+                          ON source.id=source_session.source_id
+                        WHERE source_fe.entity_id=e.id
+                          AND source.source_instance='integration-test'
+                      ) AS automated_source,
                       COALESCE(
                         jsonb_agg(jsonb_build_object('id',a.id,'name',a.canonical_name)
                                   ORDER BY a.canonical_name)
@@ -51,11 +74,11 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
             (namespace_id,),
         )
         for entity in cursor.fetchall():
-            visibility = (
-                "automated"
-                if AUTOMATED_TEST_PATTERN.search(entity["canonical_name"])
-                else "normal"
+            visibility = node_visibility(
+                entity["canonical_name"],
+                automated_source=bool(entity["automated_source"]),
             )
+            entity_visibility[entity["id"]] = visibility
             nodes.append(
                 {
                     "data": {
@@ -86,10 +109,15 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
                         NOT (lower(COALESCE(e.redacted_payload->>'tool_name','')) = ANY(%s))
                       ),false) AS untrusted_tool,
                       COALESCE(bool_or(rf.event_id IS NOT NULL),false) AS sensitive
+                      ,COALESCE(bool_or(s.source_instance='integration-test'),false)
+                        AS automated_source
                FROM memory.facts f
                LEFT JOIN memory.fact_evidence fe ON fe.fact_id=f.id
                LEFT JOIN evidence.events e ON e.id=fe.event_id
                LEFT JOIN evidence.redaction_findings rf ON rf.event_id=e.id
+               LEFT JOIN core.turns t ON t.id=e.turn_id
+               LEFT JOIN core.sessions se ON se.id=t.session_id
+               LEFT JOIN core.sources s ON s.id=se.source_id
                WHERE f.namespace_id=%s AND f.memory_state <> 'purge_requested'
                GROUP BY f.id
                ORDER BY f.updated_at DESC LIMIT 500""",
@@ -116,7 +144,10 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
                 else "untrusted"
                 if fact["untrusted_tool"]
                 else "automated"
-                if AUTOMATED_TEST_PATTERN.search(fact["statement"])
+                if node_visibility(
+                    fact["statement"],
+                    automated_source=bool(fact["automated_source"]),
+                ) == "automated"
                 else "interaction"
                 if QUERY_ONLY_PATTERN.search(fact["statement"])
                 else "normal"
@@ -175,6 +206,12 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
                 (namespace_id,),
             )
             for derived in cursor.fetchall():
+                visibility = node_visibility(
+                    f"{derived['title']} {derived['summary']}",
+                    automated_source=(
+                        entity_visibility.get(derived["entity_id"]) == "automated"
+                    ),
+                )
                 nodes.append(
                     {
                         "data": {
@@ -184,6 +221,7 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
                             "summary": redact_text(derived["summary"]).text,
                             "kind": kind,
                             "state": derived["state"],
+                            "visibility": visibility,
                         }
                     }
                 )
@@ -237,6 +275,9 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
                             "kind": "vault",
                             "state": item["status"],
                             "sensitivity": "protected",
+                            "visibility": node_visibility(
+                                f"{item['display_label']} {item['redacted_hint']}"
+                            ),
                         }
                     }
                 )
