@@ -8,6 +8,8 @@ def test_internal_integration_identifiers_are_automated_noise() -> None:
     assert node_visibility("ModelProbe-20260714141137") == "automated"
     assert node_visibility("Aurora-UAT-0714-A") == "automated"
     assert node_visibility("Reply with exactly: OPS-UAT-READY") == "automated"
+    assert node_visibility("relay-20260714T134019Z") == "automated"
+    assert node_visibility("Isolated-20260714T134019Z") == "automated"
 
 
 def test_source_provenance_overrides_readable_label() -> None:

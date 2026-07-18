@@ -15,6 +15,7 @@ AUTOMATED_TEST_PATTERN = re.compile(
     r"(?:agent-memory|derived|lifecycle|purge-target)-[0-9a-f]{12}|"
     r"Live provider [0-9a-f]{12}|Integration credential [0-9a-f]{12}|"
     r"(?:relay|postgres|weather-current)-[0-9a-f]{12}|"
+    r"(?:relay|Isolated)-\d{8}T\d{6}Z|"
     r"(?:SplitWorkerProbe|ModelProbe)-\d{14}|outage-relay|"
     r"Aurora-UAT(?:-\d+-[A-Z])?|aurora-uat|[A-Z]+-UAT-READY)",
     re.IGNORECASE,
@@ -60,7 +61,25 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
                         JOIN core.sources source
                           ON source.id=source_session.source_id
                         WHERE source_fe.entity_id=e.id
-                          AND source.source_instance='integration-test'
+                          AND (
+                            source.source_instance='integration-test'
+                            OR source.source_instance LIKE 'hermes-isolated-%%'
+                          )
+                      ) AND NOT EXISTS (
+                        SELECT 1
+                        FROM memory.fact_entities source_fe
+                        JOIN memory.fact_evidence source_fev
+                          ON source_fev.fact_id=source_fe.fact_id
+                        JOIN evidence.events source_event
+                          ON source_event.id=source_fev.event_id
+                        JOIN core.turns source_turn ON source_turn.id=source_event.turn_id
+                        JOIN core.sessions source_session
+                          ON source_session.id=source_turn.session_id
+                        JOIN core.sources source
+                          ON source.id=source_session.source_id
+                        WHERE source_fe.entity_id=e.id
+                          AND source.source_instance<>'integration-test'
+                          AND source.source_instance NOT LIKE 'hermes-isolated-%%'
                       ) AS automated_source,
                       COALESCE(
                         jsonb_agg(jsonb_build_object('id',a.id,'name',a.canonical_name)
@@ -109,7 +128,10 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
                         NOT (lower(COALESCE(e.redacted_payload->>'tool_name','')) = ANY(%s))
                       ),false) AS untrusted_tool,
                       COALESCE(bool_or(rf.event_id IS NOT NULL),false) AS sensitive
-                      ,COALESCE(bool_or(s.source_instance='integration-test'),false)
+                      ,COALESCE(bool_and(
+                        s.source_instance='integration-test'
+                        OR s.source_instance LIKE 'hermes-isolated-%%'
+                      ) FILTER (WHERE s.id IS NOT NULL),false)
                         AS automated_source
                FROM memory.facts f
                LEFT JOIN memory.fact_evidence fe ON fe.fact_id=f.id
