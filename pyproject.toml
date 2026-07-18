@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-memory"
-version = "1.0.0rc1"
+version = "1.0.0rc2"
 description = "Evidence-first local memory service for Hermes Agent"
 requires-python = ">=3.12"
 dependencies = [
@@ -34,6 +34,7 @@ agent-memory-api = "agent_memory.api:main"
 agent-memory-worker = "agent_memory.worker:main"
 agent-memory-verify-vault = "agent_memory.vault_verify:main"
 agent-memory-import-hermes = "agent_memory.hermes_import:main"
+agent-memory-select-hermes = "agent_memory.hermes_selection:main"
 agent-memory-verify-atomic = "agent_memory.atomic_selftest:main"
 agent-memory-sanitize-derived = "agent_memory.sanitize:main"
 agent-memory-verify-sanitizer = "agent_memory.sanitize_selftest:main"

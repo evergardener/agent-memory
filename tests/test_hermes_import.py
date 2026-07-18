@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from agent_memory.hermes_import import _validate_apply, _write_manifest, plan_import
+from agent_memory.hermes_selection import create_selection, write_selection
 
 
 def write_export(path: Path) -> Path:
@@ -67,9 +68,7 @@ def test_real_hermes_jsonl_shape_plans_idempotent_turns(tmp_path: Path) -> None:
         "tool_result": 1,
     }
     assert first.manifest["potential_sensitive_findings"] == 1
-    assert first.manifest["potential_sensitive_findings_by_kind"] == {
-        "credential_assignment": 1
-    }
+    assert first.manifest["potential_sensitive_findings_by_kind"] == {"credential_assignment": 1}
     assert first.manifest["skipped_messages"] == {
         "system": 1,
         "orphan": 0,
@@ -131,3 +130,47 @@ def test_apply_manifests_are_immutable_per_attempt(tmp_path: Path) -> None:
     assert json.loads(first.read_text())["inserted_turns"] == 2
     assert json.loads(second.read_text())["inserted_turns"] == 0
     assert first.stat().st_mode & 0o777 == 0o600
+
+
+def test_selection_is_deterministic_and_binds_import(tmp_path: Path) -> None:
+    export = write_export(tmp_path / "sessions.jsonl")
+    selection = create_selection(export, count=1, seed="rc2-test")
+    selection_path = write_selection(selection, tmp_path / "private" / "selection.json")
+
+    plan = plan_import(
+        export,
+        namespace="hermes:user-v1-rc2",
+        profile="personal",
+        session_selection=selection_path,
+    )
+
+    assert plan.manifest["source_session_count"] == 1
+    assert plan.manifest["session_count"] == 1
+    assert plan.selection_sha256 == selection["selection_sha256"]
+    assert selection["contains_message_text"] is False
+    assert selection_path.stat().st_mode & 0o777 == 0o600
+
+    with pytest.raises(ValueError, match="selection SHA-256"):
+        _validate_apply(
+            plan,
+            api_url="http://127.0.0.1:7790",
+            confirm_sha256=plan.source_sha256,
+            confirm_selection_sha256="wrong",
+            allow_primary=False,
+            accept_local_redaction=True,
+        )
+
+
+def test_selection_rejects_tampering(tmp_path: Path) -> None:
+    export = write_export(tmp_path / "sessions.jsonl")
+    selection = create_selection(export, count=1, seed="rc2-test")
+    selection["session_ids"] = ["changed-after-review"]
+    selection_path = write_selection(selection, tmp_path / "selection.json")
+
+    with pytest.raises(ValueError, match="selection SHA-256 is invalid"):
+        plan_import(
+            export,
+            namespace="hermes:user-v1-rc2",
+            profile="personal",
+            session_selection=selection_path,
+        )

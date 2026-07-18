@@ -117,6 +117,11 @@ def is_automated_session(external_session_id: str) -> bool:
     return bool(AUTOMATED_SESSION_PATTERN.search(external_session_id.strip()))
 
 
+def allows_deterministic_fact(source_instance: str) -> bool:
+    """Historical exports stay evidence-only until atomic extraction admits a fact."""
+    return source_instance.strip() != "hermes-session-export"
+
+
 def minimum_model_lease_seconds(timeout_seconds: float, max_retries: int) -> int:
     return math.ceil(timeout_seconds * (max_retries + 1) + 30)
 
@@ -131,9 +136,7 @@ def _enqueue_atomic_extraction(connection: Connection, namespace_id, turn_id) ->
     )
 
 
-def prepare_atomic_fact_extraction(
-    connection: Connection, job
-) -> ExtractAtomicFacts | None:
+def prepare_atomic_fact_extraction(connection: Connection, job) -> ExtractAtomicFacts | None:
     settings = get_settings()
     if not settings.model_enabled:
         return None
@@ -185,8 +188,8 @@ def prepare_atomic_fact_extraction(
             '"statement":"exact contiguous quote from that Evidence item",'
             '"fact_type":"long_term|stage|current|candidate|observed",'
             '"entities":[{"name":"exact substring inside statement",'
-                        '"type":"person|agent|project|service|location|organization|tool|'
-                        'technology|device|concept|event|other"}]}]}. '
+            '"type":"person|agent|project|service|location|organization|tool|'
+            'technology|device|concept|event|other"}]}]}. '
             "Statements and entity names must be copied verbatim. Use device for named "
             "physical devices; agent is only an AI/software agent. Extract only explicit "
             "user facts, decisions, preferences, project state, or verified observations. "
@@ -219,9 +222,7 @@ def prepare_atomic_fact_extraction(
     )
 
 
-def prepare_fact_model_enhancement(
-    connection: Connection, job
-) -> ExtractModelEnhancement | None:
+def prepare_fact_model_enhancement(connection: Connection, job) -> ExtractModelEnhancement | None:
     settings = get_settings()
     if not settings.model_enabled:
         return None
@@ -264,9 +265,7 @@ def claim_job(
     namespace_id = stable_uuid("namespace", namespace_key or get_settings().namespace)
     model_kinds = "('enhance_fact','extract_atomic_turn')"
     role_filter = (
-        f"kind IN {model_kinds}"
-        if worker_role == "model"
-        else f"kind NOT IN {model_kinds}"
+        f"kind IN {model_kinds}" if worker_role == "model" else f"kind NOT IN {model_kinds}"
     )
     input_filter = ""
     parameters: list = [lease_seconds, namespace_id]
@@ -307,7 +306,7 @@ def process_extract(
     job_id, namespace_id, _kind, event_id, _version = job
     row = connection.execute(
         """SELECT e.redacted_payload->>'content',s.source_profile,e.event_type,e.occurred_at,
-                  COALESCE(e.redacted_payload->>'tool_name',''),t.id
+                  COALESCE(e.redacted_payload->>'tool_name',''),t.id,s.source_instance
            FROM evidence.events e JOIN core.turns t ON t.id=e.turn_id
            JOIN core.sessions se ON se.id=t.session_id JOIN core.sources s ON s.id=se.source_id
            WHERE e.id=%s""",
@@ -315,7 +314,7 @@ def process_extract(
     ).fetchone()
     if row is None:
         raise ValueError("INPUT_NOT_FOUND")
-    content, source_profile, event_type, occurred_at, tool_name, turn_id = row
+    content, source_profile, event_type, occurred_at, tool_name, turn_id, source_instance = row
     if not content or not content.strip():
         return
     settings = get_settings()
@@ -341,7 +340,7 @@ def process_extract(
     _ensure_weekly_report_job(connection, namespace_id, event_id, occurred_at)
     if settings.model_enabled:
         _enqueue_atomic_extraction(connection, namespace_id, turn_id)
-    if not classification.create_fact:
+    if not classification.create_fact or not allows_deterministic_fact(source_instance):
         return
     fact_statement = content
     fact_id = stable_uuid("fact", f"{event_id}:{fact_statement}")
@@ -1056,9 +1055,7 @@ def run_maintenance(connection: Connection) -> None:
         )
 
 
-def enqueue_model_backfill(
-    connection: Connection, allowed_turn_ids: tuple | None = None
-) -> int:
+def enqueue_model_backfill(connection: Connection, allowed_turn_ids: tuple | None = None) -> int:
     settings = get_settings()
     namespace_id = stable_uuid("namespace", settings.namespace)
     allowlist_filter = ""
@@ -1171,12 +1168,9 @@ def main() -> None:
     if settings.worker_role == "model" and settings.model_evaluation_mode:
         if settings.namespace == "hermes:user-primary":
             raise ValueError("MODEL_EVALUATION_PRIMARY_FORBIDDEN")
-        if (
-            len(settings.model_evaluation_plan_sha) != 64
-            or any(
-                character not in "0123456789abcdef"
-                for character in settings.model_evaluation_plan_sha.casefold()
-            )
+        if len(settings.model_evaluation_plan_sha) != 64 or any(
+            character not in "0123456789abcdef"
+            for character in settings.model_evaluation_plan_sha.casefold()
         ):
             raise ValueError("MODEL_EVALUATION_PLAN_SHA_REQUIRED")
         evaluation_turn_ids = settings.model_evaluation_turn_ids

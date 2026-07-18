@@ -8,10 +8,16 @@ from agent_memory.worker import (
     AtomicTurnEvidence,
     _atomic_candidate_policy,
     _evidence_excerpt,
+    allows_deterministic_fact,
     is_automated_session,
     minimum_model_lease_seconds,
     select_turn_evidence,
 )
+
+
+def test_historical_exports_require_atomic_fact_admission() -> None:
+    assert allows_deterministic_fact("hermes-session-export") is False
+    assert allows_deterministic_fact("hermes-live") is True
 
 
 def event(

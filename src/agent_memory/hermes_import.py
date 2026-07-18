@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 from .redaction import redact_structure_with_findings, redact_text
 
 IMPORTER_VERSION = "hermes-session-jsonl-v1"
+SESSION_PLAN_VERSION = "hermes-session-selection-v1"
 INTERNAL_MEMORY_TOOL_PREFIX = "agent_memory_"
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
@@ -30,6 +31,7 @@ class ImportPlan:
     profile: str
     turns: tuple[dict[str, Any], ...]
     manifest: dict[str, Any]
+    selection_sha256: str | None = None
 
 
 def _file_sha256(path: Path) -> str:
@@ -59,6 +61,39 @@ def _load_sessions(path: Path) -> list[dict[str, Any]]:
     if not sessions:
         raise ValueError("Hermes export contains no sessions")
     return sessions
+
+
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _load_session_selection(path: Path, *, source_sha256: str) -> tuple[set[str], str]:
+    selection_path = path.expanduser().resolve()
+    if not selection_path.is_file():
+        raise ValueError(f"Hermes session selection does not exist: {selection_path}")
+    try:
+        selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError("invalid Hermes session selection JSON") from error
+    if not isinstance(selection, dict):
+        raise ValueError("Hermes session selection must be a JSON object")
+    if selection.get("version") != SESSION_PLAN_VERSION:
+        raise ValueError("unsupported Hermes session selection version")
+    if selection.get("source_sha256") != source_sha256:
+        raise ValueError("session selection source SHA-256 does not match the export")
+    session_ids = selection.get("session_ids")
+    if not isinstance(session_ids, list) or not session_ids:
+        raise ValueError("session selection contains no session ids")
+    normalized = [str(value).strip() for value in session_ids]
+    if any(not value for value in normalized) or len(set(normalized)) != len(normalized):
+        raise ValueError("session selection ids must be non-empty and unique")
+    claimed_sha256 = str(selection.get("selection_sha256") or "")
+    payload = {key: value for key, value in selection.items() if key != "selection_sha256"}
+    actual_sha256 = _canonical_sha256(payload)
+    if claimed_sha256 != actual_sha256:
+        raise ValueError("session selection SHA-256 is invalid")
+    return set(normalized), actual_sha256
 
 
 def _message_text(content: Any) -> str:
@@ -109,10 +144,7 @@ def _safe_external_id(value: str, *, prefix: str) -> str:
 
 
 def _event_findings(event: dict[str, Any]) -> list[str]:
-    findings = [
-        finding.kind
-        for finding in redact_text(str(event.get("content") or "")).findings
-    ]
+    findings = [finding.kind for finding in redact_text(str(event.get("content") or "")).findings]
     if event.get("arguments") is not None:
         structured = redact_structure_with_findings(event["arguments"])
         findings.extend(finding.kind for finding in structured.findings)
@@ -227,12 +259,37 @@ def _session_turns(
     return turns, skipped
 
 
-def plan_import(path: Path, *, namespace: str, profile: str) -> ImportPlan:
+def plan_import(
+    path: Path,
+    *,
+    namespace: str,
+    profile: str,
+    session_selection: Path | None = None,
+) -> ImportPlan:
     source_path = path.expanduser().resolve()
     if not source_path.is_file():
         raise ValueError(f"Hermes export does not exist: {source_path}")
     source_sha256 = _file_sha256(source_path)
     sessions = _load_sessions(source_path)
+    source_session_count = len(sessions)
+    selection_sha256: str | None = None
+    if session_selection is not None:
+        selected_ids, selection_sha256 = _load_session_selection(
+            session_selection, source_sha256=source_sha256
+        )
+        available_ids = {
+            str(session.get("id") or session.get("session_id")) for session in sessions
+        }
+        missing_ids = selected_ids - available_ids
+        if missing_ids:
+            raise ValueError(
+                f"session selection references {len(missing_ids)} ids absent from the export"
+            )
+        sessions = [
+            session
+            for session in sessions
+            if str(session.get("id") or session.get("session_id")) in selected_ids
+        ]
     fallback = datetime.fromtimestamp(source_path.stat().st_mtime, tz=UTC)
     turns: list[dict[str, Any]] = []
     skipped = {"system": 0, "orphan": 0, "empty": 0, "internal_tool": 0}
@@ -260,6 +317,8 @@ def plan_import(path: Path, *, namespace: str, profile: str) -> ImportPlan:
         "importer_version": IMPORTER_VERSION,
         "source_sha256": source_sha256,
         "source_size_bytes": source_path.stat().st_size,
+        "source_session_count": source_session_count,
+        "selection_sha256": selection_sha256,
         "namespace": namespace,
         "profile": profile,
         "session_count": len(sessions),
@@ -279,6 +338,7 @@ def plan_import(path: Path, *, namespace: str, profile: str) -> ImportPlan:
         profile=profile,
         turns=tuple(turns),
         manifest=manifest,
+        selection_sha256=selection_sha256,
     )
 
 
@@ -289,12 +349,17 @@ def _validate_apply(
     confirm_sha256: str,
     allow_primary: bool,
     accept_local_redaction: bool,
+    confirm_selection_sha256: str = "",
 ) -> None:
     parsed = urlparse(api_url)
     if parsed.scheme != "http" or parsed.hostname not in LOOPBACK_HOSTS:
         raise ValueError("Hermes history import only permits a local HTTP API")
     if confirm_sha256 != plan.source_sha256:
         raise ValueError("--confirm-sha256 must exactly match the previewed source SHA-256")
+    if plan.selection_sha256 and confirm_selection_sha256 != plan.selection_sha256:
+        raise ValueError(
+            "--confirm-selection-sha256 must exactly match the previewed selection SHA-256"
+        )
     if plan.namespace == "hermes:user-primary" and not allow_primary:
         raise ValueError("primary namespace import requires --allow-primary")
     if plan.manifest["potential_sensitive_findings"] and not accept_local_redaction:
@@ -365,12 +430,17 @@ def main() -> None:
     parser.add_argument("--confirm-sha256", default="")
     parser.add_argument("--allow-primary", action="store_true")
     parser.add_argument("--accept-local-redaction", action="store_true")
-    parser.add_argument(
-        "--manifest-dir", type=Path, default=Path("data/imports/manifests")
-    )
+    parser.add_argument("--session-selection", type=Path)
+    parser.add_argument("--confirm-selection-sha256", default="")
+    parser.add_argument("--manifest-dir", type=Path, default=Path("data/imports/manifests"))
     args = parser.parse_args()
     try:
-        plan = plan_import(args.source, namespace=args.namespace, profile=args.profile)
+        plan = plan_import(
+            args.source,
+            namespace=args.namespace,
+            profile=args.profile,
+            session_selection=args.session_selection,
+        )
         if not args.apply:
             print(json.dumps({**plan.manifest, "status": "preview"}, ensure_ascii=False, indent=2))
             return
@@ -380,6 +450,7 @@ def main() -> None:
             confirm_sha256=args.confirm_sha256,
             allow_primary=args.allow_primary,
             accept_local_redaction=args.accept_local_redaction,
+            confirm_selection_sha256=args.confirm_selection_sha256,
         )
         token = os.getenv("AGENT_MEMORY_SERVICE_TOKEN", "")
         if not token:

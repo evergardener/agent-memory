@@ -1,6 +1,6 @@
 # Agent Memory for Hermes
 
-Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。`1.0.0-rc.1` 测试 release 支持 Hermes 多 profile 共享身份、只读原始证据、事实/情节/长期脉络、三路召回、生命周期治理、确定性互动状态、整理报告、星图和独立加密 Vault。
+Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。`1.0.0-rc.2` 测试 release 支持 Hermes 多 profile 共享身份、只读原始证据、事实/情节/长期脉络、三路召回、生命周期治理、确定性互动状态、整理报告、星图和独立加密 Vault。
 
 这是供接入测试的候选版本，不应成为真实凭据或重要数据的唯一副本。需求与实现边界见 [`docs/V1.0-项目需求文档.md`](docs/V1.0-项目需求文档.md)，逐项验证状态见 [`docs/V1.0-release验收矩阵.md`](docs/V1.0-release验收矩阵.md)。
 
@@ -50,8 +50,10 @@ python3 scripts/hermes-plugin.py uninstall --hermes-home "${HERMES_HOME:-$HOME/.
 ```bash
 hermes sessions export data/imports/raw/hermes.jsonl \
   --format jsonl --redact --newer-than 30d --min-messages 2
+uv run agent-memory-select-hermes data/imports/raw/hermes.jsonl \
+  --count 30 --seed v1-rc2 --output data/imports/plans/hermes-rc2-30.json
 uv run agent-memory-import-hermes data/imports/raw/hermes.jsonl \
-  --profile personal
+  --profile personal --session-selection data/imports/plans/hermes-rc2-30.json
 ```
 
 预览只输出会话、回合、事件、时间范围、敏感命中数和 SHA-256，不输出对话正文。
@@ -61,11 +63,14 @@ uv run agent-memory-import-hermes data/imports/raw/hermes.jsonl \
 docker compose --env-file .env --profile import up -d import-api import-worker
 set -a; source .env; set +a
 uv run agent-memory-import-hermes data/imports/raw/hermes.jsonl \
-  --profile personal --apply --confirm-sha256 '<preview-sha256>'
+  --profile personal --session-selection data/imports/plans/hermes-rc2-30.json \
+  --apply --confirm-sha256 '<preview-sha256>' \
+  --confirm-selection-sha256 '<preview-selection-sha256>'
 docker compose --env-file .env --profile import stop import-api import-worker
 ```
 
-暂存星图位于 `http://127.0.0.1:7790/`，不会出现在主命名空间。只有暂存质量通过后，
+历史导出默认只进入证据层；模型关闭时不会把整段消息投影成事实或实体。暂存星图位于
+`http://127.0.0.1:7790/`，不会出现在主命名空间。只有原子抽取和暂存质量通过后，
 才允许把同一份已确认文件显式导入 `hermes:user-primary`；完整边界、失败恢复和验收项见
 [`docs/V1.0-Hermes历史对话导入设计.md`](docs/V1.0-Hermes历史对话导入设计.md)。
 
