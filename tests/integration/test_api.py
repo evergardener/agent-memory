@@ -156,11 +156,13 @@ def test_entity_merge_unmerge_and_split_are_reversible_and_namespace_scoped():
                 "context": context("entity-governance", f"entity-{suffix}-{RUN_ID}"),
                 "idempotency_key": f"entity-governance-{suffix}-{RUN_ID}",
                 "occurred_at": datetime.now(UTC).isoformat(),
-                "events": [{
-                    "type": "user_message",
-                    "sequence": 1,
-                    "content": f"project:{name} decision {suffix} is confirmed",
-                }],
+                "events": [
+                    {
+                        "type": "user_message",
+                        "sequence": 1,
+                        "content": f"project:{name} decision {suffix} is confirmed",
+                    }
+                ],
             },
         )
         response.raise_for_status()
@@ -191,8 +193,7 @@ def test_entity_merge_unmerge_and_split_are_reversible_and_namespace_scoped():
     source_fact_ids = {
         edge["data"]["target"].removeprefix("fact:")
         for edge in graph["edges"]
-        if edge["data"].get("source") == source["id"]
-        and edge["data"].get("kind") == "evidence"
+        if edge["data"].get("source") == source["id"] and edge["data"].get("kind") == "evidence"
     }
     assert len(source_fact_ids) == 2
 
@@ -208,9 +209,7 @@ def test_entity_merge_unmerge_and_split_are_reversible_and_namespace_scoped():
     assert merge.json()["state"] == "merged"
     assert merge.json()["canonical_entity_id"] == target["record_id"]
 
-    merged_graph = get(
-        "/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}
-    ).json()
+    merged_graph = get("/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}).json()
     merged_entities = {
         node["data"]["label"]: node["data"]
         for node in merged_graph["nodes"]
@@ -222,8 +221,7 @@ def test_entity_merge_unmerge_and_split_are_reversible_and_namespace_scoped():
     target_fact_ids = {
         edge["data"]["target"].removeprefix("fact:")
         for edge in merged_graph["edges"]
-        if edge["data"].get("source") == target["id"]
-        and edge["data"].get("kind") == "evidence"
+        if edge["data"].get("source") == target["id"] and edge["data"].get("kind") == "evidence"
     }
     assert source_fact_ids <= target_fact_ids
     assert any(source_name in item["text"] for item in recall(target_name)["items"])
@@ -255,8 +253,7 @@ def test_entity_merge_unmerge_and_split_are_reversible_and_namespace_scoped():
 
     split_graph = get("/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}).json()
     split_entity_node = next(
-        node["data"] for node in split_graph["nodes"]
-        if node["data"].get("label") == split_name
+        node["data"] for node in split_graph["nodes"] if node["data"].get("label") == split_name
     )
     assert any(
         edge["data"].get("source") == split_entity_node["id"]
@@ -276,9 +273,9 @@ def test_entity_merge_unmerge_and_split_are_reversible_and_namespace_scoped():
     assert any(
         edge["data"].get("source") == target["id"]
         and edge["data"].get("target") == f"fact:{split_fact_id}"
-        for edge in get(
-            "/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}
-        ).json()["edges"]
+        for edge in get("/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}).json()[
+            "edges"
+        ]
     )
     detached = post(
         f"/api/v1/entities/{target['record_id']}/facts/{split_fact_id}/detach",
@@ -292,9 +289,9 @@ def test_entity_merge_unmerge_and_split_are_reversible_and_namespace_scoped():
     assert not any(
         edge["data"].get("source") == target["id"]
         and edge["data"].get("target") == f"fact:{split_fact_id}"
-        for edge in get(
-            "/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}
-        ).json()["edges"]
+        for edge in get("/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}).json()[
+            "edges"
+        ]
     )
 
     denied = post(
@@ -312,9 +309,7 @@ def test_entity_merge_unmerge_and_split_are_reversible_and_namespace_scoped():
 
 
 def test_quality_report_is_aggregate_only_and_never_auto_promotes():
-    response = get(
-        "/api/v1/reports/quality", {"shared_namespace": TEST_NAMESPACE}
-    )
+    response = get("/api/v1/reports/quality", {"shared_namespace": TEST_NAMESPACE})
     response.raise_for_status()
     report = response.json()
     assert report["namespace"] == TEST_NAMESPACE
@@ -332,9 +327,7 @@ def test_quality_report_is_aggregate_only_and_never_auto_promotes():
     assert "redacted_payload" not in serialized
     assert "statement" not in serialized
 
-    denied = get(
-        "/api/v1/reports/quality", {"shared_namespace": "hermes:wrong"}
-    )
+    denied = get("/api/v1/reports/quality", {"shared_namespace": "hermes:wrong"})
     assert denied.status_code == 403
 
 
@@ -501,6 +494,10 @@ def test_trace_correction_forget_and_isolate_semantics():
         item["memory_id"] != isolated_target["memory_id"]
         for item in recall(f"{isolation_marker} temporary")["items"]
     )
+
+    quality = get("/api/v1/reports/quality", {"shared_namespace": TEST_NAMESPACE}).json()
+    assert all(not key.endswith(":isolated") for key in quality["classifications"])
+    assert quality["metrics"]["facts"] == sum(quality["classifications"].values())
 
 
 def test_vault_requires_explicit_scoped_grant_and_supports_revocation():

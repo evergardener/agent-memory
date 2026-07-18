@@ -1,6 +1,6 @@
 # Agent Memory for Hermes
 
-Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。`1.0.0-rc.2` 测试 release 支持 Hermes 多 profile 共享身份、只读原始证据、事实/情节/长期脉络、三路召回、生命周期治理、确定性互动状态、整理报告、星图和独立加密 Vault。
+Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。`1.0.0-rc.3` 测试 release 支持 Hermes 多 profile 共享身份、只读原始证据、事实/情节/长期脉络、三路召回、生命周期治理、确定性互动状态、整理报告、星图和独立加密 Vault。
 
 这是供接入测试的候选版本，不应成为真实凭据或重要数据的唯一副本。需求与实现边界见 [`docs/V1.0-项目需求文档.md`](docs/V1.0-项目需求文档.md)，逐项验证状态见 [`docs/V1.0-release验收矩阵.md`](docs/V1.0-release验收矩阵.md)。
 
