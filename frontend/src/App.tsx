@@ -335,7 +335,9 @@ export default function App() {
     setTimeFilter("all");
     setActivityFilter("all");
     setSensitivityFilter("all");
-    setTypeFilter(galaxyId);
+    // Galaxy membership is projected from fact/entity relationships in StarMap.
+    // Applying the raw node type filter here removes entities before that projection.
+    setTypeFilter("all");
     setViewGalaxy(galaxyId);
     setSelected(null);
   }, []);

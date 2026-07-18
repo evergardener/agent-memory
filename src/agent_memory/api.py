@@ -123,7 +123,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Agent Memory for Hermes",
-    version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.3"),
+    version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.4"),
     lifespan=lifespan,
 )
 
@@ -161,7 +161,7 @@ def ui_config():
     settings = get_settings()
     return UiConfigResponse(
         namespace=settings.namespace,
-        version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.3"),
+        version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.4"),
     )
 
 
