@@ -10,6 +10,7 @@ from psycopg.rows import dict_row
 from .classification import is_recallable_memory_content
 from .embeddings import EMBEDDING_VERSION, deterministic_embedding, vector_literal
 from .ids import new_uuid, stable_uuid
+from .model_adapter import is_graph_entity_candidate
 from .redaction import redact_structure, redact_structure_with_findings, redact_text
 from .schemas import (
     CorrectionRequest,
@@ -24,6 +25,7 @@ from .schemas import (
     ReviewQueueItem,
     ReviewQueueResponse,
 )
+from .subjects import ensure_source_subject_mapping
 
 ENTITY_TYPES = {
     "person",
@@ -74,6 +76,9 @@ def ingest_turn(
         """INSERT INTO core.sources(id,namespace_id,source_profile,source_instance)
            VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
         (source_id, namespace_id, context.source_profile, context.source_instance),
+    )
+    ensure_source_subject_mapping(
+        connection, namespace_id, source_id, context.source_profile
     )
     connection.execute(
         """INSERT INTO core.sessions(id,namespace_id,source_id,external_session_id,started_at)
@@ -729,6 +734,8 @@ def split_entity(
     entity_type = request.entity_type.strip().lower()
     if entity_type not in ENTITY_TYPES:
         raise ValueError("ENTITY_TYPE_INVALID")
+    if not is_graph_entity_candidate(canonical_name, entity_type):
+        raise ValueError("ENTITY_NAME_INVALID")
     if connection.execute(
         """SELECT 1 FROM memory.entities
            WHERE namespace_id=%s AND normalized_name=%s""",

@@ -162,6 +162,20 @@ export const api = {
     request<GraphData>(
       `/api/v1/graph/subgraph?shared_namespace=${encodeURIComponent(activeNamespace())}`
     ),
+  updateSubject: (
+    subjectId: string,
+    displayName: string,
+    color: string,
+    reason: string
+  ) => request(`/api/v1/graph/subjects/${subjectId}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      context: context(),
+      display_name: displayName,
+      color,
+      reason
+    })
+  }),
   trace: (memoryId: string) =>
     request<Record<string, unknown>>(
       `/api/v1/memory/${memoryId}/trace?shared_namespace=${encodeURIComponent(activeNamespace())}`

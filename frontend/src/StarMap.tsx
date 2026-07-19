@@ -210,9 +210,26 @@ export function StarMap({ graph, viewGalaxy, motionEnabled, onSelect, onGalaxySe
   const instance = useRef<Core | null>(null);
   const projection = useMemo(() => buildProjection(graph, viewGalaxy), [graph, viewGalaxy]);
   const positions = useMemo(() => positionEntities(projection.nodes, viewGalaxy), [projection.nodes, viewGalaxy]);
-  const coreNodes = graph.nodes.filter((node) => node.data.kind === "core");
-  const userCore = coreNodes.find((node) => node.data.id === "core:user")?.data || { id: "core:user", label: "User", kind: "core" };
-  const aiCore = coreNodes.find((node) => node.data.id === "core:hermes")?.data || { id: "core:hermes", label: "Hermes", kind: "core" };
+  const subjectNodes = graph.nodes.filter((node) => node.data.kind === "subject");
+  const userSubject = subjectNodes.find((node) => node.data.subject_kind === "user");
+  const profileSubjects = subjectNodes
+    .filter((node) => node.data.subject_kind === "profile_persona")
+    .sort((left, right) => left.data.label.localeCompare(right.data.label));
+  const subjectLayout = [
+    ...(userSubject ? [{ node: userSubject, x: profileSubjects.length === 1 ? 46 : 0, y: 0 }] : []),
+    ...profileSubjects.map((node, index) => {
+      if (profileSubjects.length === 1) return { node, x: -46, y: 0 };
+      const ring = profileSubjects.length > 6 && index >= 6 ? 1 : 0;
+      const ringStart = ring * 6;
+      const ringCount = Math.min(6, profileSubjects.length - ringStart);
+      const angle = -Math.PI / 2 + ((index - ringStart) * Math.PI * 2) / ringCount + ring * 0.28;
+      return {
+        node,
+        x: Math.cos(angle) * (ring ? 190 : 110),
+        y: Math.sin(angle) * (ring ? 128 : 74)
+      };
+    })
+  ];
 
   const activateFact = (fact: GraphNode) => {
     onSelect(fact.data);
@@ -440,13 +457,17 @@ export function StarMap({ graph, viewGalaxy, motionEnabled, onSelect, onGalaxySe
         })}
     </nav>
 
-    {!viewGalaxy && <div className="binary-core" aria-label="固定双星核心">
-      <button type="button" className="stellar-core stellar-ai" onClick={() => onSelect(aiCore)} aria-label={`${aiCore.label} · AI 核心`}>
-        <i className="stellar-glow" /><i className="stellar-ray ray-horizontal" /><i className="stellar-ray ray-vertical" /><b /><span>{aiCore.label}</span>
-      </button>
-      <button type="button" className="stellar-core stellar-user" onClick={() => onSelect(userCore)} aria-label={`${userCore.label} · 用户核心`}>
-        <i className="stellar-glow" /><i className="stellar-ray ray-horizontal" /><i className="stellar-ray ray-vertical" /><b /><span>{userCore.label}</span>
-      </button>
+    {!viewGalaxy && <div className="subject-cores" aria-label="主体恒星群">
+      {subjectLayout.map(({ node, x, y }) => <button
+        key={node.data.id}
+        type="button"
+        className={`stellar-core ${node.data.subject_kind === "user" ? "stellar-user" : "stellar-profile"}`}
+        style={{ left: `calc(50% + ${x}px)`, top: `calc(50% + ${y}px)`, color: node.data.color } as CSSProperties}
+        onClick={() => onSelect(node.data)}
+        aria-label={`${node.data.label} · ${node.data.subject_kind === "user" ? "用户主体" : "profile 人格主体"}`}
+      >
+        <i className="stellar-glow" /><i className="stellar-ray ray-horizontal" /><i className="stellar-ray ray-vertical" /><b /><span>{node.data.label}</span>
+      </button>)}
     </div>}
 
     <div className="galaxy-labels">

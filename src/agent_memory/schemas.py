@@ -207,6 +207,45 @@ class EntityRelationResponse(BaseModel):
     correlation_id: UUID
 
 
+class SubjectSourceSummary(BaseModel):
+    source_id: UUID
+    source_profile: str
+    source_instance: str
+    mapping_origin: Literal["automatic", "manual"]
+
+
+class SubjectSummary(BaseModel):
+    id: UUID
+    entity_id: UUID
+    kind: Literal["user", "profile_persona"]
+    stable_key: str
+    display_name: str
+    color: str
+    status: Literal["active", "hidden"]
+    created_at: datetime
+    updated_at: datetime
+    sources: list[SubjectSourceSummary]
+
+
+class SubjectUpdateRequest(BaseModel):
+    context: ProviderContext
+    display_name: str | None = Field(default=None, min_length=1, max_length=128)
+    color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    status: Literal["active", "hidden"] | None = None
+    reason: str = Field(min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def has_change(self):
+        if self.display_name is None and self.color is None and self.status is None:
+            raise ValueError("at least one subject field must change")
+        return self
+
+
+class SubjectSourceMappingRequest(BaseModel):
+    context: ProviderContext
+    reason: str = Field(min_length=1, max_length=2000)
+
+
 class QualityReportResponse(BaseModel):
     namespace: str
     generated_at: datetime

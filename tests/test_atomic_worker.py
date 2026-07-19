@@ -9,6 +9,7 @@ from agent_memory.worker import (
     _atomic_candidate_policy,
     _evidence_excerpt,
     allows_deterministic_fact,
+    deterministic_entity_candidates,
     is_automated_session,
     minimum_model_lease_seconds,
     select_turn_evidence,
@@ -87,6 +88,15 @@ def test_automated_session_excludes_prompt_but_keeps_verified_observation() -> N
 def test_model_lease_covers_timeout_retries_and_commit_margin() -> None:
     assert minimum_model_lease_seconds(30, 2) == 120
     assert minimum_model_lease_seconds(240, 0) == 270
+
+
+def test_deterministic_entities_exclude_internal_source_labels() -> None:
+    assert deterministic_entity_candidates(
+        "project:relay-20260714T134019Z service:Isolated-20260714T134019Z"
+    ) == ()
+    assert deterministic_entity_candidates(
+        "project:AgentMemory service:PostgreSQL"
+    ) == (("AgentMemory", "project"), ("PostgreSQL", "service"))
 
 
 def test_evidence_excerpt_preserves_both_ends_with_a_visible_gap() -> None:

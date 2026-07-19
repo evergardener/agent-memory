@@ -1,4 +1,8 @@
-from agent_memory.graph import node_visibility
+from agent_memory.graph import (
+    entity_projection_allowed,
+    node_visibility,
+    subject_visibility,
+)
 
 
 def test_internal_integration_identifiers_are_automated_noise() -> None:
@@ -18,3 +22,42 @@ def test_source_provenance_overrides_readable_label() -> None:
 
 def test_normal_named_entity_remains_visible() -> None:
     assert node_visibility("家庭服务器") == "normal"
+
+
+def test_subjects_with_only_automated_sources_are_hidden_by_default() -> None:
+    assert subject_visibility("user", []) == "normal"
+    assert subject_visibility(
+        "profile_persona",
+        [
+            {"source_instance": "integration-test"},
+            {"source_instance": "hermes-isolated-personal"},
+            {"source_instance": "t07-regression"},
+        ],
+    ) == "automated"
+    assert subject_visibility(
+        "profile_persona",
+        [{"source_instance": "EvergardendeMac-mini.local"}],
+    ) == "normal"
+
+
+def test_automated_only_entities_never_pollute_user_or_staging_projection() -> None:
+    assert not entity_projection_allowed(
+        "Nebula-95bf95ebd629",
+        automated_source=False,
+        namespace_key="hermes:user-primary",
+    )
+    assert not entity_projection_allowed(
+        "relay-20260714T134019Z",
+        automated_source=False,
+        namespace_key="hermes:import-staging",
+    )
+    assert entity_projection_allowed(
+        "Nebula-95bf95ebd629",
+        automated_source=True,
+        namespace_key="hermes:automated-tests",
+    )
+    assert entity_projection_allowed(
+        "家庭服务器",
+        automated_source=False,
+        namespace_key="hermes:user-primary",
+    )

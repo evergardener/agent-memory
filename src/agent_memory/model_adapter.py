@@ -52,10 +52,32 @@ DEVICE_NAME_PATTERN = re.compile(
     r"(?:音箱|路由器|摄像头|传感器|打印机|手机|平板|电视|speaker|router|camera|sensor|printer)",
     re.IGNORECASE,
 )
+UUID_LABEL_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+INTERNAL_ENTITY_LABEL_PATTERN = re.compile(
+    r"^(?:(?:agent-memory|derived|lifecycle|purge-target|relay|isolated|"
+    r"integration|worker-outage|model-outage-uat|automateduat)-[0-9a-f]{8,}|"
+    r"(?:relay|isolated)-\d{8}T\d{6}Z|"
+    r"(?:splitworkerprobe|modelprobe)-\d{14}|"
+    r"(?:source|session|turn|job|event|profile)[:_-][0-9a-f-]{8,}|"
+    r"\d{8}T\d{6}Z|\d{14})$",
+    re.IGNORECASE,
+)
 
 
 def is_physical_device_name(name: str) -> bool:
     return bool(DEVICE_NAME_PATTERN.search(" ".join(name.split()).strip()))
+
+
+def is_internal_entity_label(name: str) -> bool:
+    normalized = " ".join(name.split()).strip()
+    return bool(
+        UUID_LABEL_PATTERN.fullmatch(normalized)
+        or INTERNAL_ENTITY_LABEL_PATTERN.fullmatch(normalized)
+        or normalized.casefold().startswith("__subject__:")
+    )
 
 
 def is_graph_entity_candidate(name: str, entity_type: str) -> bool:
@@ -63,6 +85,8 @@ def is_graph_entity_candidate(name: str, entity_type: str) -> bool:
     normalized = " ".join(name.split()).strip()
     folded = normalized.casefold()
     if entity_type not in GRAPH_ENTITY_TYPES or not 2 <= len(normalized) <= 128:
+        return False
+    if is_internal_entity_label(normalized):
         return False
     if folded in CORE_ENTITY_ALIASES or folded.endswith(" profile"):
         return False

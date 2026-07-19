@@ -74,8 +74,8 @@ def get(path: str, params: dict) -> httpx.Response:
 
 
 def test_ingest_is_idempotent_redacted_and_cross_profile_recallable():
-    project_marker = f"agent-memory-{RUN_ID}"
-    service_marker = f"postgres-{RUN_ID}"
+    project_marker = "AgentMemory"
+    service_marker = "PostgreSQL"
     payload = {
         "context": context("default", f"turn-default-{RUN_ID}"),
         "idempotency_key": f"integration-turn-default-{RUN_ID}",
@@ -130,6 +130,113 @@ def test_ingest_is_idempotent_redacted_and_cross_profile_recallable():
     assert any("[REDACTED]" in item["text"] for item in combined)
     assert any("entity" in item["channels"] for item in combined)
     assert any("semantic" in item["channels"] for item in combined)
+
+
+def test_profile_subjects_group_instances_and_support_audited_mapping_governance():
+    def ingest_source(profile: str, instance: str, suffix: str) -> None:
+        payload_context = context(profile, f"subject-{suffix}-{RUN_ID}")
+        payload_context["source_instance"] = instance
+        response = post(
+            "/api/v1/ingest/turn",
+            {
+                "context": payload_context,
+                "idempotency_key": f"subject-source-{profile}-{instance}-{RUN_ID}",
+                "occurred_at": datetime.now(UTC).isoformat(),
+                "events": [
+                    {
+                        "type": "session_boundary",
+                        "sequence": 1,
+                        "content": "Phase A source mapping verification",
+                    }
+                ],
+            },
+        )
+        response.raise_for_status()
+
+    ingest_source("phase-a-shared", "phase-a-instance-1", "shared-1")
+    ingest_source("phase-a-shared", "phase-a-instance-2", "shared-2")
+    ingest_source("phase-a-separate", "phase-a-instance-3", "separate")
+
+    response = get(
+        "/api/v1/graph/subjects", {"shared_namespace": TEST_NAMESPACE}
+    )
+    response.raise_for_status()
+    subjects = response.json()
+    assert sum(item["kind"] == "user" for item in subjects) == 1
+    shared = next(item for item in subjects if item["stable_key"] == "profile:phase-a-shared")
+    separate = next(
+        item for item in subjects if item["stable_key"] == "profile:phase-a-separate"
+    )
+    assert {source["source_instance"] for source in shared["sources"]} >= {
+        "phase-a-instance-1",
+        "phase-a-instance-2",
+    }
+    shared_source = next(
+        source for source in shared["sources"]
+        if source["source_instance"] == "phase-a-instance-1"
+    )
+
+    graph = get(
+        "/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}
+    ).json()
+    assert not any(
+        node["data"]["id"] in {"core:user", "core:hermes"}
+        for node in graph["nodes"]
+    )
+    subject_nodes = [
+        node["data"] for node in graph["nodes"]
+        if node["data"].get("kind") == "subject"
+    ]
+    assert any(node["record_id"] == shared["id"] for node in subject_nodes)
+    subject_entity_ids = {item["entity_id"] for item in subjects}
+    assert not any(
+        node["data"].get("kind") == "entity"
+        and node["data"].get("record_id") in subject_entity_ids
+        for node in graph["nodes"]
+    )
+
+    with httpx.Client(base_url=API_URL, timeout=10) as ui:
+        ui.post("/api/v1/ui/login", json={"password": "change-me"}).raise_for_status()
+        renamed = ui.put(
+            f"/api/v1/graph/subjects/{separate['id']}",
+            json={
+                "context": context("user", f"subject-rename-{RUN_ID}"),
+                "display_name": "Hermes · Phase A Separate",
+                "color": "#8fd1d1",
+                "reason": "Phase A subject display governance verification",
+            },
+        )
+        renamed.raise_for_status()
+        assert renamed.json()["display_name"] == "Hermes · Phase A Separate"
+        assert renamed.json()["color"] == "#8fd1d1"
+        assigned = ui.post(
+            f"/api/v1/graph/subjects/{separate['id']}/sources/{shared_source['source_id']}",
+            json={
+                "context": context("user", f"subject-map-{RUN_ID}"),
+                "reason": "Phase A manual mapping verification",
+            },
+        )
+        assigned.raise_for_status()
+        assert any(
+            source["source_id"] == shared_source["source_id"]
+            and source["mapping_origin"] == "manual"
+            for source in assigned.json()["sources"]
+        )
+        reset = ui.request(
+            "DELETE",
+            f"/api/v1/graph/subjects/{separate['id']}/sources/{shared_source['source_id']}",
+            json={
+                "context": context("user", f"subject-reset-{RUN_ID}"),
+                "reason": "Restore automatic profile mapping after verification",
+            },
+        )
+        reset.raise_for_status()
+        assert reset.json()["id"] == shared["id"]
+        assert any(
+            source["source_id"] == shared_source["source_id"]
+            and source["mapping_origin"] == "automatic"
+            for source in reset.json()["sources"]
+        )
 
 
 def test_authentication_and_namespace_are_enforced():
@@ -950,7 +1057,7 @@ def test_permanent_purge_requires_confirmation_and_physically_removes_memory():
 
 
 def test_evidence_linked_episode_and_arc_rebuild_after_correction():
-    entity = f"derived-{RUN_ID}"
+    entity = f"DerivedLifecycleProject-{RUN_ID}"
     response = post(
         "/api/v1/ingest/turn",
         {

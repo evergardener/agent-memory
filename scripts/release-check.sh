@@ -30,6 +30,10 @@ fi
 set -a
 source "$ENV_FILE"
 set +a
+if [[ "${AGENT_MEMORY_NAMESPACE:-hermes:user-primary}" != hermes:automated-tests* ]]; then
+  echo "Release check requires an isolated hermes:automated-tests* namespace" >&2
+  exit 1
+fi
 
 stage "static checks and unit tests"
 .venv/bin/ruff check src integrations tests migrations

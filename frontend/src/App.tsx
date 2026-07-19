@@ -117,6 +117,11 @@ export default function App() {
   const [splitFactIds, setSplitFactIds] = useState<string[]>([]);
   const [attachFactId, setAttachFactId] = useState("");
   const [entityBusy, setEntityBusy] = useState(false);
+  const [subjectEditor, setSubjectEditor] = useState(false);
+  const [subjectName, setSubjectName] = useState("");
+  const [subjectColor, setSubjectColor] = useState("#91cfb2");
+  const [subjectReason, setSubjectReason] = useState("");
+  const [subjectBusy, setSubjectBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -263,7 +268,7 @@ export default function App() {
         allowedNodes
           .filter((node) => {
             const data = node.data;
-            if (data.kind === "core") return false;
+            if (data.kind === "subject") return false;
             if (
               normalizedSearch &&
               !`${data.label || ""} ${data.source_profile || ""} ${data.fact_type || ""}`
@@ -299,7 +304,7 @@ export default function App() {
     const nodes = allowedNodes.filter(
       (node) =>
         visibleIds.has(node.data.id) &&
-        (connectedIds.has(node.data.id) || node.data.kind === "fact" || node.data.kind === "vault")
+        (connectedIds.has(node.data.id) || node.data.kind === "subject" || node.data.kind === "fact" || node.data.kind === "vault")
     );
     return { nodes, edges };
   }, [activityFilter, graph, profileFilter, search, sensitivityFilter, showNoise, stateFilter, timeFilter, typeFilter]);
@@ -458,6 +463,37 @@ export default function App() {
     }
   }
 
+  function openSubjectEditor() {
+    if (selected?.kind !== "subject") return;
+    setSubjectName(selected.label || "");
+    setSubjectColor(selected.color || (selected.subject_kind === "user" ? "#efd095" : "#91cfb2"));
+    setSubjectReason("");
+    setSubjectEditor(true);
+    setMessage("");
+  }
+
+  async function submitSubjectEditor(event: FormEvent) {
+    event.preventDefault();
+    if (!selected || selected.kind !== "subject") return;
+    setSubjectBusy(true);
+    try {
+      await api.updateSubject(
+        selected.record_id,
+        subjectName.trim(),
+        subjectColor,
+        subjectReason.trim()
+      );
+      setSubjectEditor(false);
+      setSelected(null);
+      await refresh();
+      setMessage("主体恒星显示已更新；来源映射和原始证据保持不变。");
+    } catch (error) {
+      setMessage(`主体治理失败：${String(error)}`);
+    } finally {
+      setSubjectBusy(false);
+    }
+  }
+
   if (authenticated === null) return <main className="loading">正在连接本地记忆库…</main>;
   if (!authenticated) return <Login onLogin={refresh} />;
 
@@ -544,7 +580,7 @@ export default function App() {
               {showNotebook && <div className="notebook-body">
                 <p>Hermes 跨 profile 的原始证据、事实、情节与长期脉络。</p>
                 <div className="notebook-stats"><span><strong>{counts.facts}</strong> 记忆</span><span><strong>{counts.entities}</strong> 实体</span><span><strong>{counts.protected}</strong> 保护</span></div>
-                <div className="notebook-legend"><span><i className="legend-entity" />实体恒星</span><span><i className="legend-fact" />实体关系</span><span><i className="legend-episode" />事实注释</span><span><i className="legend-vault" />保护标记</span></div>
+                <div className="notebook-legend"><span><i className="legend-entity" />实体行星</span><span><i className="legend-fact" />实体关系</span><span><i className="legend-episode" />事实注释</span><span><i className="legend-vault" />保护标记</span></div>
               </div>}
             </section>
             <p className="universe-hint">拖拽平移 · 滚轮缩放 · 点击星体查看详情 · 连线越亮关联越强</p>
@@ -586,6 +622,8 @@ export default function App() {
                 <dl>
                   {selected.state && <><dt>状态</dt><dd>{selected.state}</dd></>}
                   {selected.source_profile && <><dt>来源</dt><dd>{selected.source_profile}</dd></>}
+                  {selected.subject_kind && <><dt>主体类型</dt><dd>{selected.subject_kind === "user" ? "用户" : "Hermes profile 人格"}</dd></>}
+                  {selected.source_count && <><dt>来源实例</dt><dd>{selected.source_count}</dd></>}
                   {selected.fact_type && <><dt>类型</dt><dd>{selected.fact_type}</dd></>}
                   {selected.confidence && <><dt>可信度</dt><dd>{Math.round(Number(selected.confidence) * 100)}%</dd></>}
                   {selected.evidence_count && <><dt>证据数</dt><dd>{selected.evidence_count}</dd></>}
@@ -596,6 +634,9 @@ export default function App() {
                   {selected.model_name && <><dt>整理模型</dt><dd>{selected.model_name}</dd></>}
                   {selected.updated_at && <><dt>更新</dt><dd>{new Date(selected.updated_at).toLocaleString()}</dd></>}
                 </dl>
+                {selected.kind === "subject" && <div className="actions subject-actions">
+                  <button type="button" onClick={openSubjectEditor}>编辑名称与颜色</button>
+                </div>}
                 {selected.kind === "fact" && <div className="actions">
                     <button type="button" onClick={loadTrace}>追溯证据</button>
                     <button type="button" onClick={() => openGovernance("correct")}>修正</button>
@@ -765,6 +806,22 @@ export default function App() {
               >
                 {governanceBusy ? "正在提交…" : "确认执行"}
               </button>
+            </div>
+          </form>
+        </div>
+      )}
+      {subjectEditor && selected?.kind === "subject" && (
+        <div className="modal-backdrop">
+          <form className="governance-dialog subject-dialog" onSubmit={submitSubjectEditor} role="dialog" aria-modal="true" aria-labelledby="subject-editor-title">
+            <p className="eyebrow">SUBJECT GOVERNANCE</p>
+            <h2 id="subject-editor-title">编辑主体恒星</h2>
+            <p className="dialog-explanation">仅修改星图显示，不改写 profile、来源实例、事实或原始证据。</p>
+            <label>显示名称<input value={subjectName} onChange={(event) => setSubjectName(event.target.value)} maxLength={128} required autoFocus /></label>
+            <label className="subject-color">恒星颜色<input type="color" value={subjectColor} onChange={(event) => setSubjectColor(event.target.value)} /></label>
+            <label>操作原因<textarea value={subjectReason} onChange={(event) => setSubjectReason(event.target.value)} placeholder="该原因将写入治理审计" required /></label>
+            <div className="dialog-actions">
+              <button type="button" onClick={() => setSubjectEditor(false)} disabled={subjectBusy}>取消</button>
+              <button type="submit" disabled={subjectBusy || !subjectName.trim() || !subjectReason.trim()}>{subjectBusy ? "正在提交…" : "保存"}</button>
             </div>
           </form>
         </div>

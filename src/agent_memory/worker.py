@@ -20,6 +20,7 @@ from .model_adapter import (
     AtomicFactValidation,
     LiteLLMModelAdapter,
     ModelProfile,
+    is_graph_entity_candidate,
     prepare_model_input,
     validate_atomic_turn_candidates,
     validate_verbatim_fact_candidate,
@@ -27,7 +28,10 @@ from .model_adapter import (
 from .state_views import effective_state_config
 
 logger = logging.getLogger(__name__)
-ENTITY_PATTERN = re.compile(r"(?:project|service|项目|服务)[:： ]+([\w\-]+)", re.IGNORECASE)
+ENTITY_PATTERN = re.compile(
+    r"(?P<entity_type>project|service|项目|服务)[:： ]+(?P<name>[\w\-]+)",
+    re.IGNORECASE,
+)
 ATOMIC_EXTRACTION_VERSION = "atomic-verbatim-v2"
 MODEL_TOOL_SKIP_PATTERN = re.compile(
     r"^(?:agent_memory_.+|session_search|search_files|read_file|memory)$", re.IGNORECASE
@@ -60,6 +64,17 @@ class AtomicTurnEvidence:
     content: str
     occurred_at: datetime
     tool_name: str
+
+
+def deterministic_entity_candidates(statement: str) -> tuple[tuple[str, str], ...]:
+    candidates: list[tuple[str, str]] = []
+    for entity_match in ENTITY_PATTERN.finditer(statement):
+        entity_name = entity_match.group("name")
+        raw_entity_type = entity_match.group("entity_type").casefold()
+        entity_type = "project" if raw_entity_type in {"project", "项目"} else "service"
+        if is_graph_entity_candidate(entity_name, entity_type):
+            candidates.append((entity_name, entity_type))
+    return tuple(candidates)
 
 
 OBSERVATION_SIGNAL = re.compile(
@@ -366,13 +381,14 @@ def process_extract(
            VALUES (%s,%s) ON CONFLICT DO NOTHING""",
         (fact_id, event_id),
     )
-    for entity_name in ENTITY_PATTERN.findall(fact_statement):
+    for entity_name, entity_type in deterministic_entity_candidates(fact_statement):
         normalized = entity_name.casefold()
         entity_id = stable_uuid("entity", f"{namespace_id}:{normalized}")
         connection.execute(
-            """INSERT INTO memory.entities(id,namespace_id,canonical_name,normalized_name)
-               VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
-            (entity_id, namespace_id, entity_name, normalized),
+            """INSERT INTO memory.entities(
+                 id,namespace_id,entity_type,canonical_name,normalized_name
+               ) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
+            (entity_id, namespace_id, entity_type, entity_name, normalized),
         )
         connection.execute(
             """INSERT INTO memory.fact_entities(fact_id,entity_id)

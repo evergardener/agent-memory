@@ -7,6 +7,8 @@ from agent_memory.config import Settings
 from agent_memory.model_adapter import (
     LiteLLMModelAdapter,
     ModelProfile,
+    is_graph_entity_candidate,
+    is_internal_entity_label,
     validate_atomic_fact_candidates,
     validate_atomic_turn_candidates,
     validate_verbatim_fact_candidate,
@@ -212,6 +214,28 @@ def test_physical_device_is_not_accepted_as_agent_service_or_tool():
     assert [(item.name, item.entity_type) for item in validated.candidates[0].entities] == [
         ("Xiaomi 智能音箱 Pro", "device")
     ]
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "agent-memory-52b11d086828",
+        "derived-52b11d086828",
+        "relay-20260714T134019Z",
+        "Isolated-20260714T134019Z",
+        "36aa6a63-6e86-5cc2-b4eb-8eb5d09c95b8",
+        "20260714141137",
+    ],
+)
+def test_internal_source_labels_cannot_become_graph_entities(label):
+    assert is_internal_entity_label(label)
+    assert not is_graph_entity_candidate(label, "project")
+
+
+def test_readable_named_objects_remain_graph_entities():
+    assert is_graph_entity_candidate("Agent Memory", "project")
+    assert is_graph_entity_candidate("家庭服务器", "device")
+    assert is_graph_entity_candidate("PostgreSQL", "service")
 
 
 def test_turn_candidate_must_name_the_exact_source_event():

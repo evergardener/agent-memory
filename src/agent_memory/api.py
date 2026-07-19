@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import get_settings
 from .db import Database
 from .graph import load_graph
+from .ids import stable_uuid
 from .quality import build_quality_report
 from .repository import (
     change_entity_fact_relation,
@@ -49,6 +50,9 @@ from .schemas import (
     StateConfigRequest,
     StateResetRequest,
     StateSimulationRequest,
+    SubjectSourceMappingRequest,
+    SubjectSummary,
+    SubjectUpdateRequest,
     UiConfigResponse,
     UiLoginRequest,
     UiLoginResponse,
@@ -78,6 +82,13 @@ from .state_views import (
     reset_interaction_state,
     simulate_interaction_state,
     update_state_config,
+)
+from .subjects import (
+    assign_source_to_subject,
+    ensure_user_subject,
+    list_subjects,
+    reset_source_subject_mapping,
+    update_subject,
 )
 from .ui_auth import (
     COOKIE_NAME,
@@ -116,6 +127,14 @@ async def lifespan(app: FastAPI):
     logging.basicConfig(level=settings.log_level)
     database = Database(settings)
     database.open()
+    with database.connection() as connection:
+        namespace_id = stable_uuid("namespace", settings.namespace)
+        connection.execute(
+            """INSERT INTO core.namespaces(id,stable_key) VALUES (%s,%s)
+               ON CONFLICT DO NOTHING""",
+            (namespace_id, settings.namespace),
+        )
+        ensure_user_subject(connection, namespace_id)
     app.state.database = database
     yield
     database.close()
@@ -123,7 +142,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Agent Memory for Hermes",
-    version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.4"),
+    version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.5"),
     lifespan=lifespan,
 )
 
@@ -161,7 +180,7 @@ def ui_config():
     settings = get_settings()
     return UiConfigResponse(
         namespace=settings.namespace,
-        version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.4"),
+        version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.5"),
     )
 
 
@@ -758,6 +777,103 @@ def request_vault_access(request_body: VaultAccessRequest, request: Request):
         secret_value=secret_value,
         correlation_id=request_body.context.correlation_id,
     )
+
+
+@app.get(
+    "/api/v1/graph/subjects",
+    response_model=list[SubjectSummary],
+    dependencies=[Depends(require_api_access)],
+)
+def graph_subjects(shared_namespace: str, request: Request):
+    _check_namespace(shared_namespace)
+    with request.app.state.database.connection() as connection:
+        return list_subjects(connection, shared_namespace)
+
+
+@app.put(
+    "/api/v1/graph/subjects/{subject_id}",
+    response_model=SubjectSummary,
+    dependencies=[Depends(require_ui_session)],
+)
+def update_graph_subject(
+    subject_id: UUID, request_body: SubjectUpdateRequest, request: Request
+):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            result = update_subject(
+                connection,
+                namespace_key=request_body.context.shared_namespace,
+                subject_id=subject_id,
+                display_name=request_body.display_name,
+                color=request_body.color,
+                status=request_body.status,
+                actor_id=request_body.context.source_profile,
+                reason=request_body.reason,
+                correlation_id=request_body.context.correlation_id,
+            )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    if result is None:
+        raise HTTPException(status_code=404, detail="SUBJECT_NOT_FOUND")
+    return result
+
+
+@app.post(
+    "/api/v1/graph/subjects/{subject_id}/sources/{source_id}",
+    response_model=SubjectSummary,
+    dependencies=[Depends(require_ui_session)],
+)
+def assign_graph_subject_source(
+    subject_id: UUID,
+    source_id: UUID,
+    request_body: SubjectSourceMappingRequest,
+    request: Request,
+):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            result = assign_source_to_subject(
+                connection,
+                namespace_key=request_body.context.shared_namespace,
+                subject_id=subject_id,
+                source_id=source_id,
+                actor_id=request_body.context.source_profile,
+                reason=request_body.reason,
+                correlation_id=request_body.context.correlation_id,
+            )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    if result is None:
+        raise HTTPException(status_code=404, detail="SUBJECT_OR_SOURCE_NOT_FOUND")
+    return result
+
+
+@app.delete(
+    "/api/v1/graph/subjects/{subject_id}/sources/{source_id}",
+    response_model=SubjectSummary,
+    dependencies=[Depends(require_ui_session)],
+)
+def reset_graph_subject_source(
+    subject_id: UUID,
+    source_id: UUID,
+    request_body: SubjectSourceMappingRequest,
+    request: Request,
+):
+    _check_namespace(request_body.context.shared_namespace)
+    with request.app.state.database.connection() as connection:
+        result = reset_source_subject_mapping(
+            connection,
+            namespace_key=request_body.context.shared_namespace,
+            subject_id=subject_id,
+            source_id=source_id,
+            actor_id=request_body.context.source_profile,
+            reason=request_body.reason,
+            correlation_id=request_body.context.correlation_id,
+        )
+    if result is None:
+        raise HTTPException(status_code=404, detail="SUBJECT_SOURCE_MAPPING_NOT_FOUND")
+    return result
 
 
 @app.get(

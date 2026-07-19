@@ -8,7 +8,9 @@ from psycopg.rows import dict_row
 from .classification import QUERY_ONLY_PATTERN
 from .config import get_settings
 from .ids import stable_uuid
+from .model_adapter import is_internal_entity_label
 from .redaction import redact_text
+from .subjects import list_subjects
 
 AUTOMATED_TEST_PATTERN = re.compile(
     r"(?:AutomatedUAT-|ModelOutageUAT-|worker-outage-|Nebula-[0-9a-f]{12}|"
@@ -20,30 +22,84 @@ AUTOMATED_TEST_PATTERN = re.compile(
     r"Aurora-UAT(?:-\d+-[A-Z])?|aurora-uat|[A-Z]+-UAT-READY)",
     re.IGNORECASE,
 )
+AUTOMATED_SOURCE_INSTANCE_PATTERN = re.compile(
+    r"^(?:integration-test|hermes-isolated-.+|release-check|t\d+-regression|"
+    r"phase-a-instance-\d+)$",
+    re.IGNORECASE,
+)
 
 
 def node_visibility(label: str, *, automated_source: bool = False) -> str:
     return "automated" if automated_source or AUTOMATED_TEST_PATTERN.search(label) else "normal"
 
 
+def subject_visibility(kind: str, sources: list[dict]) -> str:
+    if kind == "user":
+        return "normal"
+    if not sources or all(
+        AUTOMATED_SOURCE_INSTANCE_PATTERN.fullmatch(source["source_instance"])
+        for source in sources
+    ):
+        return "automated"
+    return "normal"
+
+
+def entity_projection_allowed(
+    label: str, *, automated_source: bool, namespace_key: str
+) -> bool:
+    if is_internal_entity_label(label):
+        return False
+    if namespace_key.startswith("hermes:automated-tests"):
+        return True
+    return not (automated_source or AUTOMATED_TEST_PATTERN.search(label))
+
+
 def load_graph(connection: Connection, namespace_key: str) -> dict:
     namespace_id = stable_uuid("namespace", namespace_key)
     trusted_tools = list(get_settings().trusted_observation_tools)
-    nodes: list[dict] = [
-        {"data": {"id": "core:user", "label": "User", "kind": "core"}},
-        {"data": {"id": "core:hermes", "label": "Hermes", "kind": "core"}},
-    ]
-    edges: list[dict] = [
-        {
-            "data": {
-                "id": "edge:core",
-                "source": "core:user",
-                "target": "core:hermes",
-                "kind": "core",
-                "strength": "1.0",
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    subjects = list_subjects(connection, namespace_key)
+    active_subjects = [item for item in subjects if item["status"] == "active"]
+    user_subject = next(
+        (item for item in active_subjects if item["kind"] == "user"), None
+    )
+    for subject in active_subjects:
+        profiles = sorted(
+            {source["source_profile"] for source in subject["sources"]}
+        )
+        nodes.append(
+            {
+                "data": {
+                    "id": f"subject:{subject['id']}",
+                    "record_id": str(subject["id"]),
+                    "entity_id": str(subject["entity_id"]),
+                    "label": redact_text(subject["display_name"]).text,
+                    "kind": "subject",
+                    "subject_kind": subject["kind"],
+                    "stable_key": subject["stable_key"],
+                    "color": subject["color"],
+                    "state": subject["status"],
+                    "source_profiles": json.dumps(profiles, ensure_ascii=False),
+                    "source_count": str(len(subject["sources"])),
+                    "visibility": subject_visibility(
+                        subject["kind"], subject["sources"]
+                    ),
+                }
             }
-        }
-    ]
+        )
+        if user_subject and subject["kind"] == "profile_persona":
+            edges.append(
+                {
+                    "data": {
+                        "id": f"edge:subject:{user_subject['id']}:{subject['id']}",
+                        "source": f"subject:{user_subject['id']}",
+                        "target": f"subject:{subject['id']}",
+                        "kind": "subject",
+                        "strength": "1.0",
+                    }
+                }
+            )
     entity_visibility: dict[UUID, str] = {}
     with connection.cursor(row_factory=dict_row) as cursor:
         cursor.execute(
@@ -89,10 +145,19 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
                FROM memory.entities e
                LEFT JOIN memory.entities a ON a.canonical_entity_id=e.id
                WHERE e.namespace_id=%s AND e.canonical_entity_id IS NULL
+                 AND NOT EXISTS (
+                   SELECT 1 FROM core.subjects subject WHERE subject.entity_id=e.id
+                 )
                GROUP BY e.id,e.canonical_name,e.entity_type,e.merge_state""",
             (namespace_id,),
         )
         for entity in cursor.fetchall():
+            if not entity_projection_allowed(
+                entity["canonical_name"],
+                automated_source=bool(entity["automated_source"]),
+                namespace_key=namespace_key,
+            ):
+                continue
             visibility = node_visibility(
                 entity["canonical_name"],
                 automated_source=bool(entity["automated_source"]),
@@ -316,4 +381,13 @@ def load_graph(connection: Connection, namespace_key: str) -> dict:
                         }
                     }
                 )
-    return {"nodes": nodes, "edges": edges}
+    node_ids = {node["data"]["id"] for node in nodes}
+    return {
+        "nodes": nodes,
+        "edges": [
+            edge
+            for edge in edges
+            if edge["data"]["source"] in node_ids
+            and edge["data"]["target"] in node_ids
+        ],
+    }
