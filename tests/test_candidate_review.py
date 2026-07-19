@@ -48,6 +48,46 @@ def test_extract_mentions_keeps_planets_and_rejects_alert_event_noise() -> None:
     }
 
 
+def test_runtime_aliases_merge_and_internal_bridge_is_not_a_planet() -> None:
+    mentions = extract_mentions(
+        "Hermes Studio 与 Hermes Web UI 共用 Agent Bridge 组件。"
+    )
+
+    assert mentions == [
+        {
+            "name": "Hermes WebUI / Studio",
+            "entity_type": "service",
+            "reason": "explicit",
+        }
+    ]
+
+
+def test_operational_services_have_readable_canonical_names() -> None:
+    mentions = extract_mentions(
+        "mac-alloy 推送到 Loki；Honcho 使用 PostgreSQL；"
+        "wxpusher-relay 由 Alertmanager 调用；UptimeKuma 监控 Outlook。"
+    )
+
+    assert {item["name"] for item in mentions} == {
+        "Alertmanager",
+        "Alloy",
+        "Honcho",
+        "Loki",
+        "Outlook",
+        "PostgreSQL",
+        "Uptime Kuma",
+        "WxPusher",
+    }
+
+    email_mentions = extract_mentions(
+        "继续补齐 Hermes 能力，安装 Himalayan email skill 进行邮件管理。"
+    )
+    assert {item["name"] for item in email_mentions} == {
+        "Hermes Agent",
+        "Himalaya",
+    }
+
+
 def write_export_and_selection(tmp_path: Path) -> tuple[Path, Path]:
     source = tmp_path / "export.jsonl"
     session = {
@@ -219,6 +259,65 @@ def test_review_skips_compaction_and_avoids_multi_entity_cliques(
     }
     assert not any(
         {item["source"], item["target"]}
-        <= {"Hermes Studio", "Hindsight", "OpenClash"}
+        <= {"Hermes WebUI / Studio", "Hindsight", "OpenClash"}
         for item in review["relations"]
     )
+
+
+def test_review_requires_relation_signal_and_extracts_explicit_clauses(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "export.jsonl"
+    session = {
+        "id": "interactive-relations",
+        "messages": [
+            {
+                "role": "user",
+                "content": "分别检查 Hindsight 和 PostgreSQL。",
+            },
+            {
+                "role": "user",
+                "content": (
+                    "监控链路已调整：Alloy 推送到 Loki，"
+                    "Loki ruler 接入 Alertmanager。"
+                ),
+            },
+            {
+                "role": "tool",
+                "tool_name": "environment_observe",
+                "content": (
+                    '{"output":"PostgreSQL running\\nTailscale active\\n'
+                    'unrelated service uses a database"}'
+                ),
+            },
+        ],
+    }
+    source.write_text(json.dumps(session, ensure_ascii=False) + "\n")
+    payload = {
+        "version": "hermes-session-selection-v1",
+        "source_sha256": _file_sha256(source),
+        "source_session_count": 1,
+        "selected_session_count": 1,
+        "seed": "test",
+        "category_counts": {},
+        "source_category_counts": {},
+        "session_ids": ["interactive-relations"],
+        "created_at": "2026-07-19T00:00:00+00:00",
+        "contains_message_text": False,
+        "model_called": False,
+        "external_data_sent": False,
+    }
+    selection = tmp_path / "selection.json"
+    selection.write_text(
+        json.dumps({**payload, "selection_sha256": _canonical_sha256(payload)})
+    )
+
+    review = build_review(source, selection)
+    relations = {
+        frozenset((item["source"], item["target"])) for item in review["relations"]
+    }
+
+    assert frozenset(("Hindsight", "PostgreSQL")) not in relations
+    assert frozenset(("PostgreSQL", "Tailscale")) not in relations
+    assert frozenset(("Alloy", "Loki")) in relations
+    assert frozenset(("Loki", "Alertmanager")) in relations

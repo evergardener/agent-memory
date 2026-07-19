@@ -1,0 +1,103 @@
+{
+  "version": "phase-c-gold-drafts-v2",
+  "communities": [
+    {
+      "id": "postgresql-memory-backends",
+      "name": "PostgreSQL 记忆后端",
+      "members": [
+        {"name": "PostgreSQL", "role": "core"},
+        {"name": "Hindsight", "role": "satellite"},
+        {"name": "Honcho", "role": "satellite"}
+      ],
+      "edges": [
+        {
+          "source": "Hindsight",
+          "target": "PostgreSQL",
+          "relation_type": "uses_database",
+          "transport": "lan_direct",
+          "review_note": "数据库依赖是持久语义；局域网直连只作为当前传输路径。"
+        },
+        {
+          "source": "Honcho",
+          "target": "PostgreSQL",
+          "relation_type": "uses_database",
+          "transport": "lan_direct",
+          "review_note": "应用是卫星；PostgreSQL 是该社区的核心。"
+        }
+      ],
+      "decision": "REVIEW_REQUIRED"
+    },
+    {
+      "id": "loki-alerting-pipeline",
+      "name": "Loki 日志告警链路",
+      "members": [
+        {"name": "Loki", "role": "core"},
+        {"name": "Alloy", "role": "bridge"},
+        {"name": "Alertmanager", "role": "bridge"}
+      ],
+      "edges": [
+        {
+          "source": "Alloy",
+          "target": "Loki",
+          "relation_type": "pushes_logs_to",
+          "transport": "http_push",
+          "review_note": "Alloy 是日志采集与转发桥，Loki 是日志汇聚核心。"
+        },
+        {
+          "source": "Loki",
+          "target": "Alertmanager",
+          "relation_type": "sends_alerts_to",
+          "transport": "http_api",
+          "review_note": "Loki ruler 通过已配置端点把告警发送给 Alertmanager。"
+        }
+      ],
+      "decision": "REVIEW_REQUIRED"
+    },
+    {
+      "id": "hermes-email-workflow",
+      "name": "Hermes 邮件工作流",
+      "members": [
+        {"name": "Hermes Agent", "role": "core"},
+        {"name": "Himalaya", "role": "bridge"},
+        {"name": "Outlook", "role": "satellite"}
+      ],
+      "edges": [
+        {
+          "source": "Hermes Agent",
+          "target": "Himalaya",
+          "relation_type": "uses_email_connector",
+          "transport": "local_cli",
+          "review_note": "Himalaya 连接 Agent 能力与邮件提供方，因此是桥接行星。"
+        },
+        {
+          "source": "Himalaya",
+          "target": "Outlook",
+          "relation_type": "connects_mailbox",
+          "transport": "oauth2_imap_smtp",
+          "review_note": "认证和邮件协议是边属性，不另建行星。"
+        }
+      ],
+      "decision": "REVIEW_REQUIRED"
+    }
+  ],
+  "non_galaxy_groups": [
+    {
+      "name": "Hermes 运行时关系",
+      "members": ["Hermes Agent", "Hermes WebUI / Studio"],
+      "treatment": "保留为强关系或临时星座，不生成自动星系",
+      "reason": "WebUI 与 Studio 已合并为一个规范实体；Agent Bridge 是内部组件而不是行星，规范化后只有两个行星"
+    },
+    {
+      "name": "PostgreSQL 网络路径",
+      "members": ["PostgreSQL", "Tailscale"],
+      "treatment": "Tailscale 仅在实际流量路径或已配置回退路径有证据时作为 bridge；LAN 直连记录为边属性",
+      "reason": "业务依赖、传输路径和社区归属必须分开，资产清单共同出现不能证明数据库流量经过 Tailscale"
+    },
+    {
+      "name": "基础设施管理平面",
+      "members": ["Portainer"],
+      "treatment": "仅保留对容器/部署对象的 management_plane 关系",
+      "reason": "Portainer 与服务共同出现在容器清单中，不等于它是数据库使用方"
+    }
+  ]
+}

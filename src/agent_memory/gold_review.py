@@ -9,7 +9,7 @@ from typing import Any
 
 from .candidate_review import build_review
 
-GOLD_REVIEW_VERSION = "phase-c-gold-review-v1"
+GOLD_REVIEW_VERSION = "phase-c-gold-review-v2"
 DECISIONS = {"REVIEW_REQUIRED", "ACCEPT", "REJECT"}
 MEMBER_ROLES = {"core", "bridge", "satellite"}
 
@@ -93,9 +93,27 @@ def evaluate_gold_drafts(
         edges: list[dict[str, Any]] = []
         evidence_refs: set[str] = set()
         for raw_edge in raw_edges:
-            if not isinstance(raw_edge, list) or len(raw_edge) != 2:
-                raise ValueError("gold review edges must be two-item arrays")
-            source, target = (str(item).strip() for item in raw_edge)
+            if isinstance(raw_edge, list) and len(raw_edge) == 2:
+                source, target = (str(item).strip() for item in raw_edge)
+                relation_type = "related_to"
+                transport = "unspecified"
+                review_note = ""
+            elif isinstance(raw_edge, dict):
+                source = str(raw_edge.get("source") or "").strip()
+                target = str(raw_edge.get("target") or "").strip()
+                relation_type = str(
+                    raw_edge.get("relation_type") or "related_to"
+                ).strip()
+                transport = str(
+                    raw_edge.get("transport") or "unspecified"
+                ).strip()
+                review_note = str(raw_edge.get("review_note") or "").strip()
+            else:
+                raise ValueError(
+                    "gold review edges must be two-item arrays or edge objects"
+                )
+            if not source or not target or not relation_type or not transport:
+                raise ValueError("gold review edge objects require endpoints and semantics")
             if source not in member_names or target not in member_names:
                 raise ValueError("gold review edge endpoints must be community members")
             aggregate = relation_index.get(_edge_key(source, target))
@@ -108,6 +126,9 @@ def evaluate_gold_drafts(
                         "evidence_count": 0,
                         "session_count": 0,
                         "datasets": [],
+                        "relation_type": relation_type,
+                        "transport": transport,
+                        "review_note": review_note,
                     }
                 )
                 continue
@@ -120,6 +141,9 @@ def evaluate_gold_drafts(
                     "evidence_count": len(aggregate["evidence_refs"]),
                     "session_count": aggregate["session_count"],
                     "datasets": sorted(aggregate["datasets"]),
+                    "relation_type": relation_type,
+                    "transport": transport,
+                    "review_note": review_note,
                 }
             )
         found_edges = sum(edge["found"] for edge in edges)
@@ -144,6 +168,7 @@ def evaluate_gold_drafts(
 
     structurally_ready = sum(item["passes_structure"] for item in communities)
     accepted = sum(item["decision"] == "ACCEPT" for item in communities)
+    ready_for_user_review = bool(communities) and structurally_ready == len(communities)
     return {
         "version": GOLD_REVIEW_VERSION,
         "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
@@ -159,11 +184,11 @@ def evaluate_gold_drafts(
             for label, review in sorted(reviews.items())
         },
         "communities": communities,
+        "non_galaxy_groups": list(config.get("non_galaxy_groups") or []),
         "structurally_ready": structurally_ready,
         "accepted": accepted,
-        "ready_for_user_review": bool(communities)
-        and structurally_ready == len(communities),
-        "gold_ready": bool(communities) and accepted == len(communities),
+        "ready_for_user_review": ready_for_user_review,
+        "gold_ready": ready_for_user_review and accepted == len(communities),
         "model_called": False,
         "external_data_sent": False,
         "database_written": False,
@@ -214,22 +239,38 @@ def render_gold_report(result: dict[str, Any]) -> str:
                 f"- 结构门槛：{'通过' if community['passes_structure'] else '未通过'}。",
                 f"- 人工决策：`{community['decision']}`。",
                 "",
-                "| 关系 | 证据 | Session 合计 | 数据集 | 状态 |",
-                "| --- | ---: | ---: | --- | --- |",
+                "| 关系 | 语义 | 传输路径 | 证据 | Session 合计 | 数据集 | 状态 | 备注 |",
+                "| --- | --- | --- | ---: | ---: | --- | --- | --- |",
             ]
         )
         for edge in community["edges"]:
             lines.append(
-                f"| {edge['source']} — {edge['target']} | {edge['evidence_count']} | "
+                f"| {edge['source']} — {edge['target']} | "
+                f"{edge['relation_type']} | {edge['transport']} | "
+                f"{edge['evidence_count']} | "
                 f"{edge['session_count']} | {', '.join(edge['datasets']) or '-'} | "
-                f"{'FOUND' if edge['found'] else 'MISSING'} |"
+                f"{'FOUND' if edge['found'] else 'MISSING'} | "
+                f"{edge['review_note'] or '-'} |"
             )
         if community["missing_entities"]:
             lines.append(f"\n缺失实体：{', '.join(community['missing_entities'])}。")
         lines.append("")
+    if result["non_galaxy_groups"]:
+        lines.extend(["## 4. 不形成星系的已确认边界", ""])
+        for item in result["non_galaxy_groups"]:
+            lines.extend(
+                [
+                    f"### {item.get('name', '未命名关系组')}",
+                    "",
+                    f"- 规范成员：{', '.join(item.get('members') or []) or '-'}。",
+                    f"- 处理：{item.get('treatment', '保留为关系，不形成星系')}。",
+                    f"- 原因：{item.get('reason', '-')}。",
+                    "",
+                ]
+            )
     lines.extend(
         [
-            "## 4. 人工确认边界",
+            "## 5. 人工确认边界",
             "",
             (
                 "结构通过只证明成员和关系均可回到候选证据，不证明社区命名或边界正确。"

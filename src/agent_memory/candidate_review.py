@@ -20,7 +20,7 @@ from .hermes_selection import is_automated_export_session
 from .model_adapter import is_graph_entity_candidate
 from .redaction import redact_text
 
-METHOD = "phase-c-candidate-review-v3"
+METHOD = "phase-c-candidate-review-v4"
 MAX_ENTITIES = 80
 MAX_RELATIONS = 120
 MAX_EXCERPT = 260
@@ -59,9 +59,19 @@ CODE_IDENTIFIER_PATTERN = re.compile(
 )
 NON_EVIDENCE_USER_PATTERN = re.compile(
     r"^\s*(?:\[CONTEXT COMPACTION\b|\[IMPORTANT:\s*The user has invoked\b|"
-    r"<codex_internal_context\b|<untrusted_tool_result\b)",
+    r"<codex_internal_context\b|<untrusted_tool_result\b|"
+    r'\{\s*"(?:output|content|result|success|total_count|todos)"\s*:)',
     re.IGNORECASE,
 )
+RELATION_SIGNAL_PATTERN = re.compile(
+    r"(?:使用|依赖|接入|连接|集成|安装|采集|日志|部署(?:在|于|到)?|运行(?:在|于)?|"
+    r"推送(?:到|给)?|发送(?:到|给)?|转发(?:到|给)?|切换到|读取|写入|"
+    r"监控|管理|提供|作为|属于|隶属|数据库|后端|provider|uses?|depends?\s+on|"
+    r"connects?\s+to|integrates?\s+with|deploys?\s+(?:on|to)|runs?\s+on|"
+    r"sends?\s+to|forwards?\s+to|monitors?|managed?\s+by|backed?\s+by|→|->)",
+    re.IGNORECASE,
+)
+RELATION_CLAUSE_SPLIT_PATTERN = re.compile(r"[，,；;]|\s+[—-]\s+|\n+")
 DIRECT_OBSERVATION_TOOLS = {
     "terminal",
     "browser_console",
@@ -88,6 +98,14 @@ STRUCTURED_ENTITY_PATTERN = re.compile(
     r'["\'](?P<name>[A-Za-z0-9][A-Za-z0-9_.:-]{1,63})["\']',
     re.IGNORECASE,
 )
+STRUCTURED_ASSOCIATION_PATTERN = re.compile(
+    r"^[^{}]{0,160}(?:observation|观察|告警|alert)[^{}]*\{.*"
+    r'["\']?(?:service|container|instance)["\']?\s*:',
+    re.IGNORECASE | re.DOTALL,
+)
+HERMES_HIMALAYA_CONTEXT_PATTERN = re.compile(
+    r"(?=.*\bHermes\b)(?=.*\bHimalayan?(?:-CLI)?\b)", re.IGNORECASE | re.DOTALL
+)
 DOMAIN_ENTITY_PATTERNS = (
     (re.compile(r"\bHome Assistant\b", re.IGNORECASE), "service", "Home Assistant"),
     (
@@ -95,22 +113,47 @@ DOMAIN_ENTITY_PATTERNS = (
         "device",
         "Xiaomi 智能音箱 Pro",
     ),
-    (re.compile(r"\bAgent Bridge\b", re.IGNORECASE), "service", "Agent Bridge"),
     (
         re.compile(r"\bHermes\s+Web\s*UI\b", re.IGNORECASE),
         "service",
-        "Hermes WebUI",
+        "Hermes WebUI / Studio",
     ),
     (re.compile(r"\bHermes Agent\b", re.IGNORECASE), "service", "Hermes Agent"),
-    (re.compile(r"\bHermes Studio\b", re.IGNORECASE), "service", "Hermes Studio"),
+    (
+        re.compile(r"\bHermes Studio\b", re.IGNORECASE),
+        "service",
+        "Hermes WebUI / Studio",
+    ),
     (re.compile(r"\bHindsight\b", re.IGNORECASE), "service", "Hindsight"),
+    (re.compile(r"\bHoncho\b", re.IGNORECASE), "service", "Honcho"),
+    (re.compile(r"\bAlloy\b|\bmac-alloy\b", re.IGNORECASE), "service", "Alloy"),
+    (re.compile(r"\bLoki\b", re.IGNORECASE), "service", "Loki"),
     (re.compile(r"\bAlertmanager\b", re.IGNORECASE), "service", "Alertmanager"),
     (re.compile(r"\bPrometheus\b", re.IGNORECASE), "service", "Prometheus"),
+    (
+        re.compile(r"\bWxPusher\b|\bwxpusher-relay\b", re.IGNORECASE),
+        "service",
+        "WxPusher",
+    ),
+    (
+        re.compile(r"\bUptime\s+Kuma\b|\buptimekuma\b", re.IGNORECASE),
+        "service",
+        "Uptime Kuma",
+    ),
+    (
+        re.compile(r"\bOutlook\b|\bHotmail\b", re.IGNORECASE),
+        "service",
+        "Outlook",
+    ),
     (re.compile(r"\bPostgreSQL\b", re.IGNORECASE), "service", "PostgreSQL"),
     (re.compile(r"\bOpenClash\b", re.IGNORECASE), "service", "OpenClash"),
     (re.compile(r"\bClash Verge\b", re.IGNORECASE), "service", "Clash Verge"),
     (re.compile(r"\bTailscale\b", re.IGNORECASE), "service", "Tailscale"),
-    (re.compile(r"\bHimalaya(?:-CLI)?\b", re.IGNORECASE), "service", "Himalaya"),
+    (
+        re.compile(r"\bHimalayan?(?:-CLI)?\b", re.IGNORECASE),
+        "service",
+        "Himalaya",
+    ),
     (re.compile(r"\bPortainer\b", re.IGNORECASE), "service", "Portainer"),
     (re.compile(r"\bSouth Plus\b", re.IGNORECASE), "service", "South Plus"),
     (re.compile(r"\bRainyun\b|\b雨云\b", re.IGNORECASE), "service", "Rainyun"),
@@ -118,6 +161,7 @@ DOMAIN_ENTITY_PATTERNS = (
 
 STOP_NAMES = {
     "agent",
+    "agent bridge",
     "alertmanager payload",
     "api",
     "assistant",
@@ -222,7 +266,7 @@ TYPE_CONTEXTS = (
 )
 
 TYPE_OVERRIDES = {
-    "agent bridge": "service",
+    "alloy": "service",
     "alertmanager": "service",
     "chrome": "tool",
     "deepseek": "technology",
@@ -231,13 +275,16 @@ TYPE_OVERRIDES = {
     "github": "organization",
     "hermes webui": "service",
     "hermes web ui": "service",
+    "hermes webui / studio": "service",
     "hermes agent": "service",
     "hermes studio": "service",
     "hindsight": "service",
+    "honcho": "service",
     "himalaya": "service",
     "himalaya-cli": "service",
     "home assistant": "service",
     "linux": "technology",
+    "loki": "service",
     "opencode": "tool",
     "postgres": "service",
     "postgresql": "service",
@@ -247,6 +294,7 @@ TYPE_OVERRIDES = {
     "redis": "service",
     "launchd": "service",
     "openclash": "service",
+    "outlook": "service",
     "clash verge": "service",
     "south plus": "service",
     "tailscale": "service",
@@ -254,16 +302,23 @@ TYPE_OVERRIDES = {
     "hermes-web-ui": "service",
     "hermes-agent": "service",
     "typescript": "technology",
+    "uptime kuma": "service",
+    "wxpusher": "service",
 }
 
 
 def _normalize_name(value: str) -> str:
     normalized = " ".join(value.strip("`'\"“”‘’.,，。:：;；()（）[]【】{}").split())
     aliases = {
-        "hermes web ui": "Hermes WebUI",
-        "hermes-web-ui": "Hermes WebUI",
+        "hermes web ui": "Hermes WebUI / Studio",
+        "hermes webui": "Hermes WebUI / Studio",
+        "hermes-web-ui": "Hermes WebUI / Studio",
+        "hermes studio": "Hermes WebUI / Studio",
         "hermes-agent": "Hermes Agent",
         "himalaya-cli": "Himalaya",
+        "mac-alloy": "Alloy",
+        "uptimekuma": "Uptime Kuma",
+        "wxpusher-relay": "WxPusher",
     }
     return aliases.get(normalized.casefold(), normalized)
 
@@ -333,6 +388,8 @@ def extract_domain_mentions(text: str) -> list[dict[str, str]]:
     for pattern, entity_type, canonical_name in DOMAIN_ENTITY_PATTERNS:
         if pattern.search(text):
             add_typed(canonical_name, entity_type, "explicit")
+    if HERMES_HIMALAYA_CONTEXT_PATTERN.search(text):
+        add_typed("Hermes Agent", "service", "contextual-alias")
     for match in STRUCTURED_ENTITY_PATTERN.finditer(text):
         field = match.group("field").casefold()
         entity_type = "device" if field == "instance" else "service"
@@ -377,6 +434,59 @@ def _sentences(text: str) -> list[str]:
         for item in SENTENCE_SPLIT_PATTERN.split(text)
         if 4 <= len(" ".join(item.split())) <= 2000
     ]
+
+
+def _unwrap_observation_text(text: str) -> str:
+    """Extract a direct tool payload so wrapper metadata cannot join unrelated rows."""
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return text
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return text
+    if not isinstance(payload, dict):
+        return text
+    for key in ("output", "content", "result"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False)
+    return text
+
+
+def _relation_units(sentence: str) -> list[str]:
+    """Keep the full sentence and add clauses for explicit multi-entity statements."""
+    units = [sentence]
+    units.extend(
+        " ".join(item.split())
+        for item in RELATION_CLAUSE_SPLIT_PATTERN.split(sentence)
+        if 4 <= len(" ".join(item.split())) <= 2000
+    )
+    return list(dict.fromkeys(units))
+
+
+def _explicit_relation_pairs(
+    sentence: str, *, tool_observation: bool
+) -> list[tuple[str, str]]:
+    pairs: set[tuple[str, str]] = set()
+    for unit in _relation_units(sentence):
+        mentions = (
+            extract_domain_mentions(unit) if tool_observation else extract_mentions(unit)
+        )
+        if len(mentions) != 2:
+            continue
+        structured_state = bool(
+            re.search(r"^\s*\[[^\]]+\].+?:", unit)
+            or STRUCTURED_ASSOCIATION_PATTERN.search(unit)
+        )
+        if not RELATION_SIGNAL_PATTERN.search(unit) and not structured_state:
+            continue
+        pair = tuple(sorted(item["name"].casefold() for item in mentions))
+        if pair[0] != pair[1]:
+            pairs.add(pair)
+    return sorted(pairs)
 
 
 def _session_ref(session_id: str) -> str:
@@ -488,7 +598,10 @@ def build_review(source: Path, selection: Path) -> dict[str, Any]:
             if role == "tool" and not is_direct_observation_tool(tool_name):
                 skipped_non_observation_tool_messages += 1
                 continue
-            text = redact_text(_message_text(message.get("content"))).text
+            text = _message_text(message.get("content"))
+            if role == "tool":
+                text = _unwrap_observation_text(text)
+            text = redact_text(text).text
             if not text.strip():
                 continue
             if role == "user" and NON_EVIDENCE_USER_PATTERN.search(text):
@@ -523,13 +636,17 @@ def build_review(source: Path, selection: Path) -> dict[str, Any]:
                     }:
                         entity_evidence[key].append(evidence)
                     message_mentions.add(key)
-                if role in {"user", "tool"} and len(mentions) == 2:
-                    pair = tuple(sorted(mention["name"].casefold() for mention in mentions))
-                    sentence_relation_pairs.add(pair)
-                    relation_evidence[pair].append(evidence)
+                if role in {"user", "tool"}:
+                    for pair in _explicit_relation_pairs(
+                        sentence, tool_observation=role == "tool"
+                    ):
+                        sentence_relation_pairs.add(pair)
+                        relation_evidence[pair].append(evidence)
             if role == "user" and len(message_mentions) == 2:
                 pair = tuple(sorted(message_mentions))
                 if pair in sentence_relation_pairs:
+                    continue
+                if not RELATION_SIGNAL_PATTERN.search(text):
                     continue
                 message_evidence = {
                     "evidence_ref": _evidence_ref(session_id, message_index, -1),
