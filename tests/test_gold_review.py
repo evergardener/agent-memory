@@ -31,7 +31,11 @@ def test_gold_drafts_require_structure_and_explicit_acceptance() -> None:
             {
                 "id": "runtime",
                 "name": "Hermes 运行时",
-                "members": ["Hermes Agent", "Hermes WebUI", "Agent Bridge"],
+                "members": [
+                    {"name": "Hermes Agent", "role": "core"},
+                    {"name": "Hermes WebUI", "role": "core"},
+                    {"name": "Agent Bridge", "role": "bridge"},
+                ],
                 "edges": [
                     ["Hermes Agent", "Hermes WebUI"],
                     ["Agent Bridge", "Hermes WebUI"],
@@ -46,6 +50,7 @@ def test_gold_drafts_require_structure_and_explicit_acceptance() -> None:
     assert pending["structurally_ready"] == 1
     assert pending["ready_for_user_review"] is True
     assert pending["gold_ready"] is False
+    assert pending["communities"][0]["members"][2]["role"] == "bridge"
     assert "`REVIEW_REQUIRED`" in render_gold_report(pending)
 
     config["communities"][0]["decision"] = "ACCEPT"

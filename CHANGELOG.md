@@ -7,7 +7,7 @@
 - Hermes 固定选择增加 `--exclude-automated`，候选复核再次防御性排除 cron session，避免自动任务注入内容污染实体；
 - 新增本地只读 `agent-memory-candidate-review` 和阶段 C 数据选择审计：84 个导出 session 中仅 5 个真实交互 session，保守抽取后为 6 个实体、3 条二元关系、0 个合格社区，需补充代表性交互数据。
 - 新增只读历史备份规范化器、互斥选择批次和金标草案验证器；校验七天前备份完整性后，以 50 + 45 两批覆盖 95 个非 cron session，本地再次脱敏且不导出 system prompt/reasoning；
-- 候选复核排除上下文压缩、提示包装、非直接环境观察工具结果、代码标识和多实体 clique；当前 3 个社区草案结构通过但保持 `REVIEW_REQUIRED`，等待用户确认后才能成为阶段 C 金标。
+- 候选复核排除上下文压缩、提示包装、非直接环境观察工具结果、代码标识和多实体 clique；当前 3 个社区草案及 core/bridge/satellite 软归属角色结构通过但保持 `REVIEW_REQUIRED`，等待用户确认后才能成为阶段 C 金标。
 
 ## 1.0.0-rc.6 — 2026-07-19
 

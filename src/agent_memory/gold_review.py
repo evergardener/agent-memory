@@ -11,6 +11,7 @@ from .candidate_review import build_review
 
 GOLD_REVIEW_VERSION = "phase-c-gold-review-v1"
 DECISIONS = {"REVIEW_REQUIRED", "ACCEPT", "REJECT"}
+MEMBER_ROLES = {"core", "bridge", "satellite"}
 
 
 def _edge_key(source: str, target: str) -> tuple[str, str]:
@@ -59,15 +60,35 @@ def evaluate_gold_drafts(
             raise ValueError("gold review community entries must be objects")
         community_id = str(raw.get("id") or "").strip()
         name = str(raw.get("name") or "").strip()
-        members = [str(item).strip() for item in raw.get("members") or []]
+        members: list[dict[str, str]] = []
+        for item in raw.get("members") or []:
+            if isinstance(item, str):
+                member = {"name": item.strip(), "role": "core"}
+            elif isinstance(item, dict):
+                member = {
+                    "name": str(item.get("name") or "").strip(),
+                    "role": str(item.get("role") or "core").strip().casefold(),
+                }
+            else:
+                raise ValueError("gold review members must be strings or objects")
+            if not member["name"] or member["role"] not in MEMBER_ROLES:
+                raise ValueError("gold review members require a valid name and role")
+            members.append(member)
+        member_names = [member["name"] for member in members]
         raw_edges = raw.get("edges") or []
         decision = str(raw.get("decision") or "REVIEW_REQUIRED").strip().upper()
-        if not community_id or not name or len(set(members)) != len(members):
+        if (
+            not community_id
+            or not name
+            or len(set(member_names)) != len(member_names)
+        ):
             raise ValueError("gold review communities require an id, name and unique members")
         if decision not in DECISIONS:
             raise ValueError(f"unsupported gold review decision: {decision}")
         missing_entities = [
-            member for member in members if member.casefold() not in known_entities
+            member
+            for member in member_names
+            if member.casefold() not in known_entities
         ]
         edges: list[dict[str, Any]] = []
         evidence_refs: set[str] = set()
@@ -75,7 +96,7 @@ def evaluate_gold_drafts(
             if not isinstance(raw_edge, list) or len(raw_edge) != 2:
                 raise ValueError("gold review edges must be two-item arrays")
             source, target = (str(item).strip() for item in raw_edge)
-            if source not in members or target not in members:
+            if source not in member_names or target not in member_names:
                 raise ValueError("gold review edge endpoints must be community members")
             aggregate = relation_index.get(_edge_key(source, target))
             if aggregate is None:
@@ -103,7 +124,7 @@ def evaluate_gold_drafts(
             )
         found_edges = sum(edge["found"] for edge in edges)
         passes_structure = (
-            len(members) >= 3
+            len(member_names) >= 3
             and not missing_entities
             and found_edges >= 2
             and len(evidence_refs) >= 2
@@ -183,7 +204,12 @@ def render_gold_report(result: dict[str, Any]) -> str:
             [
                 f"### {index}. {community['name']} (`{community['id']}`)",
                 "",
-                f"- 成员：{', '.join(community['members'])}。",
+                "- 成员："
+                + ", ".join(
+                    f"{member['name']}（{member['role']}）"
+                    for member in community["members"]
+                )
+                + "。",
                 f"- 独立证据引用：{community['evidence_count']}。",
                 f"- 结构门槛：{'通过' if community['passes_structure'] else '未通过'}。",
                 f"- 人工决策：`{community['decision']}`。",
