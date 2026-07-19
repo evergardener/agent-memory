@@ -12,7 +12,22 @@ import {
 } from "./api";
 import { StarMap } from "./StarMap";
 
-const emptyGraph: GraphData = { nodes: [], edges: [] };
+const emptyGraph: GraphData = {
+  projection: {
+    version: "planetary-v2",
+    community_projection: "phase-c-pending",
+    active_lenses: {
+      profiles: [], fact_types: [], lifecycle_states: [], activities: [], sensitivities: [], updated_after: null
+    }
+  },
+  nodes: [],
+  edges: [],
+  facts: [],
+  episodes: [],
+  arcs: [],
+  vault_markers: [],
+  facets: { profiles: [], fact_types: [], lifecycle_states: [], activities: [], sensitivities: [] }
+};
 const emptyReviewQueue: ReviewQueue = {
   items: [],
   total: 0,
@@ -30,14 +45,14 @@ type EntityGovernanceAction =
   | { kind: "detach"; factId: string; factName: string }
   | { kind: "unmerge"; sourceId: string; sourceName: string };
 
-const GALAXY_LABELS: Record<string, string> = {
-  long_term: "长期记忆",
-  stage: "阶段记忆",
-  current: "当前状态",
-  episode: "情节",
-  arc: "长期脉络",
-  vault: "保护资源"
-};
+function splitIds(value = "") {
+  return value.split("|").filter(Boolean);
+}
+
+function compactText(value = "", maximum = 96) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length <= maximum ? compact : `${compact.slice(0, maximum - 1)}…`;
+}
 
 function Login({ onLogin }: { onLogin: () => void }) {
   const [password, setPassword] = useState("");
@@ -98,7 +113,6 @@ export default function App() {
   const [showNoise, setShowNoise] = useState(false);
   const [showStardust, setShowStardust] = useState(false);
   const [showNotebook, setShowNotebook] = useState(true);
-  const [viewGalaxy, setViewGalaxy] = useState<string | null>(null);
   const [motionEnabled, setMotionEnabled] = useState(() => {
     const saved = window.localStorage.getItem("agent-memory:entity-motion");
     if (saved) return saved === "dynamic";
@@ -180,24 +194,14 @@ export default function App() {
 
   const counts = useMemo(
     () => ({
-      facts: graph.nodes.filter((node) => node.data.kind === "fact").length,
+      facts: graph.facts.length,
       entities: graph.nodes.filter((node) => node.data.kind === "entity").length,
-      protected: graph.nodes.filter((node) => node.data.kind === "vault").length
+      protected: graph.vault_markers.length
     }),
     [graph]
   );
 
-  const profiles = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          graph.nodes
-            .map((node) => node.data.source_profile)
-            .filter((profile): profile is string => Boolean(profile))
-        )
-      ).sort(),
-    [graph]
-  );
+  const profiles = graph.facets.profiles;
 
   const entityOptions = useMemo(
     () => graph.nodes
@@ -209,19 +213,14 @@ export default function App() {
 
   const selectedEntityFacts = useMemo(() => {
     if (selected?.kind !== "entity") return [];
-    const factIds = new Set(
-      graph.edges
-        .filter((edge) => edge.data.kind === "evidence" && edge.data.source === selected.id)
-        .map((edge) => edge.data.target)
-    );
-    return graph.nodes
-      .filter((node) => factIds.has(node.data.id) && node.data.kind === "fact")
+    return graph.facts
+      .filter((fact) => splitIds(fact.data.entity_ids).includes(selected.id))
       .map((node) => node.data);
   }, [graph, selected]);
 
   const availableEntityFacts = useMemo(() => {
     const attached = new Set(selectedEntityFacts.map((fact) => fact.record_id));
-    return graph.nodes
+    return graph.facts
       .map((node) => node.data)
       .filter((data) => data.kind === "fact" && !attached.has(data.record_id))
       .sort((left, right) => (right.updated_at || "").localeCompare(left.updated_at || ""));
@@ -238,21 +237,62 @@ export default function App() {
 
   const filteredGraph = useMemo(() => {
     const normalizedSearch = search.trim().toLocaleLowerCase();
-    const allowedNodes = graph.nodes.filter(
-      (node) => {
-        if (stateFilter !== "all" && node.data.state === stateFilter) return true;
-        if (
-          stateFilter === "all" &&
-          ["isolated", "forgotten", "superseded", "purge_requested"].includes(
-            node.data.state || ""
-          )
-        ) return false;
-        return showNoise || !["automated", "internal", "interaction", "untrusted"].includes(
-          node.data.visibility || "normal"
-        );
+    const visibleByPolicy = (data: Record<string, string>) => {
+      if (stateFilter !== "all" && data.state === stateFilter) return true;
+      if (
+        stateFilter === "all" &&
+        ["isolated", "forgotten", "superseded", "purge_requested"].includes(data.state || "")
+      ) return false;
+      return showNoise || !["automated", "internal", "interaction", "untrusted"].includes(
+        data.visibility || "normal"
+      );
+    };
+    const allowedNodes = graph.nodes.filter((node) => visibleByPolicy(node.data));
+    const allowedNodeIds = new Set(allowedNodes.map((node) => node.data.id));
+    const temporalCutoff = timeFilter === "all"
+      ? null
+      : Date.now() - Number(timeFilter) * 86_400_000;
+    const typeIsFactLens = ["long_term", "stage", "current", "observed"].includes(typeFilter);
+    const matchesFactAxes = (data: Record<string, string>) => {
+      if (profileFilter !== "all" && data.source_profile !== profileFilter) return false;
+      if (stateFilter !== "all" && data.state !== stateFilter) return false;
+      if (activityFilter !== "all" && data.activity !== activityFilter) return false;
+      if (sensitivityFilter !== "all" && sensitivityFilter !== "protected" && data.sensitivity !== sensitivityFilter) return false;
+      if (temporalCutoff !== null) {
+        const updatedAt = Date.parse(data.updated_at || "");
+        if (!Number.isFinite(updatedAt) || updatedAt < temporalCutoff) return false;
       }
-    );
-    const allowedIds = new Set(allowedNodes.map((node) => node.data.id));
+      return true;
+    };
+    const matchingFacts = graph.facts.filter((fact) => {
+      const data = fact.data;
+      if (!visibleByPolicy(data)) return false;
+      if (
+        normalizedSearch &&
+        !`${data.label || ""} ${data.source_profile || ""} ${data.fact_type || ""}`
+          .toLocaleLowerCase()
+          .includes(normalizedSearch)
+      ) return false;
+      if (typeIsFactLens && data.fact_type !== typeFilter) return false;
+      return matchesFactAxes(data);
+    });
+    const matchingFactIds = new Set(matchingFacts.map((fact) => fact.data.id));
+
+    const overlayMatches = (data: Record<string, string>) => {
+      if (!visibleByPolicy(data)) return false;
+      if (normalizedSearch && !`${data.label || ""} ${data.summary || ""}`.toLocaleLowerCase().includes(normalizedSearch)) return false;
+      if (temporalCutoff !== null) {
+        const updatedAt = Date.parse(data.updated_at || "");
+        if (!Number.isFinite(updatedAt) || updatedAt < temporalCutoff) return false;
+      }
+      const factIds = splitIds(data.fact_ids);
+      return profileFilter === "all" && stateFilter === "all" && activityFilter === "all" && sensitivityFilter === "all"
+        ? true
+        : factIds.some((factId) => matchingFactIds.has(factId));
+    };
+    const episodes = graph.episodes.filter((item) => overlayMatches(item.data));
+    const arcs = graph.arcs.filter((item) => overlayMatches(item.data));
+    const vaultMarkers = graph.vault_markers.filter((item) => visibleByPolicy(item.data));
     const scoped =
       Boolean(normalizedSearch) ||
       profileFilter !== "all" ||
@@ -261,53 +301,87 @@ export default function App() {
       timeFilter !== "all" ||
       activityFilter !== "all" ||
       sensitivityFilter !== "all";
-    let visibleIds = new Set(allowedIds);
-
-    if (scoped) {
-      visibleIds = new Set(
-        allowedNodes
-          .filter((node) => {
-            const data = node.data;
-            if (data.kind === "subject") return false;
-            if (
-              normalizedSearch &&
-              !`${data.label || ""} ${data.source_profile || ""} ${data.fact_type || ""}`
-                .toLocaleLowerCase()
-                .includes(normalizedSearch)
-            ) return false;
-            if (profileFilter !== "all" && data.source_profile !== profileFilter) return false;
-            if (typeFilter !== "all" && data.fact_type !== typeFilter && data.kind !== typeFilter) return false;
-            if (stateFilter !== "all" && data.state !== stateFilter) return false;
-            if (activityFilter !== "all" && data.activity !== activityFilter) return false;
-            if (sensitivityFilter !== "all" && data.sensitivity !== sensitivityFilter) return false;
-            if (timeFilter !== "all") {
-              const updatedAt = Date.parse(data.updated_at || "");
-              const maximumAgeDays = Number(timeFilter);
-              if (!Number.isFinite(updatedAt) || updatedAt < Date.now() - maximumAgeDays * 86_400_000) return false;
-            }
-            return true;
-          })
-          .map((node) => node.data.id)
-      );
-      const seedIds = new Set(visibleIds);
-      for (const edge of graph.edges) {
-        const { source, target } = edge.data;
-        if (seedIds.has(source) && allowedIds.has(target)) visibleIds.add(target);
-        if (seedIds.has(target) && allowedIds.has(source)) visibleIds.add(source);
-      }
+    const visiblePlanetIds = new Set<string>();
+    if (!scoped) {
+      allowedNodes.filter((node) => node.data.kind === "entity").forEach((node) => visiblePlanetIds.add(node.data.id));
+    } else if (typeFilter === "episode") {
+      episodes.forEach((item) => splitIds(item.data.entity_ids).forEach((id) => visiblePlanetIds.add(id)));
+    } else if (typeFilter === "arc") {
+      arcs.forEach((item) => splitIds(item.data.entity_ids).forEach((id) => visiblePlanetIds.add(id)));
+    } else if (typeFilter === "vault" || sensitivityFilter === "protected") {
+      vaultMarkers.forEach((item) => splitIds(item.data.target_ids).forEach((id) => visiblePlanetIds.add(id)));
+    } else if (typeFilter === "entity") {
+      allowedNodes.filter((node) => node.data.kind === "entity" && (!normalizedSearch || `${node.data.label} ${node.data.entity_type}`.toLocaleLowerCase().includes(normalizedSearch)))
+        .forEach((node) => visiblePlanetIds.add(node.data.id));
+    } else {
+      matchingFacts.forEach((fact) => splitIds(fact.data.entity_ids).forEach((id) => visiblePlanetIds.add(id)));
+      allowedNodes.filter((node) => node.data.kind === "entity" && normalizedSearch && `${node.data.label} ${node.data.entity_type}`.toLocaleLowerCase().includes(normalizedSearch))
+        .forEach((node) => visiblePlanetIds.add(node.data.id));
     }
 
-    const edges = graph.edges.filter(
-      (edge) => visibleIds.has(edge.data.source) && visibleIds.has(edge.data.target)
+    const relevantFactIds = new Set(
+      ["episode", "arc", "vault"].includes(typeFilter)
+        ? []
+        : matchingFacts.map((fact) => fact.data.id)
     );
-    const connectedIds = new Set(edges.flatMap((edge) => [edge.data.source, edge.data.target]));
-    const nodes = allowedNodes.filter(
-      (node) =>
-        visibleIds.has(node.data.id) &&
-        (connectedIds.has(node.data.id) || node.data.kind === "subject" || node.data.kind === "fact" || node.data.kind === "vault")
-    );
-    return { nodes, edges };
+    if (typeFilter === "episode") episodes.forEach((item) => splitIds(item.data.fact_ids).forEach((id) => relevantFactIds.add(id)));
+    if (typeFilter === "arc") arcs.forEach((item) => splitIds(item.data.fact_ids).forEach((id) => relevantFactIds.add(id)));
+    let edges = graph.edges.filter((edge) => {
+      if (edge.data.kind !== "relation") return false;
+      if (!visiblePlanetIds.has(edge.data.source) || !visiblePlanetIds.has(edge.data.target)) return false;
+      return !scoped || splitIds(edge.data.fact_ids).some((id) => relevantFactIds.has(id));
+    });
+    if (normalizedSearch && visiblePlanetIds.size > 0 && typeFilter === "all") {
+      const seeds = new Set(visiblePlanetIds);
+      graph.edges.filter((edge) => edge.data.kind === "relation" && (seeds.has(edge.data.source) || seeds.has(edge.data.target)))
+        .forEach((edge) => {
+          if (allowedNodeIds.has(edge.data.source)) visiblePlanetIds.add(edge.data.source);
+          if (allowedNodeIds.has(edge.data.target)) visiblePlanetIds.add(edge.data.target);
+        });
+      edges = graph.edges.filter((edge) =>
+        edge.data.kind === "relation" &&
+        visiblePlanetIds.has(edge.data.source) &&
+        visiblePlanetIds.has(edge.data.target)
+      );
+    }
+    const nodes = allowedNodes.filter((node) => node.data.kind === "subject" || visiblePlanetIds.has(node.data.id));
+    const activeFacts = typeFilter === "episode" || typeFilter === "arc"
+      ? graph.facts.filter((fact) =>
+        relevantFactIds.has(fact.data.id) &&
+        visibleByPolicy(fact.data) &&
+        matchesFactAxes(fact.data)
+      )
+      : matchingFacts;
+    return {
+      ...graph,
+      projection: {
+        ...graph.projection,
+        active_lenses: {
+          profiles: profileFilter === "all" ? [] : [profileFilter],
+          fact_types: typeIsFactLens ? [typeFilter] : [],
+          lifecycle_states: stateFilter === "all" ? [] : [stateFilter],
+          activities: activityFilter === "all" ? [] : [activityFilter],
+          sensitivities: sensitivityFilter === "all" ? [] : [sensitivityFilter],
+          updated_after: temporalCutoff === null ? null : new Date(temporalCutoff).toISOString()
+        }
+      },
+      nodes,
+      edges,
+      facts: activeFacts,
+      episodes,
+      arcs,
+      vault_markers: vaultMarkers
+    };
   }, [activityFilter, graph, profileFilter, search, sensitivityFilter, showNoise, stateFilter, timeFilter, typeFilter]);
+
+  const selectedOverlayFacts = useMemo(() => {
+    if (!selected || !["episode", "arc"].includes(selected.kind)) return [];
+    const factIds = new Set(splitIds(selected.fact_ids));
+    return filteredGraph.facts
+      .map((node) => node.data)
+      .filter((fact) => factIds.has(fact.id))
+      .sort((left, right) => (left.updated_at || "").localeCompare(right.updated_at || ""));
+  }, [filteredGraph.facts, selected]);
 
   const searchEntityResults = useMemo(
     () => search.trim()
@@ -321,7 +395,7 @@ export default function App() {
     setTrace(null);
   }, []);
 
-  const enterUniverse = useCallback(() => {
+  const clearLenses = useCallback(() => {
     setSearch("");
     setProfileFilter("all");
     setTypeFilter("all");
@@ -329,26 +403,11 @@ export default function App() {
     setTimeFilter("all");
     setActivityFilter("all");
     setSensitivityFilter("all");
-    setViewGalaxy(null);
-    setSelected(null);
-  }, []);
-
-  const enterGalaxy = useCallback((galaxyId: string) => {
-    setSearch("");
-    setProfileFilter("all");
-    setStateFilter("all");
-    setTimeFilter("all");
-    setActivityFilter("all");
-    setSensitivityFilter("all");
-    // Galaxy membership is projected from fact/entity relationships in StarMap.
-    // Applying the raw node type filter here removes entities before that projection.
-    setTypeFilter("all");
-    setViewGalaxy(galaxyId);
     setSelected(null);
   }, []);
 
   async function loadTrace() {
-    if (selected?.kind !== "fact") return;
+    if (!selected || !["fact", "episode", "arc"].includes(selected.kind)) return;
     try {
       setTrace(await api.trace(selected.record_id));
       setMessage("");
@@ -539,14 +598,17 @@ export default function App() {
       {tab === "map" ? (
         <section className="workspace">
           <div className="map-stage">
-            <button className="universe-breadcrumb" type="button" onClick={enterUniverse}>
-              {viewGalaxy ? `宇宙 › ${GALAXY_LABELS[viewGalaxy] || viewGalaxy}` : "宇宙"}
+            <button className="universe-breadcrumb" type="button" onClick={clearLenses}>
+              {typeFilter === "all" ? "宇宙 · 深空" : `宇宙 › 观察镜片 · ${{ long_term: "长期", stage: "阶段", current: "当前", episode: "情节星座", arc: "长期星流", vault: "保护标记", entity: "行星" }[typeFilter] || typeFilter}`}
             </button>
             <div className="universe-topbar">
               <span className="universe-title">MEMORY UNIVERSE</span>
-              <nav className="galaxy-pills" aria-label="记忆星系">
+              <nav className="galaxy-pills" aria-label="观察镜片">
                 {[["all", "全部"], ["long_term", "长期"], ["stage", "阶段"], ["current", "当前"], ["episode", "情节"], ["arc", "脉络"], ["vault", "保护"]].map(([value, label]) => (
-                  <button key={value} type="button" className={(value === "all" ? !viewGalaxy : viewGalaxy === value) ? "active" : ""} onClick={() => value === "all" ? enterUniverse() : enterGalaxy(value)}>{label}</button>
+                  <button key={value} type="button" className={typeFilter === value ? "active" : ""} aria-pressed={typeFilter === value} onClick={() => {
+                    if (value === "all") clearLenses();
+                    else { setTypeFilter(value); setSelected(null); }
+                  }}>{label}</button>
                 ))}
               </nav>
               <span className="topbar-separator" />
@@ -569,21 +631,20 @@ export default function App() {
             </nav>
             <StarMap
               graph={filteredGraph}
-              viewGalaxy={viewGalaxy}
               motionEnabled={motionEnabled}
+              activeLens={typeFilter}
+              selected={selected}
               onSelect={selectNode}
-              onGalaxySelect={enterGalaxy}
-              onUniverse={enterUniverse}
             />
             <section className={`universe-notebook ${showNotebook ? "open" : ""}`}>
               <button className="panel-heading" type="button" onClick={() => setShowNotebook((value) => !value)}><span>观星手记</span><i>{showNotebook ? "⌄" : "⌃"}</i></button>
               {showNotebook && <div className="notebook-body">
-                <p>Hermes 跨 profile 的原始证据、事实、情节与长期脉络。</p>
+                <p>恒星表示主体，行星表示唯一实体；镜片只改变观察方式，不改变实体归属。</p>
                 <div className="notebook-stats"><span><strong>{counts.facts}</strong> 记忆</span><span><strong>{counts.entities}</strong> 实体</span><span><strong>{counts.protected}</strong> 保护</span></div>
-                <div className="notebook-legend"><span><i className="legend-entity" />实体行星</span><span><i className="legend-fact" />实体关系</span><span><i className="legend-episode" />事实注释</span><span><i className="legend-vault" />保护标记</span></div>
+                <div className="notebook-legend"><span><i className="legend-entity" />实体行星</span><span><i className="legend-fact" />证据关系</span><span><i className="legend-episode" />星座/星流</span><span><i className="legend-vault" />保护标记</span></div>
               </div>}
             </section>
-            <p className="universe-hint">拖拽平移 · 滚轮缩放 · 点击星体查看详情 · 连线越亮关联越强</p>
+            <p className="universe-hint">拖拽平移 · 滚轮缩放 · 点击行星查看详情 · 镜片不改变行星身份</p>
             {showStardust && <div className="stardust-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowStardust(false); }}>
               <section className="stardust-lens" role="dialog" aria-modal="true" aria-label="星尘筛选">
                 <header className="stardust-header"><div><span>✦</span><strong>星尘</strong><small>观测与筛选</small></div><button type="button" aria-label="关闭" onClick={() => setShowStardust(false)}>×</button></header>
@@ -591,7 +652,7 @@ export default function App() {
                   <label className="map-search"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索项目、实体或记忆…" aria-label="搜索星图" autoFocus /></label>
                   <div className="filter-grid">
                     <label>来源 profile<select value={profileFilter} onChange={(event) => setProfileFilter(event.target.value)} aria-label="profile 过滤"><option value="all">全部 profile</option>{profiles.map((profile) => <option key={profile} value={profile}>{profile}</option>)}</select></label>
-                    <label>类别<select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} aria-label="类别过滤"><option value="all">全部类别</option><option value="long_term">长期事实</option><option value="stage">阶段事实</option><option value="current">当前状态</option><option value="observed">环境观察</option><option value="episode">情节</option><option value="arc">长期脉络</option><option value="vault">受保护资源</option><option value="entity">实体</option></select></label>
+                    <label>观察投影<select value={typeFilter} onChange={(event) => { setTypeFilter(event.target.value); setSelected(null); }} aria-label="观察投影过滤"><option value="all">全部观察</option><option value="long_term">长期事实镜片</option><option value="stage">阶段事实镜片</option><option value="current">当前状态镜片</option><option value="observed">环境观察镜片</option><option value="episode">情节星座</option><option value="arc">长期星流</option><option value="vault">保护标记</option><option value="entity">仅行星</option></select></label>
                     <label>记忆状态<select value={stateFilter} onChange={(event) => setStateFilter(event.target.value)} aria-label="记忆状态过滤"><option value="all">全部状态</option><option value="active">活跃</option><option value="candidate">待确认</option><option value="forgotten">已忘记</option><option value="isolated">已脱离</option><option value="superseded">已替代</option></select></label>
                     <label>时间<select value={timeFilter} onChange={(event) => setTimeFilter(event.target.value)} aria-label="时间过滤"><option value="all">全部时间</option><option value="1">最近 24 小时</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option><option value="365">最近一年</option></select></label>
                     <label>活跃度<select value={activityFilter} onChange={(event) => setActivityFilter(event.target.value)} aria-label="活跃度过滤"><option value="all">全部活跃度</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></label>
@@ -609,8 +670,8 @@ export default function App() {
                     <small>{node.data.entity_type || "other"}</small>
                   </button>)}
                 </div>}
-                <div className="stardust-summary"><span>可见信号</span><strong>{filteredGraph.nodes.length}</strong><small>共 {graph.nodes.length} 个星体</small></div>
-                <footer>选择星系可快速聚焦 · 点击空白区域关闭</footer>
+                <div className="stardust-summary"><span>可见行星</span><strong>{filteredGraph.nodes.filter((node) => node.data.kind === "entity").length}</strong><small>共 {graph.nodes.filter((node) => node.data.kind === "entity").length} 个唯一实体</small></div>
+                <footer>镜片可组合使用 · 不会写入或改变实体归属</footer>
               </section>
             </div>}
             <aside className={`detail-panel ${selected ? "show" : ""}`} aria-hidden={!selected}>
@@ -618,12 +679,15 @@ export default function App() {
                 <button className="detail-close" type="button" aria-label="关闭详情" onClick={() => selectNode(null)}>×</button>
                 <p className="eyebrow">{selected.kind}</p>
                 <h2>{selected.label}</h2>
+                {selected.summary && <p className="overlay-summary">{selected.summary}</p>}
                 {selected.hint && <p className="vault-hint">{selected.hint}</p>}
                 <dl>
                   {selected.state && <><dt>状态</dt><dd>{selected.state}</dd></>}
                   {selected.source_profile && <><dt>来源</dt><dd>{selected.source_profile}</dd></>}
                   {selected.subject_kind && <><dt>主体类型</dt><dd>{selected.subject_kind === "user" ? "用户" : "Hermes profile 人格"}</dd></>}
                   {selected.source_count && <><dt>来源实例</dt><dd>{selected.source_count}</dd></>}
+                  {selected.entity_type && <><dt>行星类型</dt><dd>{selected.entity_type}</dd></>}
+                  {selected.overlay_kind && <><dt>投影类型</dt><dd>{{ annotation: "事实注释", constellation: "情节星座", stream: "长期星流", protection: "保护标记" }[selected.overlay_kind] || selected.overlay_kind}</dd></>}
                   {selected.fact_type && <><dt>类型</dt><dd>{selected.fact_type}</dd></>}
                   {selected.confidence && <><dt>可信度</dt><dd>{Math.round(Number(selected.confidence) * 100)}%</dd></>}
                   {selected.evidence_count && <><dt>证据数</dt><dd>{selected.evidence_count}</dd></>}
@@ -644,6 +708,21 @@ export default function App() {
                     <button type="button" className="danger" onClick={() => openGovernance("isolate")}>删除关联</button>
                     <button type="button" className="danger purge" onClick={() => openGovernance("purge")}>永久清除</button>
                   </div>}
+                {["episode", "arc"].includes(selected.kind) && <div className="actions">
+                  <button type="button" onClick={loadTrace}>追溯支撑证据</button>
+                </div>}
+                {["episode", "arc"].includes(selected.kind) && selectedOverlayFacts.length > 0 && (
+                  <section className="overlay-timeline" aria-label={selected.kind === "arc" ? "星流事实轨迹" : "星座支撑事实"}>
+                    <h3>{selected.kind === "arc" ? "星流事实轨迹" : "星座支撑事实"}</h3>
+                    {selectedOverlayFacts.map((fact, index) => (
+                      <button key={fact.id} type="button" onClick={() => selectNode(fact)}>
+                        <i>{index + 1}</i>
+                        <span>{compactText(fact.label, 120)}</span>
+                        <small>{fact.updated_at ? new Date(fact.updated_at).toLocaleString() : "时间未知"}</small>
+                      </button>
+                    ))}
+                  </section>
+                )}
                 {selected.kind === "entity" && <>
                   <div className="actions entity-actions">
                     <button
@@ -665,7 +744,7 @@ export default function App() {
                   {selectedEntityFacts.length > 0 && <section className="entity-relations">
                     <h3>直接事实关系</h3>
                     {selectedEntityFacts.slice(0, 12).map((fact) => <div key={fact.record_id}>
-                      <span title={fact.label}>{fact.label}</span>
+                      <span title={fact.label}>{compactText(fact.label)}</span>
                       <button type="button" onClick={() => openEntityGovernance({
                         kind: "detach",
                         factId: fact.record_id,

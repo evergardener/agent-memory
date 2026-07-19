@@ -5,9 +5,34 @@ function activeNamespace() {
   return namespace;
 }
 
+export type GraphElement = { data: Record<string, string> };
+
 export type GraphData = {
-  nodes: Array<{ data: Record<string, string> }>;
-  edges: Array<{ data: Record<string, string> }>;
+  projection: {
+    version: string;
+    community_projection: string;
+    active_lenses: {
+      profiles: string[];
+      fact_types: string[];
+      lifecycle_states: string[];
+      activities: string[];
+      sensitivities: string[];
+      updated_after: string | null;
+    };
+  };
+  nodes: GraphElement[];
+  edges: GraphElement[];
+  facts: GraphElement[];
+  episodes: GraphElement[];
+  arcs: GraphElement[];
+  vault_markers: GraphElement[];
+  facets: {
+    profiles: string[];
+    fact_types: string[];
+    lifecycle_states: string[];
+    activities: string[];
+    sensitivities: string[];
+  };
 };
 
 export type VaultEntry = {

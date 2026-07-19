@@ -1,8 +1,8 @@
 # Agent Memory for Hermes
 
-Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。`1.0.0-rc.5` 测试 release 支持 Hermes 多 profile 共享身份、只读原始证据、事实/情节/长期脉络、三路召回、生命周期治理、确定性互动状态、整理报告、星图和独立加密 Vault。
+Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。`1.0.0-rc.6` 测试 release 支持 Hermes 多 profile 共享身份、只读原始证据、事实/情节/长期脉络、三路召回、生命周期治理、确定性互动状态、整理报告、星图和独立加密 Vault。
 
-这是供接入测试的候选版本，不应成为真实凭据或重要数据的唯一副本。需求与实现边界见 [`docs/V1.0-项目需求文档.md`](docs/V1.0-项目需求文档.md)，逐项验证状态见 [`docs/V1.0-release验收矩阵.md`](docs/V1.0-release验收矩阵.md)。`rc.5` 已完成星图重构阶段 A：用户/profile 人格使用稳定 Subject 恒星，同 profile 多实例复用恒星，普通实体保持行星投影，内部来源标签不再成为实体。关系社区、观察镜片和可治理布局仍按 [`docs/V1.0-星图概念与投影设计.md`](docs/V1.0-星图概念与投影设计.md) 的阶段 B/C 继续实施。
+这是供接入测试的候选版本，不应成为真实凭据或重要数据的唯一副本。需求与实现边界见 [`docs/V1.0-项目需求文档.md`](docs/V1.0-项目需求文档.md)，逐项验证状态见 [`docs/V1.0-release验收矩阵.md`](docs/V1.0-release验收矩阵.md)。`rc.6` 已完成星图重构阶段 A/B：用户/profile 人格使用稳定 Subject 恒星，普通 canonical entity 使用唯一行星；事实分类改为可组合观察镜片，episode/arc/Vault 分别改为非天体的星座、星流和保护标记。关系社区、软归属和可治理布局仍按 [`docs/V1.0-星图概念与投影设计.md`](docs/V1.0-星图概念与投影设计.md) 的阶段 C 继续实施。
 
 ## 环境要求
 

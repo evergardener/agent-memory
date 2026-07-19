@@ -73,6 +73,14 @@ def get(path: str, params: dict) -> httpx.Response:
     )
 
 
+def graph_fact_ids_for_entity(graph: dict, entity_node_id: str) -> set[str]:
+    return {
+        fact["data"]["record_id"]
+        for fact in graph["facts"]
+        if entity_node_id in fact["data"].get("entity_ids", "").split("|")
+    }
+
+
 def test_ingest_is_idempotent_redacted_and_cross_profile_recallable():
     project_marker = "AgentMemory"
     service_marker = "PostgreSQL"
@@ -239,6 +247,91 @@ def test_profile_subjects_group_instances_and_support_audited_mapping_governance
         )
 
 
+def test_planetary_projection_and_observation_lenses_preserve_entity_identity():
+    marker = f"PlanetLensProject-{RUN_ID}"
+    response = post(
+        "/api/v1/ingest/turn",
+        {
+            "context": context("lens-profile", f"lens-{RUN_ID}"),
+            "idempotency_key": f"planet-lens-{RUN_ID}",
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "events": [
+                {
+                    "type": "user_message",
+                    "sequence": 1,
+                    "content": f"长期 project:{marker} 部署在内网",
+                },
+                {
+                    "type": "user_message",
+                    "sequence": 2,
+                    "content": f"正在开发 project:{marker} 的观测镜片",
+                },
+            ],
+        },
+    )
+    response.raise_for_status()
+
+    for _ in range(40):
+        graph = get(
+            "/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}
+        ).json()
+        if any(marker in fact["data"]["label"] for fact in graph["facts"]):
+            break
+        time.sleep(0.25)
+    else:
+        pytest.fail("worker did not create planetary lens fixtures")
+
+    assert graph["projection"]["version"] == "planetary-v2"
+    assert {node["data"]["kind"] for node in graph["nodes"]} <= {
+        "subject",
+        "entity",
+    }
+    assert all(
+        node["data"]["celestial_kind"] == (
+            "star" if node["data"]["kind"] == "subject" else "planet"
+        )
+        for node in graph["nodes"]
+    )
+    celestial_ids = {node["data"]["id"] for node in graph["nodes"]}
+    assert all(
+        edge["data"]["kind"] in {"subject", "relation"}
+        and edge["data"]["source"] in celestial_ids
+        and edge["data"]["target"] in celestial_ids
+        for edge in graph["edges"]
+    )
+    assert all(item["data"]["kind"] == "fact" for item in graph["facts"])
+    assert all(item["data"]["kind"] == "episode" for item in graph["episodes"])
+    assert all(item["data"]["kind"] == "arc" for item in graph["arcs"])
+    assert all(item["data"]["kind"] == "vault" for item in graph["vault_markers"])
+
+    base_entity_ids = {
+        node["data"]["id"]
+        for node in graph["nodes"]
+        if node["data"]["kind"] == "entity"
+    }
+    long_term = get(
+        "/api/v1/graph/subgraph",
+        {"shared_namespace": TEST_NAMESPACE, "fact_type": "long_term"},
+    ).json()
+    stage = get(
+        "/api/v1/graph/subgraph",
+        {"shared_namespace": TEST_NAMESPACE, "fact_type": "stage"},
+    ).json()
+    for projected, expected_type in ((long_term, "long_term"), (stage, "stage")):
+        assert projected["projection"]["active_lenses"]["fact_types"] == [
+            expected_type
+        ]
+        assert {
+            node["data"]["id"]
+            for node in projected["nodes"]
+            if node["data"]["kind"] == "entity"
+        } == base_entity_ids
+        assert all(
+            fact["data"]["fact_type"] == expected_type
+            for fact in projected["facts"]
+        )
+
+
 def test_authentication_and_namespace_are_enforced():
     unauthenticated = httpx.post(API_URL + "/api/v1/recall", json={})
     assert unauthenticated.status_code == 401
@@ -297,11 +390,7 @@ def test_entity_merge_unmerge_and_split_are_reversible_and_namespace_scoped():
     }
     source = entities[source_name]
     target = entities[target_name]
-    source_fact_ids = {
-        edge["data"]["target"].removeprefix("fact:")
-        for edge in graph["edges"]
-        if edge["data"].get("source") == source["id"] and edge["data"].get("kind") == "evidence"
-    }
+    source_fact_ids = graph_fact_ids_for_entity(graph, source["id"])
     assert len(source_fact_ids) == 2
 
     merge = post(
@@ -325,11 +414,7 @@ def test_entity_merge_unmerge_and_split_are_reversible_and_namespace_scoped():
     assert source_name not in merged_entities
     aliases = json.loads(merged_entities[target_name]["merged_aliases"])
     assert {alias["name"] for alias in aliases} >= {source_name}
-    target_fact_ids = {
-        edge["data"]["target"].removeprefix("fact:")
-        for edge in merged_graph["edges"]
-        if edge["data"].get("source") == target["id"] and edge["data"].get("kind") == "evidence"
-    }
+    target_fact_ids = graph_fact_ids_for_entity(merged_graph, target["id"])
     assert source_fact_ids <= target_fact_ids
     assert any(source_name in item["text"] for item in recall(target_name)["items"])
 
@@ -362,10 +447,8 @@ def test_entity_merge_unmerge_and_split_are_reversible_and_namespace_scoped():
     split_entity_node = next(
         node["data"] for node in split_graph["nodes"] if node["data"].get("label") == split_name
     )
-    assert any(
-        edge["data"].get("source") == split_entity_node["id"]
-        and edge["data"].get("target") == f"fact:{split_fact_id}"
-        for edge in split_graph["edges"]
+    assert split_fact_id in graph_fact_ids_for_entity(
+        split_graph, split_entity_node["id"]
     )
 
     attached = post(
@@ -377,12 +460,11 @@ def test_entity_merge_unmerge_and_split_are_reversible_and_namespace_scoped():
     )
     attached.raise_for_status()
     assert attached.json()["state"] == "attached"
-    assert any(
-        edge["data"].get("source") == target["id"]
-        and edge["data"].get("target") == f"fact:{split_fact_id}"
-        for edge in get("/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}).json()[
-            "edges"
-        ]
+    assert split_fact_id in graph_fact_ids_for_entity(
+        get(
+            "/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}
+        ).json(),
+        target["id"],
     )
     detached = post(
         f"/api/v1/entities/{target['record_id']}/facts/{split_fact_id}/detach",
@@ -393,12 +475,11 @@ def test_entity_merge_unmerge_and_split_are_reversible_and_namespace_scoped():
     )
     detached.raise_for_status()
     assert detached.json()["state"] == "detached"
-    assert not any(
-        edge["data"].get("source") == target["id"]
-        and edge["data"].get("target") == f"fact:{split_fact_id}"
-        for edge in get("/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}).json()[
-            "edges"
-        ]
+    assert split_fact_id not in graph_fact_ids_for_entity(
+        get(
+            "/api/v1/graph/subgraph", {"shared_namespace": TEST_NAMESPACE}
+        ).json(),
+        target["id"],
     )
 
     denied = post(
@@ -666,12 +747,25 @@ def test_vault_requires_explicit_scoped_grant_and_supports_revocation():
         headers={"Authorization": f"Bearer {TOKEN}"},
     )
     graph.raise_for_status()
-    assert any(node["data"]["id"] == f"vault:{entry_id}" for node in graph.json()["nodes"])
-    assert any(
-        edge["data"]["source"] == f"vault:{entry_id}"
-        and edge["data"]["target"] == f"fact:{linked_memory['memory_id']}"
-        for edge in graph.json()["edges"]
+    marker = next(
+        item["data"]
+        for item in graph.json()["vault_markers"]
+        if item["data"]["id"] == f"vault:{entry_id}"
     )
+    assert marker["overlay_kind"] == "protection"
+    assert not any(
+        node["data"]["id"] == f"vault:{entry_id}"
+        for node in graph.json()["nodes"]
+    )
+    linked_fact = next(
+        fact["data"]
+        for fact in graph.json()["facts"]
+        if fact["data"]["record_id"] == linked_memory["memory_id"]
+    )
+    marker_targets = {value for value in marker["target_ids"].split("|") if value}
+    linked_entities = {value for value in linked_fact["entity_ids"].split("|") if value}
+    assert marker_targets <= linked_entities
+    assert f"fact:{linked_memory['memory_id']}" in marker["reference_ids"].split("|")
 
     request_payload = {
         "context": context("coding", f"vault-access-{RUN_ID}"),
@@ -1097,12 +1191,15 @@ def test_evidence_linked_episode_and_arc_rebuild_after_correction():
             params={"shared_namespace": TEST_NAMESPACE},
             headers=headers,
         )
-        derived_kinds = {
-            node["data"]["kind"]
-            for node in graph.json()["nodes"]
-            if entity in node["data"].get("label", "")
-        }
-        if {"episode", "arc"} <= derived_kinds:
+        episode_ready = any(
+            entity in item["data"].get("label", "")
+            for item in graph.json()["episodes"]
+        )
+        arc_ready = any(
+            entity in item["data"].get("label", "")
+            for item in graph.json()["arcs"]
+        )
+        if episode_ready and arc_ready:
             break
         time.sleep(0.25)
     else:
@@ -1151,9 +1248,9 @@ def test_evidence_linked_episode_and_arc_rebuild_after_correction():
             headers=headers,
         )
         matching_episodes = [
-            node
-            for node in graph.json()["nodes"]
-            if node["data"]["kind"] == "episode" and entity in node["data"]["label"]
+            item
+            for item in graph.json()["episodes"]
+            if entity in item["data"]["label"]
         ]
         if not matching_episodes:
             break

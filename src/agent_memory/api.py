@@ -1,9 +1,10 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 import uvicorn
@@ -12,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .db import Database
-from .graph import load_graph
+from .graph import GraphLens, load_graph
 from .ids import stable_uuid
 from .quality import build_quality_report
 from .repository import (
@@ -142,7 +143,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Agent Memory for Hermes",
-    version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.5"),
+    version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.6"),
     lifespan=lifespan,
 )
 
@@ -180,7 +181,7 @@ def ui_config():
     settings = get_settings()
     return UiConfigResponse(
         namespace=settings.namespace,
-        version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.5"),
+        version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.6"),
     )
 
 
@@ -880,10 +881,30 @@ def reset_graph_subject_source(
     "/api/v1/graph/subgraph",
     dependencies=[Depends(require_api_access)],
 )
-def graph_subgraph(shared_namespace: str, request: Request):
+def graph_subgraph(
+    shared_namespace: str,
+    request: Request,
+    profile: Annotated[list[str] | None, Query()] = None,
+    fact_type: Annotated[list[str] | None, Query()] = None,
+    lifecycle: Annotated[list[str] | None, Query()] = None,
+    activity: Annotated[list[str] | None, Query()] = None,
+    sensitivity: Annotated[list[str] | None, Query()] = None,
+    updated_after: datetime | None = None,
+):
     _check_namespace(shared_namespace)
     with request.app.state.database.connection() as connection:
-        return load_graph(connection, shared_namespace)
+        return load_graph(
+            connection,
+            shared_namespace,
+            lens=GraphLens(
+                profiles=tuple(profile or ()),
+                fact_types=tuple(fact_type or ()),
+                lifecycle_states=tuple(lifecycle or ()),
+                activities=tuple(activity or ()),
+                sensitivities=tuple(sensitivity or ()),
+                updated_after=updated_after,
+            ),
+        )
 
 
 @app.get("/api/v1/state", dependencies=[Depends(require_api_access)])

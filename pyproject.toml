@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-memory"
-version = "1.0.0rc5"
+version = "1.0.0rc6"
 description = "Evidence-first local memory service for Hermes Agent"
 requires-python = ">=3.12"
 dependencies = [

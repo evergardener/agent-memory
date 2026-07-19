@@ -1,5 +1,9 @@
+from datetime import UTC, datetime, timedelta
+
 from agent_memory.graph import (
+    GraphLens,
     entity_projection_allowed,
+    fact_matches_lens,
     node_visibility,
     subject_visibility,
 )
@@ -60,4 +64,33 @@ def test_automated_only_entities_never_pollute_user_or_staging_projection() -> N
         "家庭服务器",
         automated_source=False,
         namespace_key="hermes:user-primary",
+    )
+
+
+def test_observation_lenses_are_axis_composable_and_read_only() -> None:
+    updated_at = datetime.now(UTC)
+    fact = {
+        "source_profile": "ops",
+        "fact_type": "stage",
+        "memory_state": "active",
+        "activity": "high",
+        "sensitivity": "normal",
+        "updated_at": updated_at,
+    }
+    assert fact_matches_lens(fact, GraphLens())
+    assert fact_matches_lens(
+        fact,
+        GraphLens(
+            profiles=("ops",),
+            fact_types=("stage", "current"),
+            lifecycle_states=("active",),
+            activities=("high",),
+            sensitivities=("normal",),
+            updated_after=updated_at - timedelta(seconds=1),
+        ),
+    )
+    assert not fact_matches_lens(fact, GraphLens(profiles=("personal",)))
+    assert not fact_matches_lens(fact, GraphLens(fact_types=("long_term",)))
+    assert not fact_matches_lens(
+        fact, GraphLens(updated_after=updated_at + timedelta(seconds=1))
     )
