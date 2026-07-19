@@ -41,6 +41,7 @@ agent-memory-verify-sanitizer = "agent_memory.sanitize_selftest:main"
 agent-memory-plan-evaluation = "agent_memory.evaluation_plan:main"
 agent-memory-evaluation-report = "agent_memory.evaluation_report:main"
 agent-memory-apply-model-policy = "agent_memory.model_policy:main"
+agent-memory-community-report = "agent_memory.community_report:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_memory"]

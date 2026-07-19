@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- 暂无。
+- 新增只读 `agent-memory-community-report`：从脱敏星图 API 评估实体覆盖、关系边支撑、单事实 clique 膨胀和候选社区最低门槛，不写数据库、不调用模型；
+- 生成首份主空间与真实 Hermes staging 基线报告，当前结论为 `BLOCKED_INPUT_COVERAGE`，阶段 C 不应通过降低防单体门槛继续。
 
 ## 1.0.0-rc.6 — 2026-07-19
 
