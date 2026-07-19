@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from typing import Any
 
 RULE_VERSION = "v3"
-MAX_REDACTION_PASSES = 32
+# Escaped tool output can reveal the next credential assignment only after the
+# previous nested value is replaced. Keep a hard safety bound, but allow dense
+# diagnostic payloads to reach the same fixed point as ordinary messages.
+MAX_REDACTION_PASSES = 256
 
 
 @dataclass(frozen=True)

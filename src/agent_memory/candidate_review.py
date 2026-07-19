@@ -7,7 +7,6 @@ import os
 import re
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
-from itertools import combinations
 from pathlib import Path
 from typing import Any
 
@@ -21,31 +20,69 @@ from .hermes_selection import is_automated_export_session
 from .model_adapter import is_graph_entity_candidate
 from .redaction import redact_text
 
-METHOD = "phase-c-candidate-review-v2"
+METHOD = "phase-c-candidate-review-v3"
 MAX_ENTITIES = 80
 MAX_RELATIONS = 120
 MAX_EXCERPT = 260
+PLANET_ENTITY_TYPES = {
+    "person",
+    "project",
+    "device",
+    "service",
+    "location",
+    "organization",
+}
 
 EXPLICIT_ENTITY_PATTERN = re.compile(
-    r"(?P<context>项目|仓库|服务|容器|设备|主机|服务器|数据库|平台|地点|城市|"
+    r"(?P<context>服务器|数据库|项目|仓库|服务|容器|设备|主机|平台|地点|城市|"
     r"组织|公司|工具|框架|技术|模型|project|repository|repo|service|container|"
     r"device|server|database|platform|location|organization|tool|framework|model)"
-    r"\s*(?:名为|叫做|叫|是|为|[:：])?\s*[`'\"“]?"
+    r"\s*(?:名为|叫做|叫|是(?!否)|为|[:：])\s*[`'\"“]?"
     r"(?P<name>[A-Za-z][A-Za-z0-9_.-]{1,63}|[\u4e00-\u9fff]{2,16})",
     re.IGNORECASE,
 )
+CONTEXT_NAMED_TOKEN_PATTERN = re.compile(
+    r"(?P<context>服务器|数据库|项目|仓库|服务|容器|设备|主机|平台|地点|城市|"
+    r"组织|公司|project|repository|repo|service|container|device|server|database|"
+    r"platform|location|organization)\s+[`'\"“]?"
+    r"(?P<name>[A-Za-z][A-Za-z0-9_.-]{1,63})",
+    re.IGNORECASE,
+)
 BACKTICK_PATTERN = re.compile(r"`(?P<name>[A-Za-z][A-Za-z0-9_.-]{1,63})`")
-TECH_TOKEN_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_])(?P<name>[A-Z][A-Za-z0-9]{2,}(?:[-_.][A-Za-z0-9]+)*)"
-)
-MULTIWORD_TOKEN_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_])(?P<name>[A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+){1,2})"
-)
 SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[。！？!?；;])|\n+")
 FILE_SUFFIX_PATTERN = re.compile(
     r"\.(?:json|ya?ml|md|py|sh|txt|log|toml|env|ini|conf|lock)$", re.IGNORECASE
 )
 COMMAND_FRAGMENT_PATTERN = re.compile(r"^(?:sudo|curl|grep|find|cat|sed|awk|rg|ls|cd)$")
+CODE_IDENTIFIER_PATTERN = re.compile(
+    r"(?:^hwui_|_|\.(?:js|ts|tsx|jsx)$|Error$|^[a-z]+[A-Z][A-Za-z]+$)"
+)
+NON_EVIDENCE_USER_PATTERN = re.compile(
+    r"^\s*(?:\[CONTEXT COMPACTION\b|\[IMPORTANT:\s*The user has invoked\b|"
+    r"<codex_internal_context\b|<untrusted_tool_result\b)",
+    re.IGNORECASE,
+)
+DIRECT_OBSERVATION_TOOLS = {
+    "terminal",
+    "browser_console",
+    "browser_navigate",
+    "browser_snapshot",
+    "environment_observe",
+    "ha_list_entities",
+    "ha_get_state",
+    "project_list",
+}
+DIRECT_OBSERVATION_TOOL_FRAGMENTS = (
+    "hermes_studio_lan_command_exec",
+    "hermes_studio_lan_devices_list",
+    "hermes_studio_lan_devices_scan",
+    "hermes_studio_lan_peer_connect",
+    "hermes_studio_lan_peer_connections",
+    "hermes_studio_use_worker_status",
+    "hermes_studio_use_profiles_list",
+    "hermes_studio_use_sessions_list",
+    "hermes_studio_use_sessions_count",
+)
 STRUCTURED_ENTITY_PATTERN = re.compile(
     r'["\']?(?P<field>service|container|instance)["\']?\s*:\s*'
     r'["\'](?P<name>[A-Za-z0-9][A-Za-z0-9_.:-]{1,63})["\']',
@@ -59,9 +96,24 @@ DOMAIN_ENTITY_PATTERNS = (
         "Xiaomi 智能音箱 Pro",
     ),
     (re.compile(r"\bAgent Bridge\b", re.IGNORECASE), "service", "Agent Bridge"),
-    (re.compile(r"\bHermes WebUI\b", re.IGNORECASE), "service", "Hermes WebUI"),
+    (
+        re.compile(r"\bHermes\s+Web\s*UI\b", re.IGNORECASE),
+        "service",
+        "Hermes WebUI",
+    ),
+    (re.compile(r"\bHermes Agent\b", re.IGNORECASE), "service", "Hermes Agent"),
+    (re.compile(r"\bHermes Studio\b", re.IGNORECASE), "service", "Hermes Studio"),
+    (re.compile(r"\bHindsight\b", re.IGNORECASE), "service", "Hindsight"),
     (re.compile(r"\bAlertmanager\b", re.IGNORECASE), "service", "Alertmanager"),
     (re.compile(r"\bPrometheus\b", re.IGNORECASE), "service", "Prometheus"),
+    (re.compile(r"\bPostgreSQL\b", re.IGNORECASE), "service", "PostgreSQL"),
+    (re.compile(r"\bOpenClash\b", re.IGNORECASE), "service", "OpenClash"),
+    (re.compile(r"\bClash Verge\b", re.IGNORECASE), "service", "Clash Verge"),
+    (re.compile(r"\bTailscale\b", re.IGNORECASE), "service", "Tailscale"),
+    (re.compile(r"\bHimalaya(?:-CLI)?\b", re.IGNORECASE), "service", "Himalaya"),
+    (re.compile(r"\bPortainer\b", re.IGNORECASE), "service", "Portainer"),
+    (re.compile(r"\bSouth Plus\b", re.IGNORECASE), "service", "South Plus"),
+    (re.compile(r"\bRainyun\b|\b雨云\b", re.IGNORECASE), "service", "Rainyun"),
 )
 
 STOP_NAMES = {
@@ -90,19 +142,25 @@ STOP_NAMES = {
     "bridge",
     "context",
     "date",
+    "extensions",
+    "fetch",
     "firing",
     "for",
     "groupchat",
     "hermes alertmanager",
     "home",
     "hint",
+    "hostname",
     "info",
     "local",
+    "main",
     "node",
+    "approved",
     "object",
     "outage",
     "payload",
     "pro",
+    "qishuo",
     "resolved",
     "results",
     "socket.io",
@@ -124,6 +182,7 @@ STOP_NAMES = {
     "本地",
     "测试",
     "问题",
+    "什么",
     "项目",
     "项目开发",
     "开发",
@@ -171,6 +230,12 @@ TYPE_OVERRIDES = {
     "fastapi": "technology",
     "github": "organization",
     "hermes webui": "service",
+    "hermes web ui": "service",
+    "hermes agent": "service",
+    "hermes studio": "service",
+    "hindsight": "service",
+    "himalaya": "service",
+    "himalaya-cli": "service",
     "home assistant": "service",
     "linux": "technology",
     "opencode": "tool",
@@ -180,12 +245,27 @@ TYPE_OVERRIDES = {
     "python": "technology",
     "react": "technology",
     "redis": "service",
+    "launchd": "service",
+    "openclash": "service",
+    "clash verge": "service",
+    "south plus": "service",
+    "tailscale": "service",
+    "portainer": "service",
+    "hermes-web-ui": "service",
+    "hermes-agent": "service",
     "typescript": "technology",
 }
 
 
 def _normalize_name(value: str) -> str:
-    return " ".join(value.strip("`'\"“”‘’.,，。:：;；()（）[]【】{}").split())
+    normalized = " ".join(value.strip("`'\"“”‘’.,，。:：;；()（）[]【】{}").split())
+    aliases = {
+        "hermes web ui": "Hermes WebUI",
+        "hermes-web-ui": "Hermes WebUI",
+        "hermes-agent": "Hermes Agent",
+        "himalaya-cli": "Himalaya",
+    }
+    return aliases.get(normalized.casefold(), normalized)
 
 
 def _infer_type(name: str, context: str) -> str:
@@ -201,18 +281,70 @@ def _infer_type(name: str, context: str) -> str:
 def _valid_name(name: str, entity_type: str) -> bool:
     folded = name.casefold()
     return bool(
-        folded not in STOP_NAMES
+        entity_type in PLANET_ENTITY_TYPES
+        and folded not in STOP_NAMES
         and not folded.endswith("smoketest")
         and not FILE_SUFFIX_PATTERN.search(name)
         and not COMMAND_FRAGMENT_PATTERN.fullmatch(folded)
+        and not folded.startswith(("mcp_", "mcp__", "s_"))
+        and not CODE_IDENTIFIER_PATTERN.search(name)
         and not name.startswith(("-", ".", "/"))
         and is_graph_entity_candidate(name, entity_type)
     )
 
 
+def is_direct_observation_tool(tool_name: str) -> bool:
+    normalized = tool_name.strip().casefold()
+    return normalized in DIRECT_OBSERVATION_TOOLS or any(
+        fragment in normalized for fragment in DIRECT_OBSERVATION_TOOL_FRAGMENTS
+    )
+
+
+def _remove_subordinate_mentions(
+    candidates: dict[str, dict[str, str]],
+) -> list[dict[str, str]]:
+    retained = []
+    for key, candidate in candidates.items():
+        if any(
+            key != other_key
+            and len(key) < len(other_key)
+            and re.search(rf"(?<!\w){re.escape(key)}(?!\w)", other_key)
+            for other_key in candidates
+        ):
+            continue
+        retained.append(candidate)
+    return sorted(retained, key=lambda item: item["name"].casefold())
+
+
+def extract_domain_mentions(text: str) -> list[dict[str, str]]:
+    """Extract only allowlisted or structured entities from tool observations."""
+    candidates: dict[str, dict[str, str]] = {}
+
+    def add_typed(raw_name: str, entity_type: str, reason: str) -> None:
+        name = _normalize_name(raw_name)
+        if not _valid_name(name, entity_type):
+            return
+        candidates[name.casefold()] = {
+            "name": name,
+            "entity_type": entity_type,
+            "reason": reason,
+        }
+
+    for pattern, entity_type, canonical_name in DOMAIN_ENTITY_PATTERNS:
+        if pattern.search(text):
+            add_typed(canonical_name, entity_type, "explicit")
+    for match in STRUCTURED_ENTITY_PATTERN.finditer(text):
+        field = match.group("field").casefold()
+        entity_type = "device" if field == "instance" else "service"
+        add_typed(match.group("name"), entity_type, f"structured-{field}")
+    return _remove_subordinate_mentions(candidates)
+
+
 def extract_mentions(text: str) -> list[dict[str, str]]:
     """Return conservative local candidates; none are accepted facts or entities."""
-    candidates: dict[str, dict[str, str]] = {}
+    candidates = {
+        item["name"].casefold(): item for item in extract_domain_mentions(text)
+    }
 
     def add(raw_name: str, context: str, reason: str) -> None:
         name = _normalize_name(raw_name)
@@ -228,37 +360,15 @@ def extract_mentions(text: str) -> list[dict[str, str]]:
                 "reason": reason,
             }
 
-    def add_typed(raw_name: str, entity_type: str, reason: str) -> None:
-        name = _normalize_name(raw_name)
-        if not _valid_name(name, entity_type):
-            return
-        key = name.casefold()
-        candidates[key] = {
-            "name": name,
-            "entity_type": entity_type,
-            "reason": reason,
-        }
-
-    for pattern, entity_type, canonical_name in DOMAIN_ENTITY_PATTERNS:
-        if pattern.search(text):
-            add_typed(canonical_name, entity_type, "explicit")
-    for match in STRUCTURED_ENTITY_PATTERN.finditer(text):
-        field = match.group("field").casefold()
-        entity_type = "device" if field == "instance" else "service"
-        add_typed(match.group("name"), entity_type, f"structured-{field}")
-
     for match in EXPLICIT_ENTITY_PATTERN.finditer(text):
+        add(match.group("name"), match.group(0), "explicit")
+    for match in CONTEXT_NAMED_TOKEN_PATTERN.finditer(text):
         add(match.group("name"), match.group(0), "explicit")
     for match in BACKTICK_PATTERN.finditer(text):
         start = max(0, match.start() - 48)
         end = min(len(text), match.end() + 48)
         add(match.group("name"), text[start:end], "backtick")
-    for pattern in (MULTIWORD_TOKEN_PATTERN, TECH_TOKEN_PATTERN):
-        for match in pattern.finditer(text):
-            start = max(0, match.start() - 48)
-            end = min(len(text), match.end() + 48)
-            add(match.group("name"), text[start:end], "named-token")
-    return sorted(candidates.values(), key=lambda item: item["name"].casefold())
+    return _remove_subordinate_mentions(candidates)
 
 
 def _sentences(text: str) -> list[str]:
@@ -363,6 +473,8 @@ def build_review(source: Path, selection: Path) -> dict[str, Any]:
     messages_scanned = 0
     sentences_scanned = 0
     roles_scanned: Counter[str] = Counter()
+    skipped_non_evidence_messages = 0
+    skipped_non_observation_tool_messages = 0
 
     for session in sessions:
         session_id = str(session.get("id") or session.get("session_id"))
@@ -370,17 +482,29 @@ def build_review(source: Path, selection: Path) -> dict[str, Any]:
             if not isinstance(message, dict):
                 continue
             role = str(message.get("role") or "").casefold()
-            if role not in {"user", "assistant"}:
+            if role not in {"user", "assistant", "tool"}:
+                continue
+            tool_name = str(message.get("tool_name") or "")
+            if role == "tool" and not is_direct_observation_tool(tool_name):
+                skipped_non_observation_tool_messages += 1
                 continue
             text = redact_text(_message_text(message.get("content"))).text
             if not text.strip():
                 continue
+            if role == "user" and NON_EVIDENCE_USER_PATTERN.search(text):
+                skipped_non_evidence_messages += 1
+                continue
             messages_scanned += 1
             roles_scanned[role] += 1
             message_mentions: set[str] = set()
+            sentence_relation_pairs: set[tuple[str, str]] = set()
             for sentence_index, sentence in enumerate(_sentences(text)):
                 sentences_scanned += 1
-                mentions = extract_mentions(sentence)
+                mentions = (
+                    extract_domain_mentions(sentence)
+                    if role == "tool"
+                    else extract_mentions(sentence)
+                )
                 if not mentions:
                     continue
                 evidence_ref = _evidence_ref(session_id, message_index, sentence_index)
@@ -388,6 +512,7 @@ def build_review(source: Path, selection: Path) -> dict[str, Any]:
                     "evidence_ref": evidence_ref,
                     "session_ref": _session_ref(session_id),
                     "role": role,
+                    "tool_name": tool_name if role == "tool" else "",
                     "excerpt": _excerpt(sentence),
                 }
                 for mention in mentions:
@@ -398,19 +523,21 @@ def build_review(source: Path, selection: Path) -> dict[str, Any]:
                     }:
                         entity_evidence[key].append(evidence)
                     message_mentions.add(key)
-            if role == "user" and 2 <= len(message_mentions) <= 8:
+                if role in {"user", "tool"} and len(mentions) == 2:
+                    pair = tuple(sorted(mention["name"].casefold() for mention in mentions))
+                    sentence_relation_pairs.add(pair)
+                    relation_evidence[pair].append(evidence)
+            if role == "user" and len(message_mentions) == 2:
+                pair = tuple(sorted(message_mentions))
+                if pair in sentence_relation_pairs:
+                    continue
                 message_evidence = {
                     "evidence_ref": _evidence_ref(session_id, message_index, -1),
                     "session_ref": _session_ref(session_id),
                     "role": role,
                     "excerpt": _excerpt(text),
                 }
-                for source_name, target_name in combinations(
-                    sorted(message_mentions), 2
-                ):
-                    relation_evidence[(source_name, target_name)].append(
-                        message_evidence
-                    )
+                relation_evidence[pair].append(message_evidence)
 
     entities: list[dict[str, Any]] = []
     retained_keys: set[str] = set()
@@ -418,7 +545,7 @@ def build_review(source: Path, selection: Path) -> dict[str, Any]:
         roles = Counter(item["role"] for item in evidence)
         sessions_seen = {item["session_ref"] for item in evidence}
         explicit = entity_meta[key]["reason"] == "explicit"
-        if not roles["user"]:
+        if not roles["user"] and not roles["tool"]:
             continue
         score = (
             roles["user"] * 3
@@ -487,6 +614,10 @@ def build_review(source: Path, selection: Path) -> dict[str, Any]:
         "messages_scanned": messages_scanned,
         "sentences_scanned": sentences_scanned,
         "roles_scanned": dict(sorted(roles_scanned.items())),
+        "skipped_non_evidence_messages": skipped_non_evidence_messages,
+        "skipped_non_observation_tool_messages": (
+            skipped_non_observation_tool_messages
+        ),
         "model_called": False,
         "external_data_sent": False,
         "entities": entities,
@@ -514,6 +645,11 @@ def render_private_review(review: dict[str, Any]) -> str:
         f"实际扫描：{review['selected_sessions']}；"
             f"消息：{review['messages_scanned']}；"
             f"句段：{review['sentences_scanned']}。"
+        ),
+        f"- 排除压缩摘要/提示包装消息：{review['skipped_non_evidence_messages']}。",
+        (
+            "- 排除非直接环境观察工具消息："
+            f"{review['skipped_non_observation_tool_messages']}。"
         ),
         f"- 角色分布：{json.dumps(review['roles_scanned'], ensure_ascii=False, sort_keys=True)}。",
         "- 模型调用：否；外部数据发送：否；数据库写入：否。",
@@ -601,6 +737,11 @@ def render_public_summary(review: dict[str, Any], private_output: Path) -> str:
                 f"实际扫描：{review['selected_sessions']}。"
             ),
             f"- 扫描消息/句段：{review['messages_scanned']} / {review['sentences_scanned']}。",
+            f"- 排除压缩摘要/提示包装消息：{review['skipped_non_evidence_messages']}。",
+            (
+                "- 排除非直接环境观察工具消息："
+                f"{review['skipped_non_observation_tool_messages']}。"
+            ),
             (
                 f"- 待审核实体：{len(review['entities'])}；类型分布："
                 f"{json.dumps(dict(sorted(entity_types.items())), ensure_ascii=False)}。"

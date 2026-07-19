@@ -15,6 +15,7 @@ from .hermes_import import (
     SESSION_PLAN_VERSION,
     _canonical_sha256,
     _file_sha256,
+    _load_session_selection,
     _load_sessions,
     _message_text,
 )
@@ -57,7 +58,10 @@ AUTOMATED_EXPORT_SESSION_PATTERN = re.compile(r"^cron_[^:]*$", re.IGNORECASE)
 
 def is_automated_export_session(session: dict[str, Any]) -> bool:
     session_id = str(session.get("id") or session.get("session_id") or "").strip()
-    return bool(AUTOMATED_EXPORT_SESSION_PATTERN.fullmatch(session_id))
+    source = str(session.get("source") or "").strip().casefold()
+    return source == "cron" or bool(
+        AUTOMATED_EXPORT_SESSION_PATTERN.fullmatch(session_id)
+    )
 
 
 def _session_categories(session: dict[str, Any]) -> list[str]:
@@ -89,7 +93,13 @@ def _stable_rank(seed: str, session_id: str) -> str:
 
 
 def create_selection(
-    source: Path, *, count: int, seed: str, exclude_automated: bool = False
+    source: Path,
+    *,
+    count: int,
+    seed: str,
+    exclude_automated: bool = False,
+    excluded_session_ids: set[str] | None = None,
+    excluded_selection_sha256: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     if count < 1 or count > 50:
         raise ValueError("--count must be between 1 and 50")
@@ -99,10 +109,17 @@ def create_selection(
     sessions = _load_sessions(source_path)
     if count > len(sessions):
         raise ValueError("--count exceeds the number of sessions in the export")
-    eligible_sessions = [
+    non_automated_sessions = [
         session
         for session in sessions
         if not (exclude_automated and is_automated_export_session(session))
+    ]
+    excluded_session_ids = excluded_session_ids or set()
+    eligible_sessions = [
+        session
+        for session in non_automated_sessions
+        if str(session.get("id") or session.get("session_id"))
+        not in excluded_session_ids
     ]
     if count > len(eligible_sessions):
         raise ValueError("--count exceeds the eligible session count")
@@ -153,7 +170,9 @@ def create_selection(
         "source_session_count": len(sessions),
         "selected_session_count": len(selected),
         "eligible_session_count": len(eligible_sessions),
-        "automated_sessions_excluded": len(sessions) - len(eligible_sessions),
+        "automated_sessions_excluded": len(sessions) - len(non_automated_sessions),
+        "prior_sessions_excluded": len(non_automated_sessions) - len(eligible_sessions),
+        "excluded_selection_sha256": list(excluded_selection_sha256),
         "exclude_automated": exclude_automated,
         "seed": seed,
         "category_counts": dict(sorted(selected_category_counts.items())),
@@ -188,14 +207,33 @@ def main() -> None:
     parser.add_argument("--count", type=int, default=30)
     parser.add_argument("--seed", default="v1-rc2")
     parser.add_argument("--exclude-automated", action="store_true")
+    parser.add_argument(
+        "--exclude-selection",
+        action="append",
+        default=[],
+        type=Path,
+        help="Exclude ids already bound by a prior selection for the same source.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
+        source_path = args.source.expanduser().resolve()
+        source_sha256 = _file_sha256(source_path)
+        excluded_ids: set[str] = set()
+        excluded_hashes: list[str] = []
+        for prior_selection in args.exclude_selection:
+            prior_ids, prior_sha256 = _load_session_selection(
+                prior_selection, source_sha256=source_sha256
+            )
+            excluded_ids.update(prior_ids)
+            excluded_hashes.append(prior_sha256)
         selection = create_selection(
-            args.source,
+            source_path,
             count=args.count,
             seed=args.seed,
             exclude_automated=args.exclude_automated,
+            excluded_session_ids=excluded_ids,
+            excluded_selection_sha256=tuple(excluded_hashes),
         )
         target = write_selection(selection, args.output)
         summary = {key: value for key, value in selection.items() if key != "session_ids"}

@@ -43,6 +43,8 @@ agent-memory-evaluation-report = "agent_memory.evaluation_report:main"
 agent-memory-apply-model-policy = "agent_memory.model_policy:main"
 agent-memory-community-report = "agent_memory.community_report:main"
 agent-memory-candidate-review = "agent_memory.candidate_review:main"
+agent-memory-normalize-hermes-backup = "agent_memory.hermes_backup:main"
+agent-memory-gold-review = "agent_memory.gold_review:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_memory"]

@@ -3,6 +3,7 @@ from pathlib import Path
 
 from agent_memory.candidate_review import (
     build_review,
+    extract_domain_mentions,
     extract_mentions,
     render_private_review,
     render_public_summary,
@@ -36,6 +37,14 @@ def test_extract_mentions_keeps_planets_and_rejects_alert_event_noise() -> None:
         "hermes-alert-relay": "service",
         "Home Assistant": "service",
         "Xiaomi 智能音箱 Pro": "device",
+    }
+
+    tool_mentions = extract_domain_mentions(
+        'Alertmanager observation: {"service":"hermes-alert-relay"}'
+    )
+    assert {item["name"] for item in tool_mentions} == {
+        "Alertmanager",
+        "hermes-alert-relay",
     }
 
 
@@ -155,3 +164,61 @@ def test_build_review_defensively_excludes_automated_sessions(tmp_path: Path) ->
     assert review["selected_sessions"] == 1
     assert review["automated_sessions_excluded"] == 1
     assert "Himalaya" not in {item["name"] for item in review["entities"]}
+
+
+def test_review_skips_compaction_and_avoids_multi_entity_cliques(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "export.jsonl"
+    session = {
+        "id": "interactive-1",
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "[CONTEXT COMPACTION — REFERENCE ONLY] "
+                    "Hermes Studio、Hindsight、OpenClash"
+                ),
+            },
+            {
+                "role": "user",
+                "content": "分别检查 Hermes Studio、Hindsight 和 OpenClash。",
+            },
+            {
+                "role": "tool",
+                "tool_name": "environment_observe",
+                "content": 'Alertmanager observation: {"service":"hermes-alert-relay"}',
+            },
+        ],
+    }
+    source.write_text(json.dumps(session, ensure_ascii=False) + "\n")
+    payload = {
+        "version": "hermes-session-selection-v1",
+        "source_sha256": _file_sha256(source),
+        "source_session_count": 1,
+        "selected_session_count": 1,
+        "seed": "test",
+        "category_counts": {},
+        "source_category_counts": {},
+        "session_ids": ["interactive-1"],
+        "created_at": "2026-07-19T00:00:00+00:00",
+        "contains_message_text": False,
+        "model_called": False,
+        "external_data_sent": False,
+    }
+    selection = tmp_path / "selection.json"
+    selection.write_text(
+        json.dumps({**payload, "selection_sha256": _canonical_sha256(payload)})
+    )
+
+    review = build_review(source, selection)
+
+    assert review["skipped_non_evidence_messages"] == 1
+    assert {(item["source"], item["target"]) for item in review["relations"]} == {
+        ("Alertmanager", "hermes-alert-relay")
+    }
+    assert not any(
+        {item["source"], item["target"]}
+        <= {"Hermes Studio", "Hindsight", "OpenClash"}
+        for item in review["relations"]
+    )
