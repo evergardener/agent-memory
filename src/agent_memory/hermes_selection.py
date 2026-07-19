@@ -52,6 +52,12 @@ CATEGORY_ORDER = (
     "low-value-qa",
     "general",
 )
+AUTOMATED_EXPORT_SESSION_PATTERN = re.compile(r"^cron_[^:]*$", re.IGNORECASE)
+
+
+def is_automated_export_session(session: dict[str, Any]) -> bool:
+    session_id = str(session.get("id") or session.get("session_id") or "").strip()
+    return bool(AUTOMATED_EXPORT_SESSION_PATTERN.fullmatch(session_id))
 
 
 def _session_categories(session: dict[str, Any]) -> list[str]:
@@ -82,7 +88,9 @@ def _stable_rank(seed: str, session_id: str) -> str:
     return hashlib.sha256(f"{seed}:{session_id}".encode()).hexdigest()
 
 
-def create_selection(source: Path, *, count: int, seed: str) -> dict[str, Any]:
+def create_selection(
+    source: Path, *, count: int, seed: str, exclude_automated: bool = False
+) -> dict[str, Any]:
     if count < 1 or count > 50:
         raise ValueError("--count must be between 1 and 50")
     source_path = source.expanduser().resolve()
@@ -91,8 +99,15 @@ def create_selection(source: Path, *, count: int, seed: str) -> dict[str, Any]:
     sessions = _load_sessions(source_path)
     if count > len(sessions):
         raise ValueError("--count exceeds the number of sessions in the export")
+    eligible_sessions = [
+        session
+        for session in sessions
+        if not (exclude_automated and is_automated_export_session(session))
+    ]
+    if count > len(eligible_sessions):
+        raise ValueError("--count exceeds the eligible session count")
     records: list[dict[str, Any]] = []
-    for session in sessions:
+    for session in eligible_sessions:
         session_id = str(session.get("id") or session.get("session_id"))
         records.append(
             {
@@ -137,6 +152,9 @@ def create_selection(source: Path, *, count: int, seed: str) -> dict[str, Any]:
         "source_sha256": _file_sha256(source_path),
         "source_session_count": len(sessions),
         "selected_session_count": len(selected),
+        "eligible_session_count": len(eligible_sessions),
+        "automated_sessions_excluded": len(sessions) - len(eligible_sessions),
+        "exclude_automated": exclude_automated,
         "seed": seed,
         "category_counts": dict(sorted(selected_category_counts.items())),
         "source_category_counts": dict(sorted(source_category_counts.items())),
@@ -169,10 +187,16 @@ def main() -> None:
     parser.add_argument("source", type=Path)
     parser.add_argument("--count", type=int, default=30)
     parser.add_argument("--seed", default="v1-rc2")
+    parser.add_argument("--exclude-automated", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        selection = create_selection(args.source, count=args.count, seed=args.seed)
+        selection = create_selection(
+            args.source,
+            count=args.count,
+            seed=args.seed,
+            exclude_automated=args.exclude_automated,
+        )
         target = write_selection(selection, args.output)
         summary = {key: value for key, value in selection.items() if key != "session_ids"}
         print(json.dumps({**summary, "output": str(target)}, ensure_ascii=False, indent=2))

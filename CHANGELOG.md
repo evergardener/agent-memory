@@ -4,6 +4,8 @@
 
 - 新增只读 `agent-memory-community-report`：从脱敏星图 API 评估实体覆盖、关系边支撑、单事实 clique 膨胀和候选社区最低门槛，不写数据库、不调用模型；
 - 生成首份主空间与真实 Hermes staging 基线报告，当前结论为 `BLOCKED_INPUT_COVERAGE`，阶段 C 不应通过降低防单体门槛继续。
+- Hermes 固定选择增加 `--exclude-automated`，候选复核再次防御性排除 cron session，避免自动任务注入内容污染实体；
+- 新增本地只读 `agent-memory-candidate-review` 和阶段 C 数据选择审计：84 个导出 session 中仅 5 个真实交互 session，保守抽取后为 6 个实体、3 条二元关系、0 个合格社区，需补充代表性交互数据。
 
 ## 1.0.0-rc.6 — 2026-07-19
 

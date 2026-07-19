@@ -174,3 +174,32 @@ def test_selection_rejects_tampering(tmp_path: Path) -> None:
             profile="personal",
             session_selection=selection_path,
         )
+
+
+def test_selection_can_exclude_automated_sessions(tmp_path: Path) -> None:
+    export = tmp_path / "sessions.jsonl"
+    sessions = [
+        {
+            "id": "cron_hourly_health",
+            "messages": [{"role": "user", "content": "自动检查服务状态"}],
+        },
+        {
+            "id": "interactive-1",
+            "messages": [{"role": "user", "content": "排查 Agent Bridge 报错"}],
+        },
+    ]
+    export.write_text(
+        "".join(json.dumps(session, ensure_ascii=False) + "\n" for session in sessions)
+    )
+
+    selection = create_selection(
+        export, count=1, seed="phase-c", exclude_automated=True
+    )
+
+    assert selection["session_ids"] == ["interactive-1"]
+    assert selection["eligible_session_count"] == 1
+    assert selection["automated_sessions_excluded"] == 1
+    assert selection["exclude_automated"] is True
+
+    with pytest.raises(ValueError, match="eligible session count"):
+        create_selection(export, count=2, seed="phase-c", exclude_automated=True)
