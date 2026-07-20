@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- 完成 `weighted-core-expansion-v1` 关系社区、可重叠成员、关系证据链、人工治理/撤销、布局偏好和主/子宇宙 UI；阶段 C 代码提交为 `935faf8`，当前小样本验收状态提交为 `02656de`；
+- 新增 `0013_relation_galaxies`、社区评测与投影、已审关系影子写入器，以及 API/数据库/恢复回归；
+- 修复通用 provider key 脱敏边界并将规则升级至 v4；影子库由只读备份重新生成，未修改生产 Hermes；
+- 增加开发部署、正式迁移/灰度发布和接手交接文档；阶段 C 尚未发布为新版本，也未启用正式 namespace。
 - 新增只读 `agent-memory-community-report`：从脱敏星图 API 评估实体覆盖、关系边支撑、单事实 clique 膨胀和候选社区最低门槛，不写数据库、不调用模型；
 - 生成首份主空间与真实 Hermes staging 基线报告，当前结论为 `BLOCKED_INPUT_COVERAGE`，阶段 C 不应通过降低防单体门槛继续。
 - Hermes 固定选择增加 `--exclude-automated`，候选复核再次防御性排除 cron session，避免自动任务注入内容污染实体；
