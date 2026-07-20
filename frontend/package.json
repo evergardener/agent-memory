@@ -1,12 +1,12 @@
 {
   "name": "agent-memory-star-map",
   "private": true,
-  "version": "1.0.0-rc.6",
+  "version": "1.0.0-rc.7",
   "type": "module",
   "scripts": {
-    "build": "tsc -b && vite build",
+    "build": "npm run typecheck && vite build",
     "dev": "vite",
-    "typecheck": "tsc -b --pretty false"
+    "typecheck": "tsc --noEmit -p tsconfig.app.json --pretty false && tsc --noEmit -p tsconfig.node.json --pretty false"
   },
   "dependencies": {
     "cytoscape": "^3.33.1",

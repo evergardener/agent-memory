@@ -5,7 +5,7 @@ VERSION="$(tr -d '[:space:]' < VERSION)"
 OUTPUT_ROOT="${1:-release-artifacts}"
 OUTPUT_DIR="$OUTPUT_ROOT/$VERSION"
 ARCHIVE="$OUTPUT_DIR/agent-memory-$VERSION-source.tar.gz"
-IMAGE="agent-memory-api:$VERSION"
+IMAGE="${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-api:$VERSION"
 
 mkdir -p "$OUTPUT_DIR"
 rm -f "$ARCHIVE" "$OUTPUT_DIR/SHA256SUMS" "$OUTPUT_DIR/IMAGE.txt"
@@ -18,8 +18,9 @@ COPYFILE_DISABLE=1 tar -czf "$ARCHIVE" \
   --exclude='.ruff_cache' \
   --exclude='*/__pycache__' \
   --exclude='*.pyc' \
-  .dockerignore .env.example .gitignore CHANGELOG.md Dockerfile README.md VERSION \
-  alembic.ini compose.yaml pyproject.toml uv.lock \
+  .dockerignore .env.example .env.release.example .gitignore \
+  CHANGELOG.md Dockerfile README.md VERSION \
+  alembic.ini compose.yaml compose.release.yaml pyproject.toml uv.lock \
   docs frontend integrations migrations scripts src tests
 
 docker image inspect "$IMAGE" \

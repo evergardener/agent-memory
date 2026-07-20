@@ -4,7 +4,7 @@ requires-python = ">=3.12"
 
 [[package]]
 name = "agent-memory"
-version = "1.0.0rc6"
+version = "1.0.0rc7"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },

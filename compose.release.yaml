@@ -1,0 +1,10 @@
+services:
+  postgres:
+    networks:
+      - backend
+      - edge
+    ports:
+      - target: 5432
+        published: ${AGENT_MEMORY_RELEASE_POSTGRES_PORT:-7805}
+        host_ip: 127.0.0.1
+        protocol: tcp

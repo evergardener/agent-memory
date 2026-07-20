@@ -1,12 +1,17 @@
 from datetime import UTC, datetime, timedelta
 
 from agent_memory.graph import (
+    COMMUNITY_PROJECTION_VERSION,
     GraphLens,
     entity_projection_allowed,
     fact_matches_lens,
     node_visibility,
     subject_visibility,
 )
+
+
+def test_graph_projection_metadata_uses_current_community_version() -> None:
+    assert COMMUNITY_PROJECTION_VERSION == "community-projection-v1"
 
 
 def test_internal_integration_identifiers_are_automated_noise() -> None:

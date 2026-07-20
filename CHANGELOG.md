@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 准备 `1.0.0-rc.7`：完成阶段 C 类型化关系星系、可重叠社区、人工治理、证据追溯及主/子宇宙联动；
+- 发布 Gate 改为独立 Docker project、镜像前缀、data/backup/Vault 路径、端口与网段，并加入失败关闭预检、只读根文件系统、最小 capability、readiness 与 OCI version/revision 校验；
+- 正式已审关系提升增加计划 SHA、namespace 原文、固定确认短语、change ID、备份清单 SHA 和逐文件校验；默认仍拒绝生产写入；
+- 新增 `0014_audit_event_order`，修复同事务内多次星系治理后撤销顺序不确定；补齐阶段 C 数据库/API 发布回归；
+- 收紧安全边界：原始 turn ingest 仅允许 service token，Hermes Provider 仅允许本机 loopback HTTP API；
+- 前端构建改为无增量的显式 app/node typecheck，避免复用 `noEmit` build state 导致 Gate 挂起；
+- 完成全新隔离环境的前后端、API/Hermes、故障恢复、社区投影、备份恢复与 Vault 解密 Gate；未修改生产 Hermes 或正式 namespace。
+
 - 完成 `weighted-core-expansion-v1` 关系社区、可重叠成员、关系证据链、人工治理/撤销、布局偏好和主/子宇宙 UI；阶段 C 代码提交为 `935faf8`，当前小样本验收状态提交为 `02656de`；
 - 新增 `0013_relation_galaxies`、社区评测与投影、已审关系影子写入器，以及 API/数据库/恢复回归；
 - 修复通用 provider key 脱敏边界并将规则升级至 v4；影子库由只读备份重新生成，未修改生产 Hermes；

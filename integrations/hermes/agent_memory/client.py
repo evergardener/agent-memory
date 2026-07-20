@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import urllib.error
 import urllib.parse
@@ -22,6 +23,25 @@ class AgentMemoryHttpClient:
     base_url: str
     service_token: str
     timeout_seconds: float = 2.0
+
+    def __post_init__(self) -> None:
+        parsed = urllib.parse.urlsplit(self.base_url)
+        try:
+            is_loopback = ipaddress.ip_address(parsed.hostname or "").is_loopback
+        except ValueError:
+            is_loopback = (parsed.hostname or "").casefold() == "localhost"
+        if (
+            parsed.scheme != "http"
+            or not is_loopback
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in ("", "/")
+        ):
+            raise ValueError(
+                "Agent Memory Provider API URL must be a loopback HTTP origin"
+            )
 
     def _execute(self, request: urllib.request.Request) -> dict[str, Any]:
         try:

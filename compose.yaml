@@ -1,4 +1,19 @@
-name: agent-memory
+name: ${AGENT_MEMORY_COMPOSE_PROJECT:-agent-memory}
+
+x-app-hardening: &app-hardening
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+
+x-app-build: &app-build
+  context: .
+  args:
+    AGENT_MEMORY_BUILD_VERSION: ${AGENT_MEMORY_VERSION:-1.0.0-rc.7}
+    AGENT_MEMORY_BUILD_REVISION: ${AGENT_MEMORY_REVISION:-unknown}
 
 services:
   postgres:
@@ -13,16 +28,21 @@ services:
       timeout: 3s
       retries: 20
     volumes:
-      - ./data/postgres:/var/lib/postgresql
+      - type: bind
+        source: ${AGENT_MEMORY_POSTGRES_DATA_DIR:-./data/postgres}
+        target: /var/lib/postgresql
     networks: [backend]
     restart: unless-stopped
 
   migrate:
-    image: agent-memory-migrate:${AGENT_MEMORY_VERSION:-1.0.0-rc.6}
-    build: .
+    <<: *app-hardening
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-migrate:${AGENT_MEMORY_VERSION:-1.0.0-rc.7}
+    build: *app-build
     command: ["alembic", "upgrade", "head"]
     environment: &app-env
-      AGENT_MEMORY_VERSION: ${AGENT_MEMORY_VERSION:-1.0.0-rc.6}
+      AGENT_MEMORY_VERSION: ${AGENT_MEMORY_VERSION:-1.0.0-rc.7}
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
       AGENT_MEMORY_DATABASE_URL: postgresql://agent_memory:${AGENT_MEMORY_DB_PASSWORD}@postgres:5432/agent_memory
       AGENT_MEMORY_SERVICE_TOKEN: ${AGENT_MEMORY_SERVICE_TOKEN:?set AGENT_MEMORY_SERVICE_TOKEN}
       AGENT_MEMORY_NAMESPACE: ${AGENT_MEMORY_NAMESPACE:-hermes:user-primary}
@@ -49,8 +69,9 @@ services:
     restart: "no"
 
   api:
-    image: agent-memory-api:${AGENT_MEMORY_VERSION:-1.0.0-rc.6}
-    build: .
+    <<: *app-hardening
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-api:${AGENT_MEMORY_VERSION:-1.0.0-rc.7}
+    build: *app-build
     command: ["agent-memory-api"]
     environment: *app-env
     depends_on:
@@ -59,7 +80,7 @@ services:
     ports:
       - "127.0.0.1:${AGENT_MEMORY_API_PORT:-7788}:8080"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/live').read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready').read()"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -68,9 +89,10 @@ services:
     restart: unless-stopped
 
   import-api:
+    <<: *app-hardening
     profiles: ["import"]
-    image: agent-memory-api:${AGENT_MEMORY_VERSION:-1.0.0-rc.6}
-    build: .
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-api:${AGENT_MEMORY_VERSION:-1.0.0-rc.7}
+    build: *app-build
     command: ["agent-memory-api"]
     environment:
       <<: *app-env
@@ -90,9 +112,10 @@ services:
     restart: "no"
 
   import-worker:
+    <<: *app-hardening
     profiles: ["import"]
-    image: agent-memory-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.6}
-    build: .
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.7}
+    build: *app-build
     command: ["agent-memory-worker"]
     environment:
       <<: *app-env
@@ -106,9 +129,10 @@ services:
     restart: "no"
 
   import-model-worker:
+    <<: *app-hardening
     profiles: ["import"]
-    image: agent-memory-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.6}
-    build: .
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.7}
+    build: *app-build
     command: ["agent-memory-worker"]
     environment:
       <<: *app-env
@@ -131,8 +155,9 @@ services:
     restart: "no"
 
   worker:
-    image: agent-memory-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.6}
-    build: .
+    <<: *app-hardening
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.7}
+    build: *app-build
     command: ["agent-memory-worker"]
     environment:
       <<: *app-env
@@ -145,8 +170,9 @@ services:
     restart: unless-stopped
 
   model-worker:
-    image: agent-memory-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.6}
-    build: .
+    <<: *app-hardening
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.7}
+    build: *app-build
     command: ["agent-memory-worker"]
     environment:
       <<: *app-env
@@ -169,12 +195,12 @@ networks:
     internal: true
     ipam:
       config:
-        - subnet: 172.16.240.0/24
+        - subnet: ${AGENT_MEMORY_BACKEND_SUBNET:-172.16.240.0/24}
   edge:
     ipam:
       config:
-        - subnet: 172.16.241.0/24
+        - subnet: ${AGENT_MEMORY_EDGE_SUBNET:-172.16.241.0/24}
 
 secrets:
   vault_root_key:
-    file: ./secrets/vault_root_key
+    file: ${AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE:-./secrets/vault_root_key}

@@ -8,6 +8,12 @@ RUN npm run build
 
 FROM python:3.12-slim AS runtime
 
+ARG AGENT_MEMORY_BUILD_VERSION=dev
+ARG AGENT_MEMORY_BUILD_REVISION=unknown
+LABEL org.opencontainers.image.title="Agent Memory for Hermes" \
+      org.opencontainers.image.version="${AGENT_MEMORY_BUILD_VERSION}" \
+      org.opencontainers.image.revision="${AGENT_MEMORY_BUILD_REVISION}"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1

@@ -9,6 +9,7 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 
 from .classification import QUERY_ONLY_PATTERN
+from .community_projection import PROJECTION_VERSION as COMMUNITY_PROJECTION_VERSION
 from .config import get_settings
 from .ids import stable_uuid
 from .model_adapter import is_internal_entity_label
@@ -574,7 +575,7 @@ def load_graph(
     return {
         "projection": {
             "version": "planetary-v2",
-            "community_projection": "phase-c-pending",
+            "community_projection": COMMUNITY_PROJECTION_VERSION,
             "active_lenses": {
                 "profiles": list(lens.profiles),
                 "fact_types": list(lens.fact_types),

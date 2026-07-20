@@ -22,6 +22,16 @@ from .ids import stable_uuid
 
 PROJECTION_VERSION = "human-reviewed-relations-v1"
 ALLOWED_SHADOW_MARKERS = ("shadow", "staging", "automated-tests")
+PRODUCTION_CONFIRMATION = "APPLY_REVIEWED_RELATIONS_TO_PRODUCTION"
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+CHANGE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,63}$")
+BACKUP_MANIFEST_REQUIRED_FILES = {
+    "agent_memory.dump",
+    "compose.yaml",
+    "runtime.env",
+    "uv.lock",
+    "VERSION",
+}
 ROLE_EVENT_TYPES = {"user": "user_message", "tool": "tool_result"}
 RELATION_STATEMENTS = {
     "uses_database": "{source} 使用 {target} 作为数据库",
@@ -40,6 +50,15 @@ class ReviewedRelationPlan:
     @property
     def confirm_sha256(self) -> str:
         return str(self.public["confirm_sha256"])
+
+
+@dataclass(frozen=True)
+class ProductionApplyAuthorization:
+    namespace: str
+    confirmation: str
+    backup_manifest: Path
+    backup_manifest_sha256: str
+    change_id: str
 
 
 def _file_sha256(path: Path) -> str:
@@ -179,14 +198,66 @@ def build_reviewed_relation_plan(
     return ReviewedRelationPlan(public=public, private_support=private_support)
 
 
-def _validate_apply(plan: ReviewedRelationPlan, confirm_sha256: str) -> None:
+def _verify_backup_manifest(authorization: ProductionApplyAuthorization) -> str:
+    manifest = authorization.backup_manifest
+    if manifest.name != "SHA256SUMS" or not manifest.is_file():
+        raise ValueError("production apply requires an existing SHA256SUMS backup manifest")
+    expected_manifest_sha = authorization.backup_manifest_sha256.casefold()
+    if not SHA256_PATTERN.fullmatch(expected_manifest_sha):
+        raise ValueError("backup manifest confirmation must be a lowercase SHA-256")
+    actual_manifest_sha = _file_sha256(manifest)
+    if not hashlib.sha256(manifest.read_bytes()).hexdigest() == actual_manifest_sha:
+        raise ValueError("backup manifest could not be read consistently")
+    if actual_manifest_sha != expected_manifest_sha:
+        raise ValueError("backup manifest SHA-256 does not match the confirmed value")
+
+    verified: set[str] = set()
+    for raw_line in manifest.read_text(encoding="utf-8").splitlines():
+        parts = raw_line.strip().split(maxsplit=1)
+        if len(parts) != 2 or not SHA256_PATTERN.fullmatch(parts[0].casefold()):
+            raise ValueError("backup manifest contains an invalid checksum line")
+        relative_name = parts[1].lstrip("*")
+        if Path(relative_name).name != relative_name:
+            raise ValueError("backup manifest paths must be single local filenames")
+        artifact = manifest.parent / relative_name
+        if not artifact.is_file() or _file_sha256(artifact) != parts[0].casefold():
+            raise ValueError(f"backup artifact checksum failed: {relative_name}")
+        verified.add(relative_name)
+    missing = sorted(BACKUP_MANIFEST_REQUIRED_FILES - verified)
+    if missing:
+        raise ValueError("backup manifest is incomplete: " + ", ".join(missing))
+    return actual_manifest_sha
+
+
+def _validate_apply(
+    plan: ReviewedRelationPlan,
+    confirm_sha256: str,
+    production_authorization: ProductionApplyAuthorization | None = None,
+) -> dict[str, str]:
     if confirm_sha256 != plan.confirm_sha256:
         raise ValueError("--confirm-plan-sha256 must exactly match the previewed plan")
     namespace = str(plan.public["namespace"])
-    if namespace == "hermes:user-primary" or not any(
-        marker in namespace.casefold() for marker in ALLOWED_SHADOW_MARKERS
-    ):
-        raise ValueError("reviewed relations may only be applied to staging/shadow namespaces")
+    is_shadow = any(marker in namespace.casefold() for marker in ALLOWED_SHADOW_MARKERS)
+    if is_shadow:
+        if production_authorization is not None:
+            raise ValueError("production authorization must not be supplied for a shadow namespace")
+        return {"apply_mode": "shadow"}
+    if production_authorization is None:
+        raise ValueError(
+            "production reviewed relations require explicit backup and namespace authorization"
+        )
+    if production_authorization.namespace != namespace:
+        raise ValueError("production namespace confirmation must exactly match the plan namespace")
+    if production_authorization.confirmation != PRODUCTION_CONFIRMATION:
+        raise ValueError("production apply confirmation phrase is invalid")
+    if not CHANGE_ID_PATTERN.fullmatch(production_authorization.change_id):
+        raise ValueError("production change ID must be 3-64 safe identifier characters")
+    backup_manifest_sha256 = _verify_backup_manifest(production_authorization)
+    return {
+        "apply_mode": "production",
+        "change_id": production_authorization.change_id,
+        "backup_manifest_sha256": backup_manifest_sha256,
+    }
 
 
 def _resolve_event_ids(
@@ -273,8 +344,11 @@ def apply_reviewed_relation_plan(
     plan: ReviewedRelationPlan,
     *,
     confirm_sha256: str,
+    production_authorization: ProductionApplyAuthorization | None = None,
 ) -> dict[str, Any]:
-    _validate_apply(plan, confirm_sha256)
+    authorization_metadata = _validate_apply(
+        plan, confirm_sha256, production_authorization
+    )
     namespace = str(plan.public["namespace"])
     namespace_id = stable_uuid("namespace", namespace)
     if connection.execute(
@@ -283,7 +357,14 @@ def apply_reviewed_relation_plan(
     ).fetchone() is None:
         raise ValueError("target namespace must be created by the evidence import first")
     correlation_id = stable_uuid(
-        "correlation", f"reviewed-relations:{plan.confirm_sha256}"
+        "correlation",
+        ":".join(
+            (
+                "reviewed-relations",
+                plan.confirm_sha256,
+                authorization_metadata.get("change_id", "shadow"),
+            )
+        ),
     )
     inserted_relations = 0
     inserted_facts = 0
@@ -414,6 +495,7 @@ def apply_reviewed_relation_plan(
                             "plan_sha256": plan.confirm_sha256,
                             "relation_key": key,
                             "evidence_ref_count": len(item["evidence_refs"]),
+                            **authorization_metadata,
                         },
                         sort_keys=True,
                     ),
@@ -423,6 +505,34 @@ def apply_reviewed_relation_plan(
         connection,
         namespace_id,
         reason_key=f"reviewed-relations:{plan.confirm_sha256}",
+    )
+    apply_audit_id = stable_uuid(
+        "audit",
+        f"{namespace}:{plan.confirm_sha256}:{authorization_metadata['apply_mode']}",
+    )
+    connection.execute(
+        """INSERT INTO audit.events(
+             id,namespace_id,actor_type,actor_id,action,target_type,target_id,
+             reason,correlation_id,metadata_redacted
+           ) VALUES (%s,%s,'user',%s,'memory.relations.reviewed_apply',
+                     'namespace',%s,%s,%s,%s::jsonb)
+           ON CONFLICT(id) DO NOTHING""",
+        (
+            apply_audit_id,
+            namespace_id,
+            authorization_metadata.get("change_id", "phase-c-gold-review"),
+            namespace_id,
+            "Apply evidence-backed reviewed relations with explicit authorization",
+            correlation_id,
+            json.dumps(
+                {
+                    "plan_sha256": plan.confirm_sha256,
+                    "relation_count": len(plan.public["relations"]),
+                    **authorization_metadata,
+                },
+                sort_keys=True,
+            ),
+        ),
     )
     return {
         "status": "applied",
@@ -434,12 +544,16 @@ def apply_reviewed_relation_plan(
         "linked_evidence_count": len(linked_evidence),
         "model_called": False,
         "external_data_sent": False,
+        **authorization_metadata,
     }
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Preview or apply explicitly reviewed Phase C relations to a shadow namespace."
+        description=(
+            "Preview or apply evidence-backed reviewed relations. "
+            "Production is denied by default."
+        )
     )
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--selection", required=True, type=Path)
@@ -447,6 +561,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--namespace", required=True)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm-plan-sha256", default="")
+    parser.add_argument("--allow-production", action="store_true")
+    parser.add_argument("--confirm-production-namespace", default="")
+    parser.add_argument("--confirm-production-apply", default="")
+    parser.add_argument("--backup-manifest", type=Path)
+    parser.add_argument("--confirm-backup-manifest-sha256", default="")
+    parser.add_argument("--change-id", default="")
     parser.add_argument(
         "--database-url", default=os.getenv("AGENT_MEMORY_DATABASE_URL", "")
     )
@@ -464,9 +584,34 @@ def main() -> None:
             return
         if not args.database_url:
             raise ValueError("--database-url or AGENT_MEMORY_DATABASE_URL is required")
+        production_arguments_present = any(
+            (
+                args.confirm_production_namespace,
+                args.confirm_production_apply,
+                args.backup_manifest,
+                args.confirm_backup_manifest_sha256,
+                args.change_id,
+            )
+        )
+        if production_arguments_present and not args.allow_production:
+            raise ValueError("production confirmation arguments require --allow-production")
+        production_authorization = None
+        if args.allow_production:
+            if args.backup_manifest is None:
+                raise ValueError("--backup-manifest is required for production apply")
+            production_authorization = ProductionApplyAuthorization(
+                namespace=args.confirm_production_namespace,
+                confirmation=args.confirm_production_apply,
+                backup_manifest=args.backup_manifest,
+                backup_manifest_sha256=args.confirm_backup_manifest_sha256,
+                change_id=args.change_id,
+            )
         with psycopg.connect(args.database_url) as connection:
             result = apply_reviewed_relation_plan(
-                connection, plan, confirm_sha256=args.confirm_plan_sha256
+                connection,
+                plan,
+                confirm_sha256=args.confirm_plan_sha256,
+                production_authorization=production_authorization,
             )
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     except (ValueError, psycopg.Error) as error:

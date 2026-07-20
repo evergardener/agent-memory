@@ -3,6 +3,13 @@ import unittest
 from uuid import uuid4
 
 import httpx
+import psycopg
+import pytest
+
+from agent_memory.community_projection import rebuild_communities
+from tests.integration.test_community_projection_db import seed_relation_fixture
+
+pytestmark = pytest.mark.integration
 
 
 def _context(namespace: str) -> dict:
@@ -21,7 +28,8 @@ def _context(namespace: str) -> dict:
     os.getenv("AGENT_MEMORY_TEST_API_URL")
     and os.getenv("AGENT_MEMORY_TEST_NAMESPACE")
     and os.getenv("AGENT_MEMORY_SERVICE_TOKEN")
-    and os.getenv("AGENT_MEMORY_TEST_UI_PASSWORD"),
+    and os.getenv("AGENT_MEMORY_TEST_UI_PASSWORD")
+    and os.getenv("AGENT_MEMORY_DATABASE_URL"),
     "set the isolated Phase C API test environment",
 )
 def test_galaxy_http_contract_auth_views_governance_and_undo():
@@ -29,7 +37,29 @@ def test_galaxy_http_contract_auth_views_governance_and_undo():
     namespace = os.environ["AGENT_MEMORY_TEST_NAMESPACE"]
     token = os.environ["AGENT_MEMORY_SERVICE_TOKEN"]
     password = os.environ["AGENT_MEMORY_TEST_UI_PASSWORD"]
+    database_url = os.environ["AGENT_MEMORY_DATABASE_URL"]
     with httpx.Client(base_url=api_url, timeout=10) as client:
+        fixture_response = client.post(
+            "/api/v1/ingest/turn",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "context": _context(namespace),
+                "idempotency_key": f"galaxy-http-fixture-{uuid4().hex}",
+                "occurred_at": "2026-01-01T00:00:00Z",
+                "events": [
+                    {
+                        "type": "session_boundary",
+                        "sequence": 1,
+                        "content": "isolated galaxy HTTP fixture",
+                    }
+                ],
+            },
+        )
+        fixture_response.raise_for_status()
+        with psycopg.connect(database_url) as connection:
+            namespace_id, _, _ = seed_relation_fixture(connection, namespace)
+            rebuild_communities(connection, namespace_id)
+
         assert client.get(
             "/api/v1/graph/galaxies", params={"shared_namespace": namespace}
         ).status_code == 401

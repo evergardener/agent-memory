@@ -19,6 +19,7 @@ pytestmark = [
 API_URL = os.getenv("AGENT_MEMORY_TEST_API_URL", "http://127.0.0.1:7788")
 TOKEN = os.getenv("AGENT_MEMORY_SERVICE_TOKEN", "replace-with-a-long-random-token")
 TEST_NAMESPACE = os.getenv("AGENT_MEMORY_TEST_NAMESPACE", "hermes:automated-api-tests")
+UI_PASSWORD = os.getenv("AGENT_MEMORY_TEST_UI_PASSWORD", "change-me")
 CANARY = "integration-secret-value"
 RUN_ID = uuid4().hex[:12]
 
@@ -205,7 +206,7 @@ def test_profile_subjects_group_instances_and_support_audited_mapping_governance
     )
 
     with httpx.Client(base_url=API_URL, timeout=10) as ui:
-        ui.post("/api/v1/ui/login", json={"password": "change-me"}).raise_for_status()
+        ui.post("/api/v1/ui/login", json={"password": UI_PASSWORD}).raise_for_status()
         renamed = ui.put(
             f"/api/v1/graph/subjects/{separate['id']}",
             json={
@@ -336,6 +337,26 @@ def test_planetary_projection_and_observation_lenses_preserve_entity_identity():
 def test_authentication_and_namespace_are_enforced():
     unauthenticated = httpx.post(API_URL + "/api/v1/recall", json={})
     assert unauthenticated.status_code == 401
+
+    with httpx.Client(base_url=API_URL) as ui:
+        ui.post("/api/v1/ui/login", json={"password": UI_PASSWORD}).raise_for_status()
+        ui_ingest = ui.post(
+            "/api/v1/ingest/turn",
+            json={
+                "context": context("ui-session", f"ui-ingest-denied-{RUN_ID}"),
+                "idempotency_key": f"ui-ingest-denied-{RUN_ID}",
+                "occurred_at": datetime.now(UTC).isoformat(),
+                "events": [
+                    {
+                        "type": "user_message",
+                        "sequence": 1,
+                        "content": "UI sessions must not create raw evidence",
+                    }
+                ],
+            },
+        )
+        assert ui_ingest.status_code == 401
+        assert ui_ingest.json()["detail"] == "SERVICE_TOKEN_REQUIRED"
 
     payload = {
         "context": {**context("default", "wrong-namespace"), "shared_namespace": "other"},
@@ -705,7 +726,7 @@ def test_vault_requires_explicit_scoped_grant_and_supports_revocation():
     linked_ingest.raise_for_status()
     linked_memory = wait_for_memory(linked_marker)
     ui = httpx.Client(base_url=API_URL)
-    ui.post("/api/v1/ui/login", json={"password": "change-me"}).raise_for_status()
+    ui.post("/api/v1/ui/login", json={"password": UI_PASSWORD}).raise_for_status()
     bearer_management_denied = post(
         "/api/v1/vault/entries",
         {
@@ -840,7 +861,7 @@ def test_vault_requires_explicit_scoped_grant_and_supports_revocation():
         f"/api/v1/vault/entries/{entry_id}/reveal",
         json={
             "context": context("user", f"vault-reveal-{RUN_ID}"),
-            "password": "change-me",
+            "password": UI_PASSWORD,
             "reason": "integration manual reveal",
         },
     )
@@ -854,7 +875,7 @@ def test_vault_requires_explicit_scoped_grant_and_supports_revocation():
             "context": context("user", f"vault-metadata-{RUN_ID}"),
             "display_label": f"Updated credential {RUN_ID}",
             "redacted_hint": f"updated …{RUN_ID[-4:]}",
-            "password": "change-me",
+            "password": UI_PASSWORD,
             "reason": "integration metadata update",
         },
     )
@@ -865,7 +886,7 @@ def test_vault_requires_explicit_scoped_grant_and_supports_revocation():
         json={
             "context": context("user", f"vault-replace-{RUN_ID}"),
             "secret_value": replacement_secret,
-            "password": "change-me",
+            "password": UI_PASSWORD,
             "reason": "integration secret replacement",
         },
     )
@@ -874,7 +895,7 @@ def test_vault_requires_explicit_scoped_grant_and_supports_revocation():
         f"/api/v1/vault/entries/{entry_id}/reveal",
         json={
             "context": context("user", f"vault-reveal-replaced-{RUN_ID}"),
-            "password": "change-me",
+            "password": UI_PASSWORD,
             "reason": "integration verify replacement",
         },
     )
@@ -886,7 +907,7 @@ def test_vault_requires_explicit_scoped_grant_and_supports_revocation():
             json={
                 "context": context("user", f"vault-status-{state}-{RUN_ID}"),
                 "status": state,
-                "password": "change-me",
+                "password": UI_PASSWORD,
                 "reason": f"integration set {state}",
             },
         )
@@ -898,7 +919,7 @@ def test_vault_requires_explicit_scoped_grant_and_supports_revocation():
         json={
             "context": context("user", f"vault-delete-{RUN_ID}"),
             "confirm_entry_id": entry_id,
-            "password": "change-me",
+            "password": UI_PASSWORD,
             "reason": "integration permanent deletion",
         },
     )
@@ -917,7 +938,7 @@ def test_ui_login_uses_http_only_cookie_for_graph_access():
     with httpx.Client(base_url=API_URL) as client:
         invalid = client.post("/api/v1/ui/login", json={"password": "wrong"})
         assert invalid.status_code == 401
-        logged_in = client.post("/api/v1/ui/login", json={"password": "change-me"})
+        logged_in = client.post("/api/v1/ui/login", json={"password": UI_PASSWORD})
         logged_in.raise_for_status()
         cookie = logged_in.headers["set-cookie"]
         assert "HttpOnly" in cookie and "SameSite=strict" in cookie

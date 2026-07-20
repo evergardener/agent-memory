@@ -11,6 +11,7 @@ import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
 
+from .community_projection import PROJECTION_VERSION as COMMUNITY_PROJECTION_VERSION
 from .config import get_settings
 from .db import Database
 from .galaxies import (
@@ -160,7 +161,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Agent Memory for Hermes",
-    version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.6"),
+    version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.7"),
     lifespan=lifespan,
 )
 
@@ -199,7 +200,7 @@ def ui_config():
     return UiConfigResponse(
         namespace=settings.namespace,
         namespace_id=stable_uuid("namespace", settings.namespace),
-        version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.6"),
+        version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.7"),
     )
 
 
@@ -219,7 +220,7 @@ def ready(request: Request):
     "/api/v1/ingest/turn",
     response_model=IngestTurnResponse,
     status_code=202,
-    dependencies=[Depends(require_api_access)],
+    dependencies=[Depends(require_service_access)],
 )
 def ingest(request_body: IngestTurnRequest, request: Request):
     settings = get_settings()
@@ -1067,7 +1068,7 @@ def _galaxy_graph_view(graph: dict, galaxy: dict) -> dict:
     graph["galaxies"] = [galaxy]
     graph["projection"].update(
         {
-            "community_projection": "community-projection-v1",
+            "community_projection": COMMUNITY_PROJECTION_VERSION,
             "view": "galaxy",
             "galaxy_id": str(galaxy["id"]),
         }
@@ -1120,7 +1121,7 @@ def _universe_graph_view(graph: dict, galaxies: list[dict]) -> dict:
     )
     graph["galaxies"] = galaxies
     graph["projection"].update(
-        {"community_projection": "community-projection-v1", "view": "universe"}
+        {"community_projection": COMMUNITY_PROJECTION_VERSION, "view": "universe"}
     )
     return graph
 

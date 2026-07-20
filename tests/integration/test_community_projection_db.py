@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import psycopg
+import pytest
 
 from agent_memory.community_projection import rebuild_communities
 from agent_memory.galaxies import (
@@ -27,20 +28,28 @@ from agent_memory.schemas import (
 )
 from agent_memory.worker import claim_job, process_one
 
+pytestmark = pytest.mark.integration
 
-def _seed_relation_fixture(connection):
+
+def seed_relation_fixture(connection, namespace_key: str | None = None):
     suffix = uuid4().hex
-    namespace_id = stable_uuid("namespace", f"community-projection-test:{suffix}")
-    connection.execute(
-        "INSERT INTO core.namespaces(id,stable_key) VALUES (%s,%s)",
-        (namespace_id, f"community-projection-test:{suffix}"),
-    )
+    namespace_key = namespace_key or f"community-projection-test:{suffix}"
+    existing = connection.execute(
+        "SELECT id FROM core.namespaces WHERE stable_key=%s",
+        (namespace_key,),
+    ).fetchone()
+    namespace_id = existing[0] if existing else stable_uuid("namespace", namespace_key)
+    if existing is None:
+        connection.execute(
+            "INSERT INTO core.namespaces(id,stable_key) VALUES (%s,%s)",
+            (namespace_id, namespace_key),
+        )
     source_id = stable_uuid("source", suffix)
     connection.execute(
         """INSERT INTO core.sources(
              id,namespace_id,source_profile,source_instance
-           ) VALUES (%s,%s,'test','community-projection-test')""",
-        (source_id, namespace_id),
+           ) VALUES (%s,%s,'test',%s)""",
+        (source_id, namespace_id, f"community-projection-test-{suffix}"),
     )
 
     entities = {}
@@ -56,7 +65,8 @@ def _seed_relation_fixture(connection):
         connection.execute(
             """INSERT INTO memory.entities(
                  id,namespace_id,entity_type,canonical_name,normalized_name
-               ) VALUES (%s,%s,%s,%s,%s)""",
+               ) VALUES (%s,%s,%s,%s,%s)
+               ON CONFLICT(id) DO NOTHING""",
             (entity_id, namespace_id, entity_type, name, name.casefold()),
         )
 
@@ -150,7 +160,7 @@ def _context(namespace_key: str) -> ProviderContext:
 )
 def test_rebuild_is_idempotent_overlapping_governed_and_evidence_immutable():
     with psycopg.connect(os.environ["AGENT_MEMORY_DATABASE_URL"]) as connection:
-        namespace_id, entities, event_hashes = _seed_relation_fixture(connection)
+        namespace_id, entities, event_hashes = seed_relation_fixture(connection)
         first = rebuild_communities(connection, namespace_id)
         assert first.galaxy_count == 2
         assert first.membership_count == 6
@@ -271,7 +281,7 @@ def test_rebuild_is_idempotent_overlapping_governed_and_evidence_immutable():
 )
 def test_expired_community_job_lease_is_reclaimed_and_completed():
     with psycopg.connect(os.environ["AGENT_MEMORY_DATABASE_URL"]) as connection:
-        namespace_id, _entities, _event_hashes = _seed_relation_fixture(connection)
+        namespace_id, _entities, _event_hashes = seed_relation_fixture(connection)
         namespace_key = connection.execute(
             "SELECT stable_key FROM core.namespaces WHERE id=%s",
             (namespace_id,),
@@ -313,7 +323,7 @@ def test_expired_community_job_lease_is_reclaimed_and_completed():
 )
 def test_governance_uses_versions_audit_namespace_and_preserves_layout():
     with psycopg.connect(os.environ["AGENT_MEMORY_DATABASE_URL"]) as connection:
-        namespace_id, entities, _event_hashes = _seed_relation_fixture(connection)
+        namespace_id, entities, _event_hashes = seed_relation_fixture(connection)
         namespace_key = connection.execute(
             "SELECT stable_key FROM core.namespaces WHERE id=%s",
             (namespace_id,),

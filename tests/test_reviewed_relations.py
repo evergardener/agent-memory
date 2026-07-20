@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -5,6 +6,8 @@ import pytest
 
 from agent_memory.hermes_import import _canonical_sha256, _file_sha256
 from agent_memory.reviewed_relations import (
+    PRODUCTION_CONFIRMATION,
+    ProductionApplyAuthorization,
     _validate_apply,
     build_reviewed_relation_plan,
 )
@@ -117,8 +120,65 @@ def test_plan_is_stable_and_apply_is_shadow_only(tmp_path: Path) -> None:
     primary = build_reviewed_relation_plan(
         source, selection, gold, namespace="hermes:user-primary"
     )
-    with pytest.raises(ValueError, match="staging/shadow"):
+    with pytest.raises(ValueError, match="explicit backup"):
         _validate_apply(primary, primary.confirm_sha256)
+
+
+def _write_backup_manifest(tmp_path: Path) -> Path:
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    lines = []
+    for name in ("agent_memory.dump", "compose.yaml", "runtime.env", "uv.lock", "VERSION"):
+        artifact = backup / name
+        artifact.write_bytes(f"review-backup:{name}".encode())
+        lines.append(f"{hashlib.sha256(artifact.read_bytes()).hexdigest()}  {name}")
+    manifest = backup / "SHA256SUMS"
+    manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return manifest
+
+
+def test_production_apply_requires_exact_namespace_phrase_change_and_backup(
+    tmp_path: Path,
+) -> None:
+    source, selection, gold = write_fixture(tmp_path)
+    plan = build_reviewed_relation_plan(
+        source, selection, gold, namespace="hermes:user-primary"
+    )
+    manifest = _write_backup_manifest(tmp_path)
+    authorization = ProductionApplyAuthorization(
+        namespace="hermes:user-primary",
+        confirmation=PRODUCTION_CONFIRMATION,
+        backup_manifest=manifest,
+        backup_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        change_id="release-rc7-001",
+    )
+
+    metadata = _validate_apply(plan, plan.confirm_sha256, authorization)
+    assert metadata == {
+        "apply_mode": "production",
+        "change_id": "release-rc7-001",
+        "backup_manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+    }
+    with pytest.raises(ValueError, match="exactly match"):
+        _validate_apply(
+            plan,
+            plan.confirm_sha256,
+            ProductionApplyAuthorization(
+                **{**authorization.__dict__, "namespace": "hermes:other"}
+            ),
+        )
+    with pytest.raises(ValueError, match="phrase"):
+        _validate_apply(
+            plan,
+            plan.confirm_sha256,
+            ProductionApplyAuthorization(
+                **{**authorization.__dict__, "confirmation": "yes"}
+            ),
+        )
+
+    (manifest.parent / "agent_memory.dump").write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="checksum failed"):
+        _validate_apply(plan, plan.confirm_sha256, authorization)
 
 
 def test_unreviewed_gold_edge_fails_closed(tmp_path: Path) -> None:

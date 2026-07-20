@@ -617,7 +617,7 @@ def undo_last_galaxy_change(
                      AND undo.action='projection.galaxy.undo'
                      AND undo.metadata_redacted->>'undone_event_id'=event.id::text
                  )
-               ORDER BY event.created_at DESC,event.id DESC LIMIT 1
+               ORDER BY event.event_sequence DESC LIMIT 1
                FOR UPDATE""",
             (namespace_id, galaxy_id),
         )
