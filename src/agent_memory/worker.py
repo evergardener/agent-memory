@@ -10,6 +10,7 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 
 from .classification import classify_event, is_recallable_memory_content
+from .community_projection import enqueue_community_rebuild, rebuild_communities
 from .config import get_settings
 from .db import Database
 from .embeddings import EMBEDDING_VERSION, deterministic_embedding, vector_literal
@@ -303,10 +304,11 @@ def claim_job(
                         WHEN 'extract_facts' THEN 0
                         WHEN 'purge_memory' THEN 1
                         WHEN 'rebuild_derived' THEN 2
-                        WHEN 'generate_report' THEN 3
-                        WHEN 'extract_atomic_turn' THEN 4
-                        WHEN 'enhance_fact' THEN 5
-                        ELSE 5
+                        WHEN 'rebuild_communities' THEN 3
+                        WHEN 'generate_report' THEN 4
+                        WHEN 'extract_atomic_turn' THEN 5
+                        WHEN 'enhance_fact' THEN 6
+                        ELSE 6
                       END, created_at
              FOR UPDATE SKIP LOCKED LIMIT 1
            ) RETURNING id,namespace_id,kind,input_ref,input_version""",
@@ -1005,6 +1007,13 @@ def process_rebuild_derived(connection: Connection, job) -> None:
             )
 
 
+def process_rebuild_communities(connection: Connection, job) -> None:
+    _job_id, namespace_id, _kind, input_ref, _version = job
+    if input_ref != namespace_id:
+        raise ValueError("COMMUNITY_NAMESPACE_MISMATCH")
+    rebuild_communities(connection, namespace_id)
+
+
 def run_maintenance(connection: Connection) -> None:
     settings = get_settings()
     rows_to_embed = connection.execute(
@@ -1025,34 +1034,37 @@ def run_maintenance(connection: Connection) -> None:
         """UPDATE state.current_items SET status='expired',updated_at=now()
            WHERE status='active' AND expires_at <= now()"""
     )
-    connection.execute(
+    lifecycle_changes = connection.execute(
         """UPDATE memory.facts SET memory_state='dormant',updated_at=now()
            WHERE fact_type='stage' AND memory_state='active'
-             AND updated_at < now() - make_interval(days => %s)""",
+             AND updated_at < now() - make_interval(days => %s)
+           RETURNING namespace_id,id""",
         (settings.stage_dormant_days,),
-    )
+    ).fetchall()
     connection.execute(
         """UPDATE retrieval.documents d SET lifecycle_state='dormant',indexed_at=now()
            FROM memory.facts f WHERE d.source_kind='fact' AND d.source_id=f.id
              AND f.memory_state='dormant' AND d.lifecycle_state <> 'dormant'"""
     )
-    connection.execute(
+    lifecycle_changes.extend(connection.execute(
         """UPDATE memory.facts SET memory_state='forgotten',updated_at=now()
            WHERE fact_type='stage' AND memory_state='dormant'
-             AND created_at < now() - make_interval(days => %s)""",
+             AND created_at < now() - make_interval(days => %s)
+           RETURNING namespace_id,id""",
         (settings.stage_forget_days,),
-    )
+    ).fetchall())
     connection.execute(
         """UPDATE retrieval.documents d SET lifecycle_state='forgotten',indexed_at=now()
            FROM memory.facts f WHERE d.source_kind='fact' AND d.source_id=f.id
              AND f.memory_state='forgotten' AND d.lifecycle_state <> 'forgotten'"""
     )
-    connection.execute(
+    lifecycle_changes.extend(connection.execute(
         """UPDATE memory.facts SET memory_state='dormant',updated_at=now()
            WHERE memory_state='candidate'
-             AND created_at < now() - make_interval(days => %s)""",
+             AND created_at < now() - make_interval(days => %s)
+           RETURNING namespace_id,id""",
         (settings.candidate_retention_days,),
-    )
+    ).fetchall())
     rows = connection.execute(
         """SELECT n.id FROM core.namespaces n
            WHERE NOT EXISTS (
@@ -1062,6 +1074,12 @@ def run_maintenance(connection: Connection) -> None:
         (settings.report_interval_days,),
     ).fetchall()
     today = datetime.now(UTC).date().isoformat()
+    for namespace_id in sorted({row[0] for row in lifecycle_changes}, key=str):
+        enqueue_community_rebuild(
+            connection,
+            namespace_id,
+            reason_key=f"maintenance:{today}",
+        )
     for (namespace_id,) in rows:
         job_id = stable_uuid("job", f"generate_report:{namespace_id}:{today}")
         connection.execute(
@@ -1133,6 +1151,8 @@ def process_one(connection: Connection, job) -> None:
                 process_purge(connection, job)
             elif job[2] == "rebuild_derived":
                 process_rebuild_derived(connection, job)
+            elif job[2] == "rebuild_communities":
+                process_rebuild_communities(connection, job)
             else:
                 raise ValueError("UNKNOWN_JOB_KIND")
         connection.execute(

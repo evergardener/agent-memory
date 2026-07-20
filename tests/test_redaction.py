@@ -23,7 +23,22 @@ def test_redacts_chinese_credential_assignment_with_backticks():
     result = redact_text(source)
     assert "Fake-UAT-Password-0714" not in result.text
     assert "密码=[REDACTED]" in result.text
-    assert result.findings[0].rule_version == "v3"
+    assert result.findings[0].rule_version == "v4"
+
+
+def test_redacts_bare_provider_api_key_without_assignment_context():
+    source = "connector returned sk-test_abcdefghijklmnopqrstuvwxyz012345"
+    result = redact_text(source)
+
+    assert "sk-test_" not in result.text
+    assert result.text == "connector returned [REDACTED:provider_api_key]"
+    assert [finding.kind for finding in result.findings] == ["provider_api_key"]
+
+
+def test_redacts_provider_api_key_embedded_after_a_mask_prefix():
+    result = redact_text("masksk-test_abcdefghijklmnopqrstuvwxyz012345")
+
+    assert result.text == "mask[REDACTED:provider_api_key]"
 
 
 def test_nested_legacy_payload_is_redacted_again_on_read():

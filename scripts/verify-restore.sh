@@ -30,6 +30,13 @@ live_counts="$("${COMPOSE[@]}" exec -T postgres psql -U agent_memory -d agent_me
           (SELECT count(*) FROM memory.facts)||':'||
           (SELECT count(*) FROM memory.episodes)||':'||
           (SELECT count(*) FROM memory.arcs)||':'||
+          (SELECT count(*) FROM memory.entity_aliases)||':'||
+          (SELECT count(*) FROM memory.entity_relations)||':'||
+          (SELECT count(*) FROM memory.relation_facts)||':'||
+          (SELECT count(*) FROM projection.galaxies)||':'||
+          (SELECT count(*) FROM projection.galaxy_memberships)||':'||
+          (SELECT count(*) FROM projection.galaxy_membership_evidence)||':'||
+          (SELECT count(*) FROM projection.layout_preferences)||':'||
           (SELECT count(*) FROM ops.jobs)||':'||
           (SELECT count(*) FROM vault.entries)||':'||
           (SELECT count(*) FROM vault.grants)||':'||
@@ -41,6 +48,13 @@ restored_counts="$("${COMPOSE[@]}" exec -T postgres psql -U agent_memory -d "$VE
           (SELECT count(*) FROM memory.facts)||':'||
           (SELECT count(*) FROM memory.episodes)||':'||
           (SELECT count(*) FROM memory.arcs)||':'||
+          (SELECT count(*) FROM memory.entity_aliases)||':'||
+          (SELECT count(*) FROM memory.entity_relations)||':'||
+          (SELECT count(*) FROM memory.relation_facts)||':'||
+          (SELECT count(*) FROM projection.galaxies)||':'||
+          (SELECT count(*) FROM projection.galaxy_memberships)||':'||
+          (SELECT count(*) FROM projection.galaxy_membership_evidence)||':'||
+          (SELECT count(*) FROM projection.layout_preferences)||':'||
           (SELECT count(*) FROM ops.jobs)||':'||
           (SELECT count(*) FROM vault.entries)||':'||
           (SELECT count(*) FROM vault.grants)||':'||

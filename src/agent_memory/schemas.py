@@ -246,6 +246,81 @@ class SubjectSourceMappingRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=2000)
 
 
+class GalaxyCreateRequest(BaseModel):
+    context: ProviderContext
+    display_name: str = Field(min_length=1, max_length=128)
+    family: str = Field(default="manual", min_length=1, max_length=64)
+    entity_ids: list[UUID] = Field(min_length=3, max_length=200)
+    reason: str = Field(min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def unique_entities(self):
+        if len(self.entity_ids) != len(set(self.entity_ids)):
+            raise ValueError("galaxy entity ids must be unique")
+        return self
+
+
+class GalaxyUpdateRequest(BaseModel):
+    context: ProviderContext
+    expected_version: int = Field(ge=1)
+    display_name: str | None = Field(default=None, min_length=1, max_length=128)
+    visibility: Literal["visible", "hidden"] | None = None
+    manual_locked: bool | None = None
+    reason: str = Field(min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def has_change(self):
+        if (
+            self.display_name is None
+            and self.visibility is None
+            and self.manual_locked is None
+        ):
+            raise ValueError("at least one galaxy field must change")
+        return self
+
+
+class GalaxyMembershipRequest(BaseModel):
+    context: ProviderContext
+    expected_version: int = Field(ge=1)
+    action: Literal["fixed", "excluded", "automatic"]
+    role: Literal["core", "bridge", "satellite", "member"] = "member"
+    membership_kind: Literal["primary", "secondary"] = "secondary"
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class GalaxyRebuildRequest(BaseModel):
+    context: ProviderContext
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class GalaxyUndoRequest(BaseModel):
+    context: ProviderContext
+    expected_version: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class LayoutPreferenceRequest(BaseModel):
+    context: ProviderContext
+    scope_kind: Literal["universe", "galaxy"]
+    scope_id: UUID
+    target_kind: Literal["camera", "entity", "galaxy"]
+    target_id: UUID
+    position: dict[str, float] = Field(default_factory=dict)
+    zoom: float | None = Field(default=None, ge=0.05, le=20)
+    motion_enabled: bool | None = None
+    pinned: bool = False
+    expected_version: int | None = Field(default=None, ge=1)
+    reason: str = Field(min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def validate_position(self):
+        if set(self.position) - {"x", "y"}:
+            raise ValueError("layout position only accepts x and y")
+        if any(abs(value) > 1_000_000 for value in self.position.values()):
+            raise ValueError("layout position is outside supported bounds")
+        return self
+
+
 class QualityReportResponse(BaseModel):
     namespace: str
     generated_at: datetime
@@ -390,6 +465,7 @@ class UiLoginResponse(BaseModel):
 
 class UiConfigResponse(BaseModel):
     namespace: str
+    namespace_id: UUID
     version: str
 
 

@@ -599,9 +599,12 @@ def build_review(source: Path, selection: Path) -> dict[str, Any]:
                 skipped_non_observation_tool_messages += 1
                 continue
             text = _message_text(message.get("content"))
-            if role == "tool":
-                text = _unwrap_observation_text(text)
-            text = redact_text(text).text
+            source_message = redact_text(text).text
+            text = (
+                _unwrap_observation_text(source_message)
+                if role == "tool"
+                else source_message
+            )
             if not text.strip():
                 continue
             if role == "user" and NON_EVIDENCE_USER_PATTERN.search(text):
@@ -624,6 +627,14 @@ def build_review(source: Path, selection: Path) -> dict[str, Any]:
                 evidence = {
                     "evidence_ref": evidence_ref,
                     "session_ref": _session_ref(session_id),
+                    # Kept in-memory for an explicitly confirmed shadow projection.
+                    # Renderers intentionally never expose these source coordinates or
+                    # the complete sentence.
+                    "source_session_id": session_id,
+                    "source_message_index": message_index,
+                    "source_sentence_index": sentence_index,
+                    "source_sentence": sentence,
+                    "source_message": source_message,
                     "role": role,
                     "tool_name": tool_name if role == "tool" else "",
                     "excerpt": _excerpt(sentence),
@@ -651,6 +662,11 @@ def build_review(source: Path, selection: Path) -> dict[str, Any]:
                 message_evidence = {
                     "evidence_ref": _evidence_ref(session_id, message_index, -1),
                     "session_ref": _session_ref(session_id),
+                    "source_session_id": session_id,
+                    "source_message_index": message_index,
+                    "source_sentence_index": -1,
+                    "source_sentence": text,
+                    "source_message": source_message,
                     "role": role,
                     "excerpt": _excerpt(text),
                 }
@@ -701,6 +717,22 @@ def build_review(source: Path, selection: Path) -> dict[str, Any]:
                 "session_count": len(sessions_seen),
                 "evidence_refs": sorted(unique),
                 "excerpts": [item["excerpt"] for item in unique.values()][:3],
+                "source_support": [
+                    {
+                        "evidence_ref": item["evidence_ref"],
+                        "session_ref": item["session_ref"],
+                        "source_session_id": item["source_session_id"],
+                        "source_message_index": item["source_message_index"],
+                        "source_sentence_index": item["source_sentence_index"],
+                        "source_sentence": item["source_sentence"],
+                        "source_message": item["source_message"],
+                        "role": item["role"],
+                        "tool_name": item.get("tool_name", ""),
+                    }
+                    for item in sorted(
+                        unique.values(), key=lambda value: value["evidence_ref"]
+                    )
+                ],
                 "decision": "REVIEW_REQUIRED",
             }
         )

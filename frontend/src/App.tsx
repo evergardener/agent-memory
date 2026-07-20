@@ -2,7 +2,9 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   api,
   ConsolidationReport,
+  Galaxy,
   GraphData,
+  LayoutPreference,
   QualityReport,
   ReviewQueue,
   ReviewQueueItem,
@@ -16,6 +18,7 @@ const emptyGraph: GraphData = {
   projection: {
     version: "planetary-v2",
     community_projection: "phase-c-pending",
+    view: "universe",
     active_lenses: {
       profiles: [], fact_types: [], lifecycle_states: [], activities: [], sensitivities: [], updated_after: null
     }
@@ -26,6 +29,7 @@ const emptyGraph: GraphData = {
   episodes: [],
   arcs: [],
   vault_markers: [],
+  galaxies: [],
   facets: { profiles: [], fact_types: [], lifecycle_states: [], activities: [], sensitivities: [] }
 };
 const emptyReviewQueue: ReviewQueue = {
@@ -37,6 +41,13 @@ const emptyReviewQueue: ReviewQueue = {
 };
 const REVIEW_PAGE_SIZE = 25;
 const ENTITY_TYPES = ["person", "agent", "project", "service", "location", "organization", "tool", "technology", "device", "concept", "event", "other"];
+const RELATION_LABELS: Record<string, string> = {
+  uses_database: "使用数据库",
+  pushes_logs_to: "推送日志",
+  sends_alerts_to: "发送告警",
+  uses_email_connector: "使用邮件连接器",
+  connects_mailbox: "连接邮箱"
+};
 type GovernanceAction = "correct" | "forget" | "isolate" | "purge";
 type EntityGovernanceAction =
   | { kind: "merge" }
@@ -90,6 +101,8 @@ function Login({ onLogin }: { onLogin: () => void }) {
 export default function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [graph, setGraph] = useState<GraphData>(emptyGraph);
+  const [layouts, setLayouts] = useState<LayoutPreference[]>([]);
+  const [activeGalaxyId, setActiveGalaxyId] = useState<string | null>(null);
   const [vault, setVault] = useState<VaultEntry[]>([]);
   const [grants, setGrants] = useState<VaultGrant[]>([]);
   const [selected, setSelected] = useState<Record<string, string> | null>(null);
@@ -136,12 +149,24 @@ export default function App() {
   const [subjectColor, setSubjectColor] = useState("#91cfb2");
   const [subjectReason, setSubjectReason] = useState("");
   const [subjectBusy, setSubjectBusy] = useState(false);
+  const [galaxyEditor, setGalaxyEditor] = useState(false);
+  const [galaxyName, setGalaxyName] = useState("");
+  const [galaxyVisibility, setGalaxyVisibility] = useState<"visible" | "hidden">("visible");
+  const [galaxyLocked, setGalaxyLocked] = useState(false);
+  const [galaxyReason, setGalaxyReason] = useState("");
+  const [galaxyBusy, setGalaxyBusy] = useState(false);
+
+  const activeGalaxy = useMemo(
+    () => graph.galaxies.find((galaxy) => galaxy.id === activeGalaxyId) || null,
+    [activeGalaxyId, graph.galaxies]
+  );
 
   const refresh = useCallback(async () => {
     try {
       await api.configure();
-      const [graphData, vaultEntries, activeGrants, status, reportItems, quality] = await Promise.all([
-        api.graph(),
+      const [graphData, layoutData, vaultEntries, activeGrants, status, reportItems, quality] = await Promise.all([
+        api.graph(activeGalaxyId || undefined),
+        api.layout(),
         api.vaultEntries(),
         api.vaultGrants(),
         api.state(),
@@ -149,6 +174,7 @@ export default function App() {
         api.qualityReport()
       ]);
       setGraph(graphData);
+      setLayouts(layoutData);
       setVault(vaultEntries);
       setGrants(activeGrants);
       setStateData(status);
@@ -159,7 +185,7 @@ export default function App() {
       if ((error as Error & { status?: number }).status === 401) setAuthenticated(false);
       else setMessage(String(error));
     }
-  }, []);
+  }, [activeGalaxyId]);
 
   useEffect(() => {
     refresh();
@@ -234,6 +260,13 @@ export default function App() {
       return [] as Array<{ id: string; name: string }>;
     }
   }, [selected]);
+
+  const activeMembership = useMemo(
+    () => activeGalaxy && selected?.kind === "entity"
+      ? activeGalaxy.members.find((item) => item.entity_id === selected.record_id) || null
+      : null,
+    [activeGalaxy, selected]
+  );
 
   const filteredGraph = useMemo(() => {
     const normalizedSearch = search.trim().toLocaleLowerCase();
@@ -327,19 +360,19 @@ export default function App() {
     if (typeFilter === "episode") episodes.forEach((item) => splitIds(item.data.fact_ids).forEach((id) => relevantFactIds.add(id)));
     if (typeFilter === "arc") arcs.forEach((item) => splitIds(item.data.fact_ids).forEach((id) => relevantFactIds.add(id)));
     let edges = graph.edges.filter((edge) => {
-      if (edge.data.kind !== "relation") return false;
+      if (!["relation", "typed_relation"].includes(edge.data.kind)) return false;
       if (!visiblePlanetIds.has(edge.data.source) || !visiblePlanetIds.has(edge.data.target)) return false;
       return !scoped || splitIds(edge.data.fact_ids).some((id) => relevantFactIds.has(id));
     });
     if (normalizedSearch && visiblePlanetIds.size > 0 && typeFilter === "all") {
       const seeds = new Set(visiblePlanetIds);
-      graph.edges.filter((edge) => edge.data.kind === "relation" && (seeds.has(edge.data.source) || seeds.has(edge.data.target)))
+      graph.edges.filter((edge) => ["relation", "typed_relation"].includes(edge.data.kind) && (seeds.has(edge.data.source) || seeds.has(edge.data.target)))
         .forEach((edge) => {
           if (allowedNodeIds.has(edge.data.source)) visiblePlanetIds.add(edge.data.source);
           if (allowedNodeIds.has(edge.data.target)) visiblePlanetIds.add(edge.data.target);
         });
       edges = graph.edges.filter((edge) =>
-        edge.data.kind === "relation" &&
+        ["relation", "typed_relation"].includes(edge.data.kind) &&
         visiblePlanetIds.has(edge.data.source) &&
         visiblePlanetIds.has(edge.data.target)
       );
@@ -406,10 +439,144 @@ export default function App() {
     setSelected(null);
   }, []);
 
-  async function loadTrace() {
-    if (!selected || !["fact", "episode", "arc"].includes(selected.kind)) return;
+  const enterGalaxy = useCallback((galaxy: Galaxy) => {
+    if (galaxy.visibility === "hidden") return;
+    setSelected(null);
+    setTrace(null);
+    setTypeFilter("all");
+    setActiveGalaxyId(galaxy.id);
+  }, []);
+
+  const leaveGalaxy = useCallback(() => {
+    setSelected(null);
+    setTrace(null);
+    setActiveGalaxyId(null);
+  }, []);
+
+  const saveEntityLayout = useCallback(async (
+    entityId: string,
+    position: { x: number; y: number }
+  ) => {
+    const scopeKind = activeGalaxyId ? "galaxy" : "universe";
+    const scopeId = activeGalaxyId || api.namespaceId();
+    const existing = layouts.find((item) =>
+      item.scope_kind === scopeKind &&
+      item.scope_id === scopeId &&
+      item.target_kind === "entity" &&
+      item.target_id === entityId
+    );
     try {
-      setTrace(await api.trace(selected.record_id));
+      const saved = await api.saveLayout({
+        scope_kind: scopeKind,
+        scope_id: scopeId,
+        target_kind: "entity",
+        target_id: entityId,
+        position,
+        pinned: true,
+        expected_version: existing?.version
+      });
+      setLayouts((items) => [...items.filter((item) => item.id !== saved.id), saved]);
+    } catch (error) {
+      setMessage(`布局保存失败：${String(error)}`);
+    }
+  }, [activeGalaxyId, layouts]);
+
+  function openGalaxyEditor() {
+    if (!activeGalaxy) return;
+    setGalaxyName(activeGalaxy.display_name);
+    setGalaxyVisibility(activeGalaxy.visibility);
+    setGalaxyLocked(activeGalaxy.manual_locked);
+    setGalaxyReason("");
+    setGalaxyEditor(true);
+  }
+
+  async function submitGalaxyEditor(event: FormEvent) {
+    event.preventDefault();
+    if (!activeGalaxy) return;
+    setGalaxyBusy(true);
+    try {
+      await api.updateGalaxy(
+        activeGalaxy.id,
+        activeGalaxy.version,
+        {
+          display_name: galaxyName.trim(),
+          visibility: galaxyVisibility,
+          manual_locked: galaxyLocked
+        },
+        galaxyReason.trim()
+      );
+      setGalaxyEditor(false);
+      await refresh();
+      setMessage("星系治理设置已保存。人工规则不会被自动重建覆盖。");
+    } catch (error) {
+      setMessage(`星系治理失败：${String(error)}`);
+    } finally {
+      setGalaxyBusy(false);
+    }
+  }
+
+  async function governSelectedGalaxyMember(
+    action: "fixed" | "excluded" | "automatic"
+  ) {
+    if (!activeGalaxy || selected?.kind !== "entity") return;
+    const membership = activeGalaxy.members.find(
+      (item) => item.entity_id === selected.record_id
+    );
+    if (!membership) return;
+    setGalaxyBusy(true);
+    try {
+      await api.governGalaxyMember(
+        activeGalaxy.id,
+        selected.record_id,
+        activeGalaxy.version,
+        action,
+        membership.role,
+        membership.membership_kind,
+        `User set galaxy membership to ${action} from the star map`
+      );
+      setSelected(null);
+      await refresh();
+      setMessage(
+        action === "excluded"
+          ? "行星已从该星系排除；唯一实体仍保留在主宇宙。"
+          : action === "fixed"
+            ? "成员归属已人工固定。"
+            : "成员已恢复为自动治理。"
+      );
+    } catch (error) {
+      setMessage(`成员治理失败：${String(error)}`);
+    } finally {
+      setGalaxyBusy(false);
+    }
+  }
+
+  async function undoGalaxyChange() {
+    if (!activeGalaxy) return;
+    setGalaxyBusy(true);
+    try {
+      await api.undoGalaxy(
+        activeGalaxy.id,
+        activeGalaxy.version,
+        "User undid the latest galaxy governance change from the star map"
+      );
+      setGalaxyEditor(false);
+      await refresh();
+      setMessage("最近一次星系治理操作已撤销。");
+    } catch (error) {
+      setMessage(`撤销失败：${String(error)}`);
+    } finally {
+      setGalaxyBusy(false);
+    }
+  }
+
+  async function loadTrace() {
+    if (!selected || !["fact", "episode", "arc", "relation", "typed_relation"].includes(selected.kind)) return;
+    try {
+      const traceId = ["relation", "typed_relation"].includes(selected.kind)
+        ? splitIds(selected.fact_ids)[0]?.replace(/^fact:/, "")
+        : selected.record_id;
+      if (!traceId) throw new Error("该关系没有可追溯的支撑事实");
+      setTrace(await api.trace(traceId));
       setMessage("");
     } catch (error) {
       setMessage(`证据追溯失败：${String(error)}`);
@@ -598,11 +765,15 @@ export default function App() {
       {tab === "map" ? (
         <section className="workspace">
           <div className="map-stage">
-            <button className="universe-breadcrumb" type="button" onClick={clearLenses}>
-              {typeFilter === "all" ? "宇宙 · 深空" : `宇宙 › 观察镜片 · ${{ long_term: "长期", stage: "阶段", current: "当前", episode: "情节星座", arc: "长期星流", vault: "保护标记", entity: "行星" }[typeFilter] || typeFilter}`}
+            <button className="universe-breadcrumb" type="button" onClick={activeGalaxy ? leaveGalaxy : clearLenses}>
+              {activeGalaxy
+                ? `宇宙 › ${activeGalaxy.display_name}`
+                : typeFilter === "all"
+                  ? "宇宙 · 深空"
+                  : `宇宙 › 观察镜片 · ${{ long_term: "长期", stage: "阶段", current: "当前", episode: "情节星座", arc: "长期星流", vault: "保护标记", entity: "行星" }[typeFilter] || typeFilter}`}
             </button>
             <div className="universe-topbar">
-              <span className="universe-title">MEMORY UNIVERSE</span>
+              <span className="universe-title">{activeGalaxy ? activeGalaxy.display_name : "MEMORY UNIVERSE"}</span>
               <nav className="galaxy-pills" aria-label="观察镜片">
                 {[["all", "全部"], ["long_term", "长期"], ["stage", "阶段"], ["current", "当前"], ["episode", "情节"], ["arc", "脉络"], ["vault", "保护"]].map(([value, label]) => (
                   <button key={value} type="button" className={typeFilter === value ? "active" : ""} aria-pressed={typeFilter === value} onClick={() => {
@@ -612,6 +783,11 @@ export default function App() {
                 ))}
               </nav>
               <span className="topbar-separator" />
+              {activeGalaxy && <button
+                className="galaxy-governance-button"
+                type="button"
+                onClick={openGalaxyEditor}
+              >治理</button>}
               <button
                 className={`motion-toggle ${motionEnabled ? "active" : ""}`}
                 type="button"
@@ -631,20 +807,29 @@ export default function App() {
             </nav>
             <StarMap
               graph={filteredGraph}
+              view={activeGalaxy ? "galaxy" : "universe"}
+              layoutPreferences={layouts}
               motionEnabled={motionEnabled}
               activeLens={typeFilter}
               selected={selected}
               onSelect={selectNode}
+              onEnterGalaxy={enterGalaxy}
+              onExitGalaxy={leaveGalaxy}
+              onSaveEntityLayout={saveEntityLayout}
             />
             <section className={`universe-notebook ${showNotebook ? "open" : ""}`}>
               <button className="panel-heading" type="button" onClick={() => setShowNotebook((value) => !value)}><span>观星手记</span><i>{showNotebook ? "⌄" : "⌃"}</i></button>
               {showNotebook && <div className="notebook-body">
-                <p>恒星表示主体，行星表示唯一实体；镜片只改变观察方式，不改变实体归属。</p>
-                <div className="notebook-stats"><span><strong>{counts.facts}</strong> 记忆</span><span><strong>{counts.entities}</strong> 实体</span><span><strong>{counts.protected}</strong> 保护</span></div>
+                <p>{activeGalaxy
+                  ? "当前为关系星系：只显示成员行星，事实和证据作为解释层；缩小可返回主宇宙。"
+                  : "恒星表示主体，行星表示唯一实体；关系星系允许重叠，镜片不改变实体身份。"}</p>
+                <div className="notebook-stats"><span><strong>{counts.facts}</strong> 记忆</span><span><strong>{counts.entities}</strong> 实体</span><span><strong>{activeGalaxy?.evidence_count ?? graph.galaxies.filter((galaxy) => galaxy.lifecycle_state === "active" && galaxy.visibility === "visible").length}</strong> {activeGalaxy ? "证据" : "星系"}</span></div>
                 <div className="notebook-legend"><span><i className="legend-entity" />实体行星</span><span><i className="legend-fact" />证据关系</span><span><i className="legend-episode" />星座/星流</span><span><i className="legend-vault" />保护标记</span></div>
               </div>}
             </section>
-            <p className="universe-hint">拖拽平移 · 滚轮缩放 · 点击行星查看详情 · 镜片不改变行星身份</p>
+            <p className="universe-hint">{activeGalaxy
+              ? "拖拽行星保存位置 · 缩小返回主宇宙 · 点击关系旁注查看证据"
+              : "点击或聚焦星系后放大进入 · 拖拽行星保存位置 · 镜片不改变行星身份"}</p>
             {showStardust && <div className="stardust-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowStardust(false); }}>
               <section className="stardust-lens" role="dialog" aria-modal="true" aria-label="星尘筛选">
                 <header className="stardust-header"><div><span>✦</span><strong>星尘</strong><small>观测与筛选</small></div><button type="button" aria-label="关闭" onClick={() => setShowStardust(false)}>×</button></header>
@@ -687,6 +872,8 @@ export default function App() {
                   {selected.subject_kind && <><dt>主体类型</dt><dd>{selected.subject_kind === "user" ? "用户" : "Hermes profile 人格"}</dd></>}
                   {selected.source_count && <><dt>来源实例</dt><dd>{selected.source_count}</dd></>}
                   {selected.entity_type && <><dt>行星类型</dt><dd>{selected.entity_type}</dd></>}
+                  {selected.relation_type && <><dt>关系语义</dt><dd>{RELATION_LABELS[selected.relation_type] || selected.relation_type}</dd></>}
+                  {selected.transport && <><dt>传输路径</dt><dd>{selected.transport}</dd></>}
                   {selected.overlay_kind && <><dt>投影类型</dt><dd>{{ annotation: "事实注释", constellation: "情节星座", stream: "长期星流", protection: "保护标记" }[selected.overlay_kind] || selected.overlay_kind}</dd></>}
                   {selected.fact_type && <><dt>类型</dt><dd>{selected.fact_type}</dd></>}
                   {selected.confidence && <><dt>可信度</dt><dd>{Math.round(Number(selected.confidence) * 100)}%</dd></>}
@@ -711,6 +898,9 @@ export default function App() {
                 {["episode", "arc"].includes(selected.kind) && <div className="actions">
                   <button type="button" onClick={loadTrace}>追溯支撑证据</button>
                 </div>}
+                {["relation", "typed_relation"].includes(selected.kind) && <div className="actions">
+                  <button type="button" onClick={loadTrace}>追溯关系证据</button>
+                </div>}
                 {["episode", "arc"].includes(selected.kind) && selectedOverlayFacts.length > 0 && (
                   <section className="overlay-timeline" aria-label={selected.kind === "arc" ? "星流事实轨迹" : "星座支撑事实"}>
                     <h3>{selected.kind === "arc" ? "星流事实轨迹" : "星座支撑事实"}</h3>
@@ -724,6 +914,20 @@ export default function App() {
                   </section>
                 )}
                 {selected.kind === "entity" && <>
+                  {activeMembership && <section className="galaxy-membership-card">
+                    <h3>当前星系归属</h3>
+                    <dl>
+                      <dt>角色</dt><dd>{activeMembership.role}</dd>
+                      <dt>归属</dt><dd>{activeMembership.membership_kind === "primary" ? "主要" : "次级"}</dd>
+                      <dt>治理</dt><dd>{activeMembership.governance_state}</dd>
+                      <dt>证据</dt><dd>{activeMembership.evidence_count}</dd>
+                    </dl>
+                    <div>
+                      <button type="button" disabled={galaxyBusy} onClick={() => governSelectedGalaxyMember("fixed")}>固定</button>
+                      <button type="button" disabled={galaxyBusy} onClick={() => governSelectedGalaxyMember("automatic")}>恢复自动</button>
+                      <button className="danger" type="button" disabled={galaxyBusy} onClick={() => governSelectedGalaxyMember("excluded")}>从星系排除</button>
+                    </div>
+                  </section>}
                   <div className="actions entity-actions">
                     <button
                       type="button"
@@ -901,6 +1105,26 @@ export default function App() {
             <div className="dialog-actions">
               <button type="button" onClick={() => setSubjectEditor(false)} disabled={subjectBusy}>取消</button>
               <button type="submit" disabled={subjectBusy || !subjectName.trim() || !subjectReason.trim()}>{subjectBusy ? "正在提交…" : "保存"}</button>
+            </div>
+          </form>
+        </div>
+      )}
+      {galaxyEditor && activeGalaxy && (
+        <div className="modal-backdrop">
+          <form className="governance-dialog galaxy-dialog" onSubmit={submitGalaxyEditor} role="dialog" aria-modal="true" aria-labelledby="galaxy-editor-title">
+            <p className="eyebrow">GALAXY GOVERNANCE</p>
+            <h2 id="galaxy-editor-title">治理关系星系</h2>
+            <p className="dialog-explanation">人工名称、隐藏、固定和成员排除优先于自动重建；事实和原始证据不会被修改。</p>
+            <label>显示名称<input value={galaxyName} onChange={(event) => setGalaxyName(event.target.value)} maxLength={128} required autoFocus /></label>
+            <label>可见性<select value={galaxyVisibility} onChange={(event) => setGalaxyVisibility(event.target.value as "visible" | "hidden")}>
+              <option value="visible">可见</option><option value="hidden">隐藏</option>
+            </select></label>
+            <label className="noise-toggle"><input type="checkbox" checked={galaxyLocked} onChange={(event) => setGalaxyLocked(event.target.checked)} />固定星系边界，自动重建不得令其失效</label>
+            <label>操作原因<textarea value={galaxyReason} onChange={(event) => setGalaxyReason(event.target.value)} placeholder="该原因将写入治理审计" required /></label>
+            <div className="dialog-actions galaxy-dialog-actions">
+              <button type="button" onClick={undoGalaxyChange} disabled={galaxyBusy}>撤销最近操作</button>
+              <button type="button" onClick={() => setGalaxyEditor(false)} disabled={galaxyBusy}>取消</button>
+              <button type="submit" disabled={galaxyBusy || !galaxyName.trim() || !galaxyReason.trim()}>{galaxyBusy ? "正在提交…" : "保存"}</button>
             </div>
           </form>
         </div>

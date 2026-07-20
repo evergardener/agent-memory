@@ -25,7 +25,7 @@
           "review_note": "应用是卫星；PostgreSQL 是该社区的核心。"
         }
       ],
-      "decision": "REVIEW_REQUIRED"
+      "decision": "ACCEPT"
     },
     {
       "id": "loki-alerting-pipeline",
@@ -51,7 +51,7 @@
           "review_note": "Loki ruler 通过已配置端点把告警发送给 Alertmanager。"
         }
       ],
-      "decision": "REVIEW_REQUIRED"
+      "decision": "ACCEPT"
     },
     {
       "id": "hermes-email-workflow",
@@ -77,7 +77,7 @@
           "review_note": "认证和邮件协议是边属性，不另建行星。"
         }
       ],
-      "decision": "REVIEW_REQUIRED"
+      "decision": "ACCEPT"
     }
   ],
   "non_galaxy_groups": [

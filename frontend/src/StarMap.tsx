@@ -1,13 +1,18 @@
 import cytoscape, { Core, EdgeSingular, EventObjectNode, NodeSingular } from "cytoscape";
 import { CSSProperties, useEffect, useMemo, useRef } from "react";
-import type { GraphData, GraphElement } from "./api";
+import type { Galaxy, GraphData, GraphElement, LayoutPreference } from "./api";
 
 type Props = {
   graph: GraphData;
+  view: "universe" | "galaxy";
+  layoutPreferences: LayoutPreference[];
   motionEnabled: boolean;
   activeLens: string;
   selected: Record<string, string> | null;
   onSelect: (data: Record<string, string> | null) => void;
+  onEnterGalaxy: (galaxy: Galaxy) => void;
+  onExitGalaxy: () => void;
+  onSaveEntityLayout: (entityId: string, position: { x: number; y: number }) => void;
 };
 
 const PLANET_COLORS: Record<string, string> = {
@@ -23,6 +28,23 @@ const PLANET_COLORS: Record<string, string> = {
   concept: "#b9add6",
   event: "#d59bb4",
   other: "#aebdd8"
+};
+
+const GALAXY_COLORS: Record<string, string> = {
+  data: "#8fb9e8",
+  observability: "#b6a0e6",
+  communication: "#e2a9c4",
+  infrastructure: "#82c9ad",
+  manual: "#d7b48a",
+  other: "#9cafe6"
+};
+
+const RELATION_LABELS: Record<string, string> = {
+  uses_database: "使用数据库",
+  pushes_logs_to: "推送日志",
+  sends_alerts_to: "发送告警",
+  uses_email_connector: "使用邮件连接器",
+  connects_mailbox: "连接邮箱"
 };
 
 const LENS_LABELS: Record<string, string> = {
@@ -55,16 +77,25 @@ function hash(value: string) {
   return result >>> 0;
 }
 
-function positionPlanets(nodes: GraphElement[]) {
+function positionPlanets(
+  nodes: GraphElement[],
+  saved: Map<string, { x: number; y: number }>,
+  compact: boolean
+) {
   const positions = new Map<string, { x: number; y: number }>();
   const ordered = [...nodes].sort((left, right) => left.data.id.localeCompare(right.data.id));
   const total = Math.max(ordered.length, 1);
   ordered.forEach((node, index) => {
+    const savedPosition = saved.get(node.data.record_id);
+    if (savedPosition) {
+      positions.set(node.data.id, savedPosition);
+      return;
+    }
     const seed = hash(node.data.id);
     const angle = index * 2.399963229728653 + (seed % 360) * Math.PI / 1800;
     const normalized = Math.sqrt((index + 1) / (total + 1));
-    const radiusX = 145 + normalized * 410 + (seed % 23);
-    const radiusY = 92 + normalized * 255 + ((seed >> 4) % 17);
+    const radiusX = (compact ? 72 : 145) + normalized * (compact ? 260 : 410) + (seed % 23);
+    const radiusY = (compact ? 54 : 92) + normalized * (compact ? 175 : 255) + ((seed >> 4) % 17);
     positions.set(node.data.id, {
       x: 600 + Math.cos(angle) * radiusX,
       y: 360 + Math.sin(angle) * radiusY
@@ -76,6 +107,9 @@ function positionPlanets(nodes: GraphElement[]) {
 function overlayEntityIds(selected: Record<string, string> | null) {
   if (!selected) return new Set<string>();
   if (selected.kind === "entity") return new Set([selected.id]);
+  if (["relation", "typed_relation"].includes(selected.kind)) {
+    return new Set([selected.source, selected.target].filter(Boolean));
+  }
   return new Set([
     ...splitIds(selected.entity_ids),
     ...splitIds(selected.target_ids),
@@ -89,22 +123,94 @@ function overlayFactIds(selected: Record<string, string> | null) {
   return new Set(splitIds(selected.fact_ids));
 }
 
-export function StarMap({ graph, motionEnabled, activeLens, selected, onSelect }: Props) {
+export function StarMap({
+  graph,
+  view,
+  layoutPreferences,
+  motionEnabled,
+  activeLens,
+  selected,
+  onSelect,
+  onEnterGalaxy,
+  onExitGalaxy,
+  onSaveEntityLayout
+}: Props) {
   const host = useRef<HTMLDivElement>(null);
   const instance = useRef<Core | null>(null);
+  const focusedGalaxy = useRef<Galaxy | null>(null);
+  const transitionArmed = useRef(true);
   const planetNodes = useMemo(
     () => graph.nodes.filter((node) => node.data.kind === "entity"),
     [graph.nodes]
   );
-  const positions = useMemo(() => positionPlanets(planetNodes), [planetNodes]);
+  const savedPositions = useMemo(() => {
+    const positions = new Map<string, { x: number; y: number }>();
+    layoutPreferences
+      .filter((item) =>
+        item.target_kind === "entity" &&
+        item.scope_kind === view &&
+        (view === "universe" || item.scope_id === graph.projection.galaxy_id)
+      )
+      .forEach((item) => {
+        if (typeof item.position.x === "number" && typeof item.position.y === "number") {
+          positions.set(item.target_id, { x: item.position.x, y: item.position.y });
+        }
+      });
+    return positions;
+  }, [graph.projection.galaxy_id, layoutPreferences, view]);
+  const positions = useMemo(
+    () => positionPlanets(planetNodes, savedPositions, view === "galaxy"),
+    [planetNodes, savedPositions, view]
+  );
   const relationCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    graph.edges.filter((edge) => edge.data.kind === "relation").forEach((edge) => {
+    graph.edges.filter((edge) => ["relation", "typed_relation"].includes(edge.data.kind)).forEach((edge) => {
       counts.set(edge.data.source, (counts.get(edge.data.source) || 0) + 1);
       counts.set(edge.data.target, (counts.get(edge.data.target) || 0) + 1);
     });
     return counts;
   }, [graph.edges]);
+  const planetLabels = useMemo(
+    () => new Map(planetNodes.map((node) => [node.data.id, node.data.label])),
+    [planetNodes]
+  );
+  const relationItems = useMemo<GraphElement[]>(
+    () => graph.edges
+      .filter((edge) => ["relation", "typed_relation"].includes(edge.data.kind))
+      .map((edge) => ({
+        ...edge,
+        data: {
+          ...edge.data,
+          label: `${planetLabels.get(edge.data.source) || "行星"} — ${RELATION_LABELS[edge.data.relation_type] || edge.data.relation_type || "关联"} → ${planetLabels.get(edge.data.target) || "行星"}`,
+          evidence_count: String(splitIds(edge.data.evidence_ids).length)
+        }
+      })),
+    [graph.edges, planetLabels]
+  );
+  const galaxies = useMemo(
+    () => view === "universe"
+      ? graph.galaxies.filter((galaxy) =>
+        galaxy.lifecycle_state === "active" && galaxy.visibility === "visible" && galaxy.member_count >= 3
+      )
+      : [],
+    [graph.galaxies, view]
+  );
+  const galaxyLandmarks = useMemo(
+    () => [...galaxies]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((galaxy, index, values) => {
+        const seed = hash(galaxy.id);
+        const angle = -Math.PI / 2 + (index * Math.PI * 2) / Math.max(values.length, 1) + (seed % 17) / 50;
+        const ring = index % 2 === 0 ? 1 : 0.82;
+        return {
+          galaxy,
+          left: 50 + Math.cos(angle) * 35 * ring,
+          top: 50 + Math.sin(angle) * 30 * ring,
+          color: GALAXY_COLORS[galaxy.family] || GALAXY_COLORS.other
+        };
+      }),
+    [galaxies]
+  );
   const protectedIds = useMemo(() => new Set(
     graph.vault_markers.flatMap((marker) => splitIds(marker.data.target_ids))
   ), [graph.vault_markers]);
@@ -199,9 +305,12 @@ export function StarMap({ graph, motionEnabled, activeLens, selected, onSelect }
           lens: activeLens
         }
       })),
-      ...graph.edges.filter((edge) => edge.data.kind === "relation").map((element) => ({
+      ...relationItems.map((element) => ({
         ...element,
-        data: { ...element.data, strength: Number(element.data.strength || 0.55) }
+        data: {
+          ...element.data,
+          strength: Number(element.data.strength || 0.55)
+        }
       }))
     ];
     const cy = cytoscape({
@@ -229,7 +338,7 @@ export function StarMap({ graph, motionEnabled, activeLens, selected, onSelect }
           width: 5, height: 5, label: "", "background-color": "#fff0ba", "border-width": 0,
           "underlay-padding": 9, "underlay-color": "#ffd98c", "underlay-opacity": 0.66, "events": "no", "z-index": 40
         } },
-        { selector: 'edge[kind = "relation"]', style: {
+        { selector: 'edge[kind = "relation"], edge[kind = "typed_relation"]', style: {
           width: "mapData(strength, 0, 1, 0.3, 2)", "line-color": "#7188b0",
           opacity: (edge: EdgeSingular) => 0.04 + Number(edge.data("strength") || 0.4) * 0.3,
           "curve-style": "bezier", "transition-property": "opacity, width, line-color", "transition-duration": 220
@@ -252,12 +361,7 @@ export function StarMap({ graph, motionEnabled, activeLens, selected, onSelect }
     const fitPlanets = () => {
       const planets = cy.nodes('[kind = "entity"]');
       if (planets.length === 0) return;
-      if (planets.length <= 4) {
-        cy.zoom(1);
-        cy.pan({ x: 0, y: 0 });
-        return;
-      }
-      cy.fit(planets, 74);
+      cy.fit(planets, view === "galaxy" ? 150 : 74);
     };
     fitPlanets();
     const fitFrame = window.requestAnimationFrame(fitPlanets);
@@ -281,10 +385,34 @@ export function StarMap({ graph, motionEnabled, activeLens, selected, onSelect }
       focusNeighborhood(event.target);
       onSelect(event.target.data());
     });
+    cy.on("tap select", 'edge[kind = "relation"], edge[kind = "typed_relation"]', (event) => {
+      clearFocus();
+      event.target.addClass("is-neighbor");
+      event.target.connectedNodes().addClass("is-neighbor");
+      onSelect(event.target.data());
+    });
     cy.on("tap", (event) => {
       if (event.target !== cy) return;
       clearFocus();
       onSelect(null);
+    });
+    cy.on("dragfree", 'node[kind = "entity"]', (event: EventObjectNode) => {
+      const position = event.target.position();
+      onSaveEntityLayout(String(event.target.data("record_id")), {
+        x: Math.round(position.x * 100) / 100,
+        y: Math.round(position.y * 100) / 100
+      });
+    });
+    const transitionReadyAt = window.performance.now() + 700;
+    cy.on("zoom", () => {
+      if (!transitionArmed.current || window.performance.now() < transitionReadyAt) return;
+      if (view === "universe" && cy.zoom() >= 2.6 && focusedGalaxy.current) {
+        transitionArmed.current = false;
+        onEnterGalaxy(focusedGalaxy.current);
+      } else if (view === "galaxy" && cy.zoom() <= 0.14) {
+        transitionArmed.current = false;
+        onExitGalaxy();
+      }
     });
 
     let motionFrame = 0;
@@ -317,13 +445,27 @@ export function StarMap({ graph, motionEnabled, activeLens, selected, onSelect }
     };
     if (motionEnabled) motionFrame = window.requestAnimationFrame(animateMotion);
     instance.current = cy;
+    transitionArmed.current = true;
     return () => {
       window.clearTimeout(fitTimer);
       window.cancelAnimationFrame(fitFrame);
       window.cancelAnimationFrame(motionFrame);
       cy.destroy();
     };
-  }, [activeLens, graph.edges, motionEnabled, onSelect, planetNodes, positions, protectedIds, relationCounts]);
+  }, [
+    activeLens,
+    motionEnabled,
+    onEnterGalaxy,
+    onExitGalaxy,
+    onSaveEntityLayout,
+    onSelect,
+    planetNodes,
+    relationItems,
+    positions,
+    protectedIds,
+    relationCounts,
+    view
+  ]);
 
   useEffect(() => {
     const cy = instance.current;
@@ -337,10 +479,36 @@ export function StarMap({ graph, motionEnabled, activeLens, selected, onSelect }
     ).addClass("overlay-member");
   }, [selected]);
 
-  return <div className="star-map-shell universe-view planetary-view" data-motion={motionEnabled ? "floating-5px" : "static"}>
+  return <div className={`star-map-shell ${view === "galaxy" ? "galaxy-view" : "universe-view"} planetary-view`} data-motion={motionEnabled ? "floating-5px" : "static"}>
     <div className="galaxy-band" />
     <div className="deep-space-halo" aria-hidden="true" />
+    {view === "universe" && galaxyLandmarks.map(({ galaxy, left, top, color }) => <div
+      key={`aura:${galaxy.id}`}
+      className="galaxy-aura"
+      style={{ left: `${left}%`, top: `${top}%`, "--galaxy-color": color } as CSSProperties}
+      aria-hidden="true"
+    />)}
     <div className="star-map" ref={host} aria-label={`记忆主宇宙 · ${LENS_LABELS[activeLens] || activeLens}`} />
+    {view === "universe" && <nav className="galaxy-labels" aria-label="关系星系入口">
+      {galaxyLandmarks.map(({ galaxy, left, top, color }) => <button
+        key={galaxy.id}
+        type="button"
+        style={{ left: `${left}%`, top: `${top}%`, color } as CSSProperties}
+        onMouseEnter={() => { focusedGalaxy.current = galaxy; }}
+        onMouseLeave={() => {
+          if (focusedGalaxy.current?.id === galaxy.id) focusedGalaxy.current = null;
+        }}
+        onFocus={() => { focusedGalaxy.current = galaxy; }}
+        onBlur={() => {
+          if (focusedGalaxy.current?.id === galaxy.id) focusedGalaxy.current = null;
+        }}
+        onClick={() => onEnterGalaxy(galaxy)}
+        aria-label={`进入${galaxy.display_name}，${galaxy.member_count}颗行星`}
+      >
+        {galaxy.display_name}
+        <small>{galaxy.member_count} 行星 · {galaxy.evidence_count} 证据</small>
+      </button>)}
+    </nav>}
     <nav className="sr-only" aria-label="可访问行星列表">
       {planetNodes.map((node) => <button
         key={node.data.id}
@@ -350,8 +518,24 @@ export function StarMap({ graph, motionEnabled, activeLens, selected, onSelect }
         onClick={(event) => { event.stopPropagation(); onSelect(node.data); }}
       >{node.data.label}</button>)}
     </nav>
+    <nav className="sr-only" aria-label="可访问关系列表">
+      {relationItems.map((edge) => <button
+          key={edge.data.id}
+          type="button"
+          aria-label={`关系 ${edge.data.label}`}
+          onFocus={() => onSelect(edge.data)}
+          onClick={(event) => { event.stopPropagation(); onSelect(edge.data); }}
+        >{edge.data.label}</button>)}
+    </nav>
+    {view === "galaxy" && relationItems.length > 0 && <section className="relation-index" aria-label="关系证据">
+      <p>关系证据<small>事实是解释层，不是星体</small></p>
+      {relationItems.map((edge) => <button key={`visible:${edge.data.id}`} type="button" onClick={() => onSelect(edge.data)}>
+        <strong>{edge.data.label}</strong>
+        <span>{edge.data.evidence_count} 条证据 · {edge.data.transport}</span>
+      </button>)}
+    </section>}
 
-    <div className="subject-cores" aria-label="主体恒星群">
+    {view === "universe" && <div className="subject-cores" aria-label="主体恒星群">
       {subjectLayout.map(({ node, x, y }) => <button
         key={node.data.id}
         type="button"
@@ -362,7 +546,7 @@ export function StarMap({ graph, motionEnabled, activeLens, selected, onSelect }
       >
         <i className="stellar-glow" /><i className="stellar-ray ray-horizontal" /><i className="stellar-ray ray-vertical" /><b /><span>{node.data.label}</span>
       </button>)}
-    </div>
+    </div>}
 
     {overlayItems.length > 0 && <section className="overlay-index" aria-label={`${overlayTitle}列表`}>
       <p>{overlayTitle}<small>{activeLens === "vault" ? "只显示脱敏引用，不加载敏感明文" : "临时投影，不改变行星位置"}</small></p>

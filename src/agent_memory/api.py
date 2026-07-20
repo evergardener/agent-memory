@@ -13,6 +13,17 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .db import Database
+from .galaxies import (
+    create_manual_galaxy,
+    get_galaxy,
+    list_galaxies,
+    list_layout_preferences,
+    request_rebuild,
+    save_layout_preference,
+    undo_last_galaxy_change,
+    update_galaxy,
+    update_membership,
+)
 from .graph import GraphLens, load_graph
 from .ids import stable_uuid
 from .quality import build_quality_report
@@ -37,8 +48,14 @@ from .schemas import (
     EntityMergeRequest,
     EntityRelationResponse,
     EntitySplitRequest,
+    GalaxyCreateRequest,
+    GalaxyMembershipRequest,
+    GalaxyRebuildRequest,
+    GalaxyUndoRequest,
+    GalaxyUpdateRequest,
     IngestTurnRequest,
     IngestTurnResponse,
+    LayoutPreferenceRequest,
     MemoryActionRequest,
     MemoryActionResponse,
     MemoryTraceResponse,
@@ -181,6 +198,7 @@ def ui_config():
     settings = get_settings()
     return UiConfigResponse(
         namespace=settings.namespace,
+        namespace_id=stable_uuid("namespace", settings.namespace),
         version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.6"),
     )
 
@@ -877,6 +895,236 @@ def reset_graph_subject_source(
     return result
 
 
+def _raise_galaxy_error(error: ValueError) -> None:
+    detail = str(error)
+    status_code = 404 if "NOT_FOUND" in detail else 409 if "CONFLICT" in detail else 422
+    raise HTTPException(status_code=status_code, detail=detail) from error
+
+
+@app.get(
+    "/api/v1/graph/galaxies",
+    dependencies=[Depends(require_api_access)],
+)
+def graph_galaxies(
+    shared_namespace: str,
+    request: Request,
+    include_inactive: bool = False,
+):
+    _check_namespace(shared_namespace)
+    with request.app.state.database.connection() as connection:
+        return list_galaxies(
+            connection,
+            shared_namespace,
+            include_inactive=include_inactive,
+        )
+
+
+@app.post(
+    "/api/v1/graph/galaxies",
+    dependencies=[Depends(require_ui_session)],
+)
+def create_graph_galaxy(request_body: GalaxyCreateRequest, request: Request):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            return create_manual_galaxy(connection, request_body)
+    except ValueError as error:
+        _raise_galaxy_error(error)
+
+
+@app.post(
+    "/api/v1/graph/galaxies/rebuild",
+    status_code=202,
+    dependencies=[Depends(require_ui_session)],
+)
+def rebuild_graph_galaxies(request_body: GalaxyRebuildRequest, request: Request):
+    _check_namespace(request_body.context.shared_namespace)
+    with request.app.state.database.connection() as connection:
+        job_id = request_rebuild(
+            connection,
+            namespace_key=request_body.context.shared_namespace,
+            actor_id=request_body.context.source_profile,
+            reason=request_body.reason,
+            correlation_id=request_body.context.correlation_id,
+        )
+    return {"job_id": job_id, "correlation_id": request_body.context.correlation_id}
+
+
+@app.patch(
+    "/api/v1/graph/galaxies/{galaxy_id}",
+    dependencies=[Depends(require_ui_session)],
+)
+def update_graph_galaxy(
+    galaxy_id: UUID, request_body: GalaxyUpdateRequest, request: Request
+):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            return update_galaxy(connection, galaxy_id, request_body)
+    except ValueError as error:
+        _raise_galaxy_error(error)
+
+
+@app.put(
+    "/api/v1/graph/galaxies/{galaxy_id}/members/{entity_id}",
+    dependencies=[Depends(require_ui_session)],
+)
+def govern_graph_galaxy_member(
+    galaxy_id: UUID,
+    entity_id: UUID,
+    request_body: GalaxyMembershipRequest,
+    request: Request,
+):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            return update_membership(connection, galaxy_id, entity_id, request_body)
+    except ValueError as error:
+        _raise_galaxy_error(error)
+
+
+@app.post(
+    "/api/v1/graph/galaxies/{galaxy_id}/undo",
+    dependencies=[Depends(require_ui_session)],
+)
+def undo_graph_galaxy(
+    galaxy_id: UUID, request_body: GalaxyUndoRequest, request: Request
+):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            return undo_last_galaxy_change(connection, galaxy_id, request_body)
+    except ValueError as error:
+        _raise_galaxy_error(error)
+
+
+@app.get(
+    "/api/v1/graph/layout",
+    dependencies=[Depends(require_api_access)],
+)
+def graph_layout(shared_namespace: str, request: Request):
+    _check_namespace(shared_namespace)
+    with request.app.state.database.connection() as connection:
+        return list_layout_preferences(connection, shared_namespace)
+
+
+@app.put(
+    "/api/v1/graph/layout",
+    dependencies=[Depends(require_ui_session)],
+)
+def save_graph_layout(request_body: LayoutPreferenceRequest, request: Request):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            return save_layout_preference(connection, request_body)
+    except ValueError as error:
+        _raise_galaxy_error(error)
+
+
+def _galaxy_graph_view(graph: dict, galaxy: dict) -> dict:
+    member_node_ids = {
+        f"entity:{member['entity_id']}"
+        for member in galaxy["members"]
+        if member["governance_state"] != "excluded"
+    }
+    graph["nodes"] = [
+        node for node in graph["nodes"] if node["data"]["id"] in member_node_ids
+    ]
+    graph["edges"] = [
+        {
+            "data": {
+                "id": f"typed-relation:{relation['id']}",
+                "record_id": str(relation["id"]),
+                "source": f"entity:{relation['source_entity_id']}",
+                "target": f"entity:{relation['target_entity_id']}",
+                "kind": "typed_relation",
+                "relation_type": relation["relation_type"],
+                "transport": relation["transport"],
+                "strength": f"{relation['confidence']:.2f}",
+                "fact_ids": "|".join(f"fact:{item}" for item in relation["fact_ids"]),
+                "evidence_ids": "|".join(str(item) for item in relation["evidence_ids"]),
+            }
+        }
+        for relation in galaxy["relations"]
+        if f"entity:{relation['source_entity_id']}" in member_node_ids
+        and f"entity:{relation['target_entity_id']}" in member_node_ids
+    ]
+    for collection in ("facts", "episodes", "arcs"):
+        graph[collection] = [
+            item
+            for item in graph[collection]
+            if member_node_ids.intersection(
+                value for value in item["data"].get("entity_ids", "").split("|") if value
+            )
+        ]
+    graph["vault_markers"] = [
+        marker
+        for marker in graph["vault_markers"]
+        if member_node_ids.intersection(
+            value for value in marker["data"].get("target_ids", "").split("|") if value
+        )
+    ]
+    graph["galaxies"] = [galaxy]
+    graph["projection"].update(
+        {
+            "community_projection": "community-projection-v1",
+            "view": "galaxy",
+            "galaxy_id": str(galaxy["id"]),
+        }
+    )
+    return graph
+
+
+def _universe_graph_view(graph: dict, galaxies: list[dict]) -> dict:
+    visible = [
+        galaxy
+        for galaxy in galaxies
+        if galaxy["lifecycle_state"] == "active" and galaxy["visibility"] == "visible"
+    ]
+    relations = {
+        str(relation["id"]): relation
+        for galaxy in visible
+        for relation in galaxy["relations"]
+    }
+    typed_pairs = {
+        frozenset(
+            (
+                f"entity:{relation['source_entity_id']}",
+                f"entity:{relation['target_entity_id']}",
+            )
+        )
+        for relation in relations.values()
+    }
+    graph["edges"] = [
+        edge
+        for edge in graph["edges"]
+        if edge["data"].get("kind") != "relation"
+        or frozenset((edge["data"]["source"], edge["data"]["target"])) not in typed_pairs
+    ]
+    graph["edges"].extend(
+        {
+            "data": {
+                "id": f"typed-relation:{relation['id']}",
+                "record_id": str(relation["id"]),
+                "source": f"entity:{relation['source_entity_id']}",
+                "target": f"entity:{relation['target_entity_id']}",
+                "kind": "typed_relation",
+                "relation_type": relation["relation_type"],
+                "transport": relation["transport"],
+                "strength": f"{relation['confidence']:.2f}",
+                "fact_ids": "|".join(f"fact:{item}" for item in relation["fact_ids"]),
+                "evidence_ids": "|".join(str(item) for item in relation["evidence_ids"]),
+            }
+        }
+        for relation in sorted(relations.values(), key=lambda item: str(item["id"]))
+    )
+    graph["galaxies"] = galaxies
+    graph["projection"].update(
+        {"community_projection": "community-projection-v1", "view": "universe"}
+    )
+    return graph
+
+
 @app.get(
     "/api/v1/graph/subgraph",
     dependencies=[Depends(require_api_access)],
@@ -890,10 +1138,16 @@ def graph_subgraph(
     activity: Annotated[list[str] | None, Query()] = None,
     sensitivity: Annotated[list[str] | None, Query()] = None,
     updated_after: datetime | None = None,
+    view: Literal["universe", "galaxy"] = "universe",
+    galaxy_id: UUID | None = None,
 ):
     _check_namespace(shared_namespace)
+    if view == "galaxy" and galaxy_id is None:
+        raise HTTPException(status_code=422, detail="GALAXY_ID_REQUIRED")
+    if view == "universe" and galaxy_id is not None:
+        raise HTTPException(status_code=422, detail="GALAXY_ID_ONLY_VALID_FOR_GALAXY_VIEW")
     with request.app.state.database.connection() as connection:
-        return load_graph(
+        graph = load_graph(
             connection,
             shared_namespace,
             lens=GraphLens(
@@ -905,6 +1159,13 @@ def graph_subgraph(
                 updated_after=updated_after,
             ),
         )
+        if view == "galaxy":
+            galaxy = get_galaxy(connection, shared_namespace, galaxy_id)
+            if galaxy is None:
+                raise HTTPException(status_code=404, detail="GALAXY_NOT_FOUND")
+            return _galaxy_graph_view(graph, galaxy)
+        galaxies = list_galaxies(connection, shared_namespace)
+        return _universe_graph_view(graph, galaxies)
 
 
 @app.get("/api/v1/state", dependencies=[Depends(require_api_access)])

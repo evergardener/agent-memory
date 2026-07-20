@@ -66,6 +66,7 @@ def test_gold_drafts_require_structure_and_explicit_acceptance() -> None:
 
     assert accepted["accepted"] == 1
     assert accepted["gold_ready"] is True
+    assert "用户已接受全部结构通过草案" in render_gold_report(accepted)
 
 
 def test_acceptance_cannot_override_a_failed_structure_gate() -> None:

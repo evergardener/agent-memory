@@ -126,6 +126,7 @@ def evaluate_gold_drafts(
                         "evidence_count": 0,
                         "session_count": 0,
                         "datasets": [],
+                        "evidence_refs": [],
                         "relation_type": relation_type,
                         "transport": transport,
                         "review_note": review_note,
@@ -141,6 +142,7 @@ def evaluate_gold_drafts(
                     "evidence_count": len(aggregate["evidence_refs"]),
                     "session_count": aggregate["session_count"],
                     "datasets": sorted(aggregate["datasets"]),
+                    "evidence_refs": sorted(aggregate["evidence_refs"]),
                     "relation_type": relation_type,
                     "transport": transport,
                     "review_note": review_note,
@@ -268,18 +270,17 @@ def render_gold_report(result: dict[str, Any]) -> str:
                     "",
                 ]
             )
-    lines.extend(
-        [
-            "## 5. 人工确认边界",
-            "",
-            (
-                "结构通过只证明成员和关系均可回到候选证据，不证明社区命名或边界正确。"
-                "在用户把每项决策改为 `ACCEPT` 前，草案不得写入 galaxy/layout 表，"
-                "也不得作为召回事实。"
-            ),
-            "",
-        ]
+    confirmation = (
+        "用户已接受全部结构通过草案；该结果只解除阶段 C 算法评测前置条件，不等于已写入生产"
+        " galaxy/layout 表，也不得把金标配置直接当作召回事实。"
+        if result["gold_ready"]
+        else (
+            "结构通过只证明成员和关系均可回到候选证据，不证明社区命名或边界正确。"
+            "在用户把每项决策改为 `ACCEPT` 前，草案不得写入 galaxy/layout 表，"
+            "也不得作为召回事实。"
+        )
     )
+    lines.extend(["## 5. 人工确认边界", "", confirmation, ""])
     return "\n".join(lines)
 
 

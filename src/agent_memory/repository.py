@@ -8,6 +8,7 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 
 from .classification import is_recallable_memory_content
+from .community_projection import enqueue_community_rebuild
 from .embeddings import EMBEDDING_VERSION, deterministic_embedding, vector_literal
 from .ids import new_uuid, stable_uuid
 from .model_adapter import is_graph_entity_candidate
@@ -161,6 +162,7 @@ def enqueue_derived_rebuild(
            VALUES (%s,%s,'rebuild_derived',%s,%s) ON CONFLICT DO NOTHING""",
         (job_id, namespace_id, f"rebuild_derived:{reason_key}", input_ref),
     )
+    enqueue_community_rebuild(connection, namespace_id, reason_key=reason_key)
     return job_id
 
 
@@ -331,14 +333,32 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
     records: dict[UUID, dict] = {}
     channels: dict[UUID, list[str]] = defaultdict(list)
     for channel, rows in (("lexical", lexical), ("semantic", semantic), ("entity", entity)):
-        for rank, row in enumerate(rows, start=1):
+        seen_in_channel: set[UUID] = set()
+        unique_rank = 0
+        for row in rows:
             if row["kind"] == "fact" and not is_recallable_memory_content(
                 row["text_redacted"]
             ):
                 continue
             memory_id = row["memory_id"]
-            scores[memory_id] += 1 / (60 + rank)
-            records[memory_id] = row
+            if memory_id in seen_in_channel:
+                merged_sources = {
+                    *records[memory_id].get("source_ids", ()),
+                    *row.get("source_ids", ()),
+                }
+                records[memory_id]["source_ids"] = sorted(merged_sources, key=str)
+                continue
+            seen_in_channel.add(memory_id)
+            unique_rank += 1
+            scores[memory_id] += 1 / (60 + unique_rank)
+            if memory_id in records:
+                merged_sources = {
+                    *records[memory_id].get("source_ids", ()),
+                    *row.get("source_ids", ()),
+                }
+                records[memory_id]["source_ids"] = sorted(merged_sources, key=str)
+            else:
+                records[memory_id] = dict(row)
             channels[memory_id].append(channel)
 
     items: list[RecallItem] = []

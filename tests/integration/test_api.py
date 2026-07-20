@@ -138,6 +138,7 @@ def test_ingest_is_idempotent_redacted_and_cross_profile_recallable():
     assert any("[REDACTED]" in item["text"] for item in combined)
     assert any("entity" in item["channels"] for item in combined)
     assert any("semantic" in item["channels"] for item in combined)
+    assert all(len(item["channels"]) == len(set(item["channels"])) for item in combined)
 
 
 def test_profile_subjects_group_instances_and_support_audited_mapping_governance():

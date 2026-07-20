@@ -1,4 +1,5 @@
 let namespace = "";
+let namespaceId = "";
 
 function activeNamespace() {
   if (!namespace) throw new Error("UI_NAMESPACE_NOT_CONFIGURED");
@@ -7,10 +8,74 @@ function activeNamespace() {
 
 export type GraphElement = { data: Record<string, string> };
 
+export type GalaxyMember = {
+  entity_id: string;
+  canonical_name: string;
+  entity_type: string;
+  role: "core" | "bridge" | "satellite" | "member";
+  membership_kind: "primary" | "secondary";
+  weight: number;
+  governance_state: "automatic" | "fixed" | "excluded";
+  evidence_count: number;
+  relation_count: number;
+};
+
+export type GalaxyRelation = {
+  id: string;
+  source_entity_id: string;
+  target_entity_id: string;
+  relation_type: string;
+  transport: string;
+  confidence: number;
+  lifecycle_state: string;
+  fact_ids: string[];
+  evidence_ids: string[];
+  evidence_count: number;
+};
+
+export type Galaxy = {
+  id: string;
+  stable_key: string;
+  family: string;
+  display_name: string;
+  name_origin: "automatic" | "manual";
+  origin: "automatic" | "manual";
+  algorithm_version: string;
+  input_snapshot_hash: string;
+  lifecycle_state: "active" | "inactive";
+  visibility: "visible" | "hidden";
+  manual_locked: boolean;
+  version: number;
+  member_count: number;
+  relation_count: number;
+  evidence_count: number;
+  members: GalaxyMember[];
+  relations: GalaxyRelation[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type LayoutPreference = {
+  id: string;
+  scope_kind: "universe" | "galaxy";
+  scope_id: string;
+  target_kind: "camera" | "entity" | "galaxy";
+  target_id: string;
+  position: { x?: number; y?: number };
+  zoom: number | null;
+  motion_enabled: boolean | null;
+  pinned: boolean;
+  version: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type GraphData = {
   projection: {
     version: string;
     community_projection: string;
+    view?: "universe" | "galaxy";
+    galaxy_id?: string;
     active_lenses: {
       profiles: string[];
       fact_types: string[];
@@ -26,6 +91,7 @@ export type GraphData = {
   episodes: GraphElement[];
   arcs: GraphElement[];
   vault_markers: GraphElement[];
+  galaxies: Galaxy[];
   facets: {
     profiles: string[];
     fact_types: string[];
@@ -179,14 +245,94 @@ export const api = {
     }),
   logout: () => request("/api/v1/ui/logout", { method: "POST" }),
   configure: async () => {
-    const config = await request<{ namespace: string; version: string }>("/api/v1/ui/config");
+    const config = await request<{ namespace: string; namespace_id: string; version: string }>("/api/v1/ui/config");
     namespace = config.namespace;
+    namespaceId = config.namespace_id;
     return config;
   },
-  graph: () =>
-    request<GraphData>(
-      `/api/v1/graph/subgraph?shared_namespace=${encodeURIComponent(activeNamespace())}`
+  graph: (galaxyId?: string) => {
+    const parameters = new URLSearchParams({
+      shared_namespace: activeNamespace(),
+      view: galaxyId ? "galaxy" : "universe"
+    });
+    if (galaxyId) parameters.set("galaxy_id", galaxyId);
+    return request<GraphData>(`/api/v1/graph/subgraph?${parameters.toString()}`);
+  },
+  layout: () =>
+    request<LayoutPreference[]>(
+      `/api/v1/graph/layout?shared_namespace=${encodeURIComponent(activeNamespace())}`
     ),
+  saveLayout: (payload: {
+    scope_kind: "universe" | "galaxy";
+    scope_id: string;
+    target_kind: "camera" | "entity" | "galaxy";
+    target_id: string;
+    position: { x?: number; y?: number };
+    zoom?: number | null;
+    motion_enabled?: boolean | null;
+    pinned?: boolean;
+    expected_version?: number;
+  }) => request<LayoutPreference>("/api/v1/graph/layout", {
+    method: "PUT",
+    body: JSON.stringify({
+      context: context(),
+      ...payload,
+      reason: "User saved the star map layout"
+    })
+  }),
+  updateGalaxy: (
+    galaxyId: string,
+    expectedVersion: number,
+    changes: { display_name?: string; visibility?: "visible" | "hidden"; manual_locked?: boolean },
+    reason: string
+  ) => request<Galaxy>(`/api/v1/graph/galaxies/${galaxyId}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      context: context(),
+      expected_version: expectedVersion,
+      ...changes,
+      reason
+    })
+  }),
+  governGalaxyMember: (
+    galaxyId: string,
+    entityId: string,
+    expectedVersion: number,
+    action: "fixed" | "excluded" | "automatic",
+    role: GalaxyMember["role"],
+    membershipKind: GalaxyMember["membership_kind"],
+    reason: string
+  ) => request<Galaxy>(`/api/v1/graph/galaxies/${galaxyId}/members/${entityId}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      context: context(),
+      expected_version: expectedVersion,
+      action,
+      role,
+      membership_kind: membershipKind,
+      reason
+    })
+  }),
+  undoGalaxy: (galaxyId: string, expectedVersion: number, reason: string) =>
+    request<Galaxy>(`/api/v1/graph/galaxies/${galaxyId}/undo`, {
+      method: "POST",
+      body: JSON.stringify({
+        context: context(),
+        expected_version: expectedVersion,
+        reason
+      })
+    }),
+  rebuildGalaxies: (reason: string) => request<{ job_id: string }>(
+    "/api/v1/graph/galaxies/rebuild",
+    {
+      method: "POST",
+      body: JSON.stringify({ context: context(), reason })
+    }
+  ),
+  namespaceId: () => {
+    if (!namespaceId) throw new Error("UI_NAMESPACE_NOT_CONFIGURED");
+    return namespaceId;
+  },
   updateSubject: (
     subjectId: string,
     displayName: string,

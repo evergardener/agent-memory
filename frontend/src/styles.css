@@ -36,7 +36,7 @@ nav button.active { color: #f2d39a; border-color: #7b6038; background: #342a1b66
 .stats strong { color: #d7e5f4; font-size: 15px; }
 .workspace { min-height: 0; display: grid; grid-template-columns: 1fr 340px; }
 .map-stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #020713; }
-.star-map-shell { position: absolute; inset: 0; overflow: hidden; }
+.star-map-shell { position: absolute; inset: 0; overflow: clip; }
 .star-map-shell::before,
 .star-map-shell::after {
   content: ""; position: absolute; inset: -20%; pointer-events: none;
@@ -294,30 +294,39 @@ pre { padding: 12px; max-height: 300px; overflow: auto; border: 1px solid #2d415
   filter: blur(14px);
 }
 .observation-notes,
-.overlay-index {
+.overlay-index,
+.relation-index {
   position: absolute; z-index: 10; top: 88px; width: min(292px, calc(100vw - 40px)); max-height: calc(100vh - 190px);
   overflow: auto; border: 1px solid rgba(145, 164, 211, .12); border-radius: 14px;
   background: rgba(3, 6, 22, .68); box-shadow: 0 15px 50px rgba(0,0,0,.25); backdrop-filter: blur(20px);
 }
 .observation-notes { right: 20px; }
-.overlay-index { left: 20px; }
+.overlay-index,
+.relation-index { left: 20px; }
 .observation-notes > p,
-.overlay-index > p { margin: 0; padding: 11px 13px 9px; border-bottom: 1px solid rgba(145, 164, 211, .08); color: rgba(178, 194, 224, .58); font-family: Georgia, serif; font-size: 9px; letter-spacing: .13em; }
+.overlay-index > p,
+.relation-index > p { margin: 0; padding: 11px 13px 9px; border-bottom: 1px solid rgba(145, 164, 211, .08); color: rgba(178, 194, 224, .58); font-family: Georgia, serif; font-size: 9px; letter-spacing: .13em; }
 .observation-notes > p small,
-.overlay-index > p small { display: block; margin-top: 4px; color: rgba(135, 155, 194, .38); font-family: Inter, sans-serif; font-size: 7px; letter-spacing: .04em; }
+.overlay-index > p small,
+.relation-index > p small { display: block; margin-top: 4px; color: rgba(135, 155, 194, .38); font-family: Inter, sans-serif; font-size: 7px; letter-spacing: .04em; }
 .observation-notes > button,
-.overlay-index > button {
+.overlay-index > button,
+.relation-index > button {
   width: 100%; display: block; padding: 10px 13px; overflow: hidden; border: 0; border-bottom: 1px solid rgba(145, 164, 211, .06); border-radius: 0;
   color: rgba(198, 211, 233, .68); background: transparent; font-size: 9px; line-height: 1.55; text-align: left;
 }
 .observation-notes > button:hover,
 .overlay-index > button:hover,
-.overlay-index > button.active { border-color: rgba(145, 164, 211, .06); color: rgba(236, 241, 250, .9); background: rgba(104, 126, 178, .08); }
+.overlay-index > button.active,
+.relation-index > button:hover { border-color: rgba(145, 164, 211, .06); color: rgba(236, 241, 250, .9); background: rgba(104, 126, 178, .08); }
 .observation-notes > button:last-child,
-.overlay-index > button:last-child { border-bottom: 0; }
+.overlay-index > button:last-child,
+.relation-index > button:last-child { border-bottom: 0; }
 .observation-notes span,
-.overlay-index span { display: block; margin-bottom: 3px; color: rgba(134, 158, 202, .44); font-size: 7px; letter-spacing: .07em; }
-.overlay-index strong { display: block; overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.overlay-index span,
+.relation-index span { display: block; margin-bottom: 3px; color: rgba(134, 158, 202, .44); font-size: 7px; letter-spacing: .07em; }
+.overlay-index strong,
+.relation-index strong { display: block; overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .overlay-summary { margin: -5px 0 14px; color: rgba(165, 183, 214, .58); font-family: Georgia, "Noto Serif SC", serif; font-size: 9px; line-height: 1.7; }
 .overlay-timeline { margin-top: 16px; padding-top: 12px; border-top: 1px solid rgba(121, 145, 193, .12); }
 .overlay-timeline h3 { margin: 0 0 8px; color: rgba(154, 174, 208, .56); font-size: 9px; font-weight: 500; letter-spacing: .08em; }
@@ -332,6 +341,7 @@ pre { padding: 12px; max-height: 300px; overflow: auto; border: 1px solid #2d415
   .galaxy-facts { top: auto; right: 12px; bottom: 112px; max-height: 180px; overflow: auto; }
   .observation-notes { top: auto; right: 12px; bottom: 112px; max-height: 180px; }
   .overlay-index { top: 108px; left: 12px; max-height: 180px; }
+  .relation-index { top: 108px; left: 12px; max-height: 180px; }
 }
 
 /* MemoryConstellations universe presentation */
@@ -420,6 +430,7 @@ pre { padding: 12px; max-height: 300px; overflow: auto; border: 1px solid #2d415
 .galaxy-pills button,
 .motion-toggle,
 .stardust-button,
+.galaxy-governance-button,
 .universe-navigation button {
   padding: 5px 8px; border: 1px solid transparent; border-radius: 12px; color: rgba(178, 194, 224, .46); background: transparent; font-size: 8px;
 }
@@ -435,6 +446,8 @@ pre { padding: 12px; max-height: 300px; overflow: auto; border: 1px solid #2d415
 .motion-toggle { min-width: 24px; height: 24px; padding: 0 6px; color: rgba(156, 176, 216, .43); }
 .motion-toggle:hover { color: rgba(222, 231, 248, .82); border-color: rgba(170, 187, 232, .14); background: rgba(124, 143, 199, .08); }
 .motion-toggle.active { color: #82c9ad; border-color: rgba(130, 201, 173, .24); background: rgba(130, 201, 173, .08); box-shadow: 0 0 10px rgba(130, 201, 173, .09); }
+.galaxy-governance-button { color: rgba(215, 180, 138, .72); border-color: rgba(215, 180, 138, .14); }
+.galaxy-governance-button:hover { color: #f0d5af; background: rgba(215, 180, 138, .08); }
 .stardust-button { width: 24px; height: 24px; padding: 0; color: rgba(191, 207, 240, .47); }
 .stardust-button:hover, .stardust-button.active { color: #ffe0aa; border-color: rgba(255,224,170,.25); background: rgba(255,224,170,.06); box-shadow: 0 0 10px rgba(255,200,140,.1); }
 .universe-count { min-width: 18px; color: rgba(144, 164, 203, .38); font-size: 7px; text-align: center; }
@@ -468,6 +481,16 @@ pre { padding: 12px; max-height: 300px; overflow: auto; border: 1px solid #2d415
 .detail-close:hover { border: 0; color: rgba(224, 232, 247, .8); background: transparent; }
 .detail-panel .actions { gap: 6px; margin: 15px 0; }
 .detail-panel .actions button { padding: 7px; border-color: rgba(121, 145, 193, .14); border-radius: 7px; color: rgba(186, 202, 229, .63); background: rgba(80, 102, 151, .08); font-size: 8px; }
+.galaxy-membership-card { margin: 14px 0; padding: 11px; border: 1px solid rgba(143, 185, 232, .15); border-radius: 10px; background: rgba(62, 89, 136, .07); }
+.galaxy-membership-card h3 { margin: 0 0 8px; color: rgba(194, 211, 240, .7); font-size: 9px; font-weight: 500; letter-spacing: .08em; }
+.galaxy-membership-card dl { margin: 0; }
+.galaxy-membership-card > div { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 10px; }
+.galaxy-membership-card > div button { padding: 6px; font-size: 8px; }
+.galaxy-membership-card > div .danger { grid-column: 1 / -1; }
+.galaxy-dialog select { width: 100%; padding: 10px 12px; border: 1px solid #314967; border-radius: 9px; color: #e5edf7; background: #091423; }
+.galaxy-dialog .noise-toggle { display: flex; grid-template-columns: 18px 1fr; align-items: center; color: #aabdd1; }
+.galaxy-dialog .noise-toggle input { width: auto; }
+.galaxy-dialog-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; }
 .detail-panel .actions button:hover { color: rgba(232, 238, 250, .9); border-color: rgba(151, 174, 220, .28); }
 .detail-panel .actions .danger { color: rgba(231, 154, 174, .7); border-color: rgba(161, 77, 102, .2); background: rgba(96, 35, 55, .16); }
 .detail-panel pre { max-height: 180px; border-color: rgba(114, 137, 183, .12); color: rgba(161, 181, 214, .66); background: rgba(0, 2, 9, .45); font-size: 8px; }
