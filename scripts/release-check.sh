@@ -48,8 +48,7 @@ env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYDANTIC_DISABLE_PLUGINS=__all__ \
   .venv/bin/pytest -q
 stage "frontend build"
 npm --prefix frontend ci
-npm --prefix frontend run typecheck
-npm --prefix frontend run build
+npm --prefix frontend run check-build
 stage "versioned compose build and readiness"
 "${COMPOSE[@]}" config --quiet
 if [[ "${AGENT_MEMORY_SKIP_BUILD:-0}" == "1" ]]; then

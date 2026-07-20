@@ -9,6 +9,7 @@
 - 收紧安全边界：原始 turn ingest 仅允许 service token，Hermes Provider 仅允许本机 loopback HTTP API；
 - 前端构建改为无增量的显式 app/node typecheck，避免复用 `noEmit` build state 导致 Gate 挂起；
 - 完成全新隔离环境的前后端、API/Hermes、故障恢复、社区投影、备份恢复与 Vault 解密 Gate；未修改生产 Hermes 或正式 namespace。
+- 新增生产预部署运行层：全新容器/data/Vault/namespace、动态 Docker 网段与端口检查、空数据 Gate、运行状态清单、备份恢复、单 profile canary 环境生成和无损停止；默认不连接 Hermes、不启动模型。
 
 - 完成 `weighted-core-expansion-v1` 关系社区、可重叠成员、关系证据链、人工治理/撤销、布局偏好和主/子宇宙 UI；阶段 C 代码提交为 `935faf8`，当前小样本验收状态提交为 `02656de`；
 - 新增 `0013_relation_galaxies`、社区评测与投影、已审关系影子写入器，以及 API/数据库/恢复回归；

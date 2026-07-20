@@ -18,9 +18,9 @@ COPYFILE_DISABLE=1 tar -czf "$ARCHIVE" \
   --exclude='.ruff_cache' \
   --exclude='*/__pycache__' \
   --exclude='*.pyc' \
-  .dockerignore .env.example .env.release.example .gitignore \
+  .dockerignore .env.example .env.release.example .env.predeploy.example .gitignore \
   CHANGELOG.md Dockerfile README.md VERSION \
-  alembic.ini compose.yaml compose.release.yaml pyproject.toml uv.lock \
+  alembic.ini compose.yaml compose.release.yaml compose.predeploy.yaml pyproject.toml uv.lock \
   docs frontend integrations migrations scripts src tests
 
 docker image inspect "$IMAGE" \

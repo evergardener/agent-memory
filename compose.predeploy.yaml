@@ -1,0 +1,40 @@
+x-predeploy-logging: &predeploy-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postgres:
+    labels:
+      agent-memory.deployment-tier: predeploy
+    logging: *predeploy-logging
+    stop_grace_period: 60s
+
+  migrate:
+    labels:
+      agent-memory.deployment-tier: predeploy
+    logging: *predeploy-logging
+    pids_limit: 256
+
+  api:
+    labels:
+      agent-memory.deployment-tier: predeploy
+    logging: *predeploy-logging
+    pids_limit: 256
+    stop_grace_period: 30s
+
+  worker:
+    labels:
+      agent-memory.deployment-tier: predeploy
+    logging: *predeploy-logging
+    pids_limit: 256
+    stop_grace_period: 60s
+
+  model-worker:
+    profiles: ["model"]
+    labels:
+      agent-memory.deployment-tier: predeploy
+    logging: *predeploy-logging
+    pids_limit: 256
+    stop_grace_period: 60s

@@ -4,7 +4,8 @@
   "version": "1.0.0-rc.7",
   "type": "module",
   "scripts": {
-    "build": "npm run typecheck && vite build",
+    "build": "vite build",
+    "check-build": "npm run typecheck && npm run build",
     "dev": "vite",
     "typecheck": "tsc --noEmit -p tsconfig.app.json --pretty false && tsc --noEmit -p tsconfig.node.json --pretty false"
   },
