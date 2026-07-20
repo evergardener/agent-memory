@@ -125,8 +125,14 @@ def test_ingest_is_idempotent_redacted_and_cross_profile_recallable():
     for _ in range(40):
         project_results = recall(f"{project_marker} PostgreSQL", profile="work")
         postgres_results = recall(service_marker, profile="default")
-        project_ready = any(project_marker in item["text"] for item in project_results["items"])
-        service_ready = any(service_marker in item["text"] for item in postgres_results["items"])
+        project_ready = any(
+            item["source_profile"] == "default" and project_marker in item["text"]
+            for item in project_results["items"]
+        )
+        service_ready = any(
+            item["source_profile"] == "work" and service_marker in item["text"]
+            for item in postgres_results["items"]
+        )
         if project_ready and service_ready:
             break
         time.sleep(0.25)

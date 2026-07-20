@@ -11,6 +11,7 @@
 - 完成全新隔离环境的前后端、API/Hermes、故障恢复、社区投影、备份恢复与 Vault 解密 Gate；未修改生产 Hermes 或正式 namespace。
 - 新增生产预部署运行层：全新容器/data/Vault/namespace、动态 Docker 网段与端口检查、空数据 Gate、运行状态清单、备份恢复、单 profile canary 环境生成和无损停止；默认不连接 Hermes、不启动模型。
 - 预部署脚本先清除父进程继承的 `AGENT_MEMORY_*` 再加载封闭 env，防止 release/TUI/shell 环境变量污染 Compose 配置。
+- 收紧跨 profile 召回回归的异步等待条件，同时校验内容与来源 profile，避免共享关键词导致的竞态误判。
 
 - 完成 `weighted-core-expansion-v1` 关系社区、可重叠成员、关系证据链、人工治理/撤销、布局偏好和主/子宇宙 UI；阶段 C 代码提交为 `935faf8`，当前小样本验收状态提交为 `02656de`；
 - 新增 `0013_relation_galaxies`、社区评测与投影、已审关系影子写入器，以及 API/数据库/恢复回归；
