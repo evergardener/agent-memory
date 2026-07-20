@@ -54,23 +54,49 @@ def _write_predeploy_env(tmp_path: Path, **overrides: str) -> Path:
     return env_file
 
 
-def _run(env_file: Path, mode: str = "new") -> subprocess.CompletedProcess[str]:
+def _run(
+    env_file: Path,
+    mode: str = "new",
+    inherited: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", "scripts/predeploy-preflight.sh", str(env_file), mode],
         cwd=ROOT,
         check=False,
         text=True,
         capture_output=True,
-        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+        env={
+            **os.environ,
+            "PYTHONPATH": str(ROOT / "src"),
+            **(inherited or {}),
+        },
     )
 
 
 def test_predeploy_preflight_accepts_new_disconnected_environment(tmp_path: Path) -> None:
-    result = _run(_write_predeploy_env(tmp_path))
+    result = _run(
+        _write_predeploy_env(tmp_path),
+        inherited={
+            "AGENT_MEMORY_TEST_UI_PASSWORD": "release-only-password",
+            "AGENT_MEMORY_MODEL_ENABLED": "true",
+            "AGENT_MEMORY_NAMESPACE": "hermes:user-primary",
+        },
+    )
     assert result.returncode == 0, result.stderr
     assert '"status":"PASS"' in result.stdout
     assert "d" * 32 not in result.stdout
     assert "t" * 32 not in result.stdout
+
+
+def test_predeploy_preflight_rejects_plaintext_password_in_env_file(
+    tmp_path: Path,
+) -> None:
+    env_file = _write_predeploy_env(tmp_path)
+    with env_file.open("a", encoding="utf-8") as handle:
+        handle.write("AGENT_MEMORY_TEST_UI_PASSWORD=must-not-persist\n")
+    result = _run(env_file)
+    assert result.returncode != 0
+    assert "plaintext UI test password" in result.stderr
 
 
 def test_predeploy_preflight_rejects_production_namespace_model_and_reserved_port(

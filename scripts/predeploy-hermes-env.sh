@@ -13,9 +13,8 @@ cd "$ROOT"
   || { echo "invalid predeploy canary confirmation phrase" >&2; exit 1; }
 
 bash scripts/predeploy-preflight.sh "$ENV_FILE" existing >/dev/null
-set -a
-source "$ENV_FILE"
-set +a
+source "$ROOT/scripts/predeploy-env.sh"
+predeploy_load_env "$ENV_FILE"
 bash scripts/predeploy-verify.sh "$ENV_FILE" runtime existing >/dev/null
 
 state_status="$(python3 - "$AGENT_MEMORY_PREDEPLOY_STATE_FILE" <<'PY'

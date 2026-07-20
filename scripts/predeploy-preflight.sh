@@ -18,9 +18,8 @@ env_mode="$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE")"
 [[ "$env_mode" == "600" || "$env_mode" == "400" ]] \
   || fail "predeploy env must have mode 600 or 400"
 
-set -a
-source "$ENV_FILE"
-set +a
+source "$ROOT/scripts/predeploy-env.sh"
+predeploy_load_env "$ENV_FILE"
 
 version="$(tr -d '[:space:]' < VERSION)"
 [[ "${AGENT_MEMORY_VERSION:-}" == "$version" ]] \

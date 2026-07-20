@@ -6,9 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 bash scripts/predeploy-preflight.sh "$ENV_FILE" existing >/dev/null
-set -a
-source "$ENV_FILE"
-set +a
+source "$ROOT/scripts/predeploy-env.sh"
+predeploy_load_env "$ENV_FILE"
 COMPOSE=(docker compose -f compose.yaml -f compose.predeploy.yaml --env-file "$ENV_FILE")
 "${COMPOSE[@]}" down
 

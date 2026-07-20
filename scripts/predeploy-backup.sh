@@ -6,9 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 bash scripts/predeploy-preflight.sh "$ENV_FILE" existing >/dev/null
-set -a
-source "$ENV_FILE"
-set +a
+source "$ROOT/scripts/predeploy-env.sh"
+predeploy_load_env "$ENV_FILE"
 bash scripts/predeploy-verify.sh "$ENV_FILE" runtime existing >/dev/null
 
 backup_dir="$(bash scripts/backup.sh "$ENV_FILE" "$AGENT_MEMORY_PREDEPLOY_BACKUP_ROOT")"

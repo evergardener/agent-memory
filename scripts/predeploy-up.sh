@@ -18,9 +18,8 @@ if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
 fi
 head_revision="$(git rev-parse HEAD)"
 bash scripts/predeploy-preflight.sh "$ENV_FILE" "$MODE"
-set -a
-source "$ENV_FILE"
-set +a
+source "$ROOT/scripts/predeploy-env.sh"
+predeploy_load_env "$ENV_FILE"
 [[ "$AGENT_MEMORY_REVISION" == "$head_revision" ]] \
   || { echo "predeploy env revision does not match HEAD" >&2; exit 1; }
 
