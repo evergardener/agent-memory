@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 冻结主体恒星展示身份规则：用户使用可治理显示名，profile 恒星标题只保留人格名；类型、source profile 和实例只在详情/无障碍语义中显示，并规划 `display_name_origin` 防止自动同步覆盖人工名称。
 - 准备 `1.0.0-rc.7`：完成阶段 C 类型化关系星系、可重叠社区、人工治理、证据追溯及主/子宇宙联动；
 - 发布 Gate 改为独立 Docker project、镜像前缀、data/backup/Vault 路径、端口与网段，并加入失败关闭预检、只读根文件系统、最小 capability、readiness 与 OCI version/revision 校验；
 - 正式已审关系提升增加计划 SHA、namespace 原文、固定确认短语、change ID、备份清单 SHA 和逐文件校验；默认仍拒绝生产写入；
