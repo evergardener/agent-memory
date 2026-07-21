@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_FILE="${1:?usage: predeploy-stop.sh ENV_FILE}"
+ENV_FILE="${1:?usage: production-stop.sh ENV_FILE}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 bash scripts/predeploy-preflight.sh "$ENV_FILE" existing >/dev/null
 source "$ROOT/scripts/predeploy-env.sh"
 predeploy_load_env "$ENV_FILE"
-COMPOSE=(docker compose -f compose.yaml -f compose.predeploy.yaml --env-file "$ENV_FILE")
+COMPOSE=(docker compose)
+if [[ "${AGENT_MEMORY_MODEL_ENABLED:-false}" == "true" ]]; then
+  COMPOSE+=(--profile model)
+fi
+COMPOSE+=(-f compose.yaml -f compose.production.yaml --env-file "$ENV_FILE")
 "${COMPOSE[@]}" down
 
-python3 - "$AGENT_MEMORY_PREDEPLOY_STATE_FILE" <<'PY'
+python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" <<'PY'
 import json
 import sys
 from datetime import UTC, datetime
@@ -29,4 +33,4 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
     handle.write("\n")
 PY
 
-echo "Predeploy containers and networks stopped; data, backups and Vault key were retained."
+echo "Production containers and networks stopped; data, backups and Vault/model keys were retained."

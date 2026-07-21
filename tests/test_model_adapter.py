@@ -50,6 +50,15 @@ def test_custom_base_url_and_redaction_are_applied_before_model_call():
     assert audit["redaction_count"] == 1
 
 
+def test_model_api_key_can_be_loaded_from_a_secret_file(tmp_path):
+    key_file = tmp_path / "model_api_key"
+    key_file.write_text("file-only-key\n", encoding="utf-8")
+    profile = ModelProfile.from_settings(
+        settings(model_api_key=SecretStr(""), model_api_key_file=str(key_file))
+    )
+    assert profile.api_key == "file-only-key"
+
+
 def test_disabled_or_invalid_model_configuration_fails_closed():
     with pytest.raises(ValueError, match="MODEL_DISABLED"):
         ModelProfile.from_settings(settings(model_enabled=False))

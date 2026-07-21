@@ -127,7 +127,7 @@ class ModelProfile:
         return cls(
             model=settings.model_name,
             api_base=api_base,
-            api_key=settings.model_api_key.get_secret_value() or None,
+            api_key=settings.model_api_key_value or None,
             timeout_seconds=settings.model_timeout_seconds,
             max_retries=settings.model_max_retries,
         )

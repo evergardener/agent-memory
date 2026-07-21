@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
@@ -30,6 +31,7 @@ class Settings(BaseSettings):
     model_name: str = ""
     model_api_base: str = ""
     model_api_key: SecretStr = SecretStr("")
+    model_api_key_file: str = ""
     model_timeout_seconds: float = Field(default=30, gt=0, le=300)
     model_max_retries: int = Field(default=2, ge=0, le=10)
     model_backfill_batch_size: int = Field(default=25, ge=1, le=500)
@@ -56,6 +58,15 @@ class Settings(BaseSettings):
             if item.strip()
         }
         return tuple(sorted(values, key=str))
+
+    @property
+    def model_api_key_value(self) -> str:
+        direct = self.model_api_key.get_secret_value()
+        if direct:
+            return direct
+        if not self.model_api_key_file:
+            return ""
+        return Path(self.model_api_key_file).read_text(encoding="utf-8").strip()
 
 
 @lru_cache

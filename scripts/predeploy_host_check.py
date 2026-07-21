@@ -128,7 +128,7 @@ def main() -> None:
         json.dumps(
             {
                 "status": "PASS",
-                "check": "predeploy_host",
+                "check": "production_host",
                 "mode": arguments.mode,
                 "project": arguments.project,
                 "port": arguments.port,

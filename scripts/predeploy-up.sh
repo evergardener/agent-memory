@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_FILE="${1:?usage: predeploy-up.sh ENV_FILE [--existing]}"
+ENV_FILE="${1:?usage: production-up.sh ENV_FILE [--existing]}"
 MODE="new"
 if [[ "${2:-}" == "--existing" ]]; then
   MODE="existing"
@@ -13,7 +13,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
-  echo "predeploy requires a clean Git worktree" >&2
+  echo "production deployment requires a clean Git worktree" >&2
   exit 1
 fi
 head_revision="$(git rev-parse HEAD)"
@@ -21,7 +21,7 @@ bash scripts/predeploy-preflight.sh "$ENV_FILE" "$MODE"
 source "$ROOT/scripts/predeploy-env.sh"
 predeploy_load_env "$ENV_FILE"
 [[ "$AGENT_MEMORY_REVISION" == "$head_revision" ]] \
-  || { echo "predeploy env revision does not match HEAD" >&2; exit 1; }
+  || { echo "production env revision does not match HEAD" >&2; exit 1; }
 
 python3 scripts/predeploy_host_check.py \
   --backend "$AGENT_MEMORY_BACKEND_SUBNET" \
@@ -30,18 +30,23 @@ python3 scripts/predeploy_host_check.py \
   --project "$AGENT_MEMORY_COMPOSE_PROJECT" \
   --mode "$MODE"
 
-COMPOSE=(docker compose -f compose.yaml -f compose.predeploy.yaml --env-file "$ENV_FILE")
+COMPOSE=(docker compose)
+if [[ "${AGENT_MEMORY_MODEL_ENABLED:-false}" == "true" ]]; then
+  COMPOSE+=(--profile model)
+fi
+COMPOSE+=(-f compose.yaml -f compose.production.yaml --env-file "$ENV_FILE")
 "${COMPOSE[@]}" config --quiet
 
 umask 077
-python3 - "$AGENT_MEMORY_PREDEPLOY_STATE_FILE" "$AGENT_MEMORY_VERSION" \
+python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" "$AGENT_MEMORY_VERSION" \
   "$AGENT_MEMORY_REVISION" "$AGENT_MEMORY_COMPOSE_PROJECT" \
-  "$AGENT_MEMORY_NAMESPACE" "$AGENT_MEMORY_API_PORT" <<'PY'
+  "$AGENT_MEMORY_NAMESPACE" "$AGENT_MEMORY_API_PORT" \
+  "${AGENT_MEMORY_MODEL_ENABLED:-false}" <<'PY'
 import json
 import sys
 from datetime import UTC, datetime
 
-path, version, revision, project, namespace, port = sys.argv[1:]
+path, version, revision, project, namespace, port, model_enabled = sys.argv[1:]
 try:
     with open(path, encoding="utf-8") as handle:
         state = json.load(handle)
@@ -57,17 +62,17 @@ state.update({
     "compose_project": project,
     "namespace": namespace,
     "api_url": f"http://127.0.0.1:{port}",
-    "hermes_connected": False,
-    "model_enabled": False,
+    "hermes_connected": bool(state.get("hermes_connected", False)) if resume_status else False,
+    "model_enabled": model_enabled == "true",
     "resume_status": resume_status,
 })
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(state, handle, ensure_ascii=False, indent=2, sort_keys=True)
     handle.write("\n")
 PY
-chmod 600 "$AGENT_MEMORY_PREDEPLOY_STATE_FILE"
+chmod 600 "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE"
 
-if [[ "${AGENT_MEMORY_PREDEPLOY_SKIP_BUILD:-0}" == "1" ]]; then
+if [[ "${AGENT_MEMORY_PRODUCTION_SKIP_BUILD:-0}" == "1" ]]; then
   for service in api worker migrate; do
     docker image inspect \
       "$AGENT_MEMORY_IMAGE_PREFIX-$service:$AGENT_MEMORY_VERSION" >/dev/null
@@ -75,7 +80,11 @@ if [[ "${AGENT_MEMORY_PREDEPLOY_SKIP_BUILD:-0}" == "1" ]]; then
 else
   "${COMPOSE[@]}" build api worker migrate
 fi
-"${COMPOSE[@]}" up -d --no-build postgres migrate api worker
+services=(postgres migrate api worker)
+if [[ "${AGENT_MEMORY_MODEL_ENABLED:-false}" == "true" ]]; then
+  services+=(model-worker)
+fi
+"${COMPOSE[@]}" up -d --no-build "${services[@]}"
 
 verify_data_mode="empty"
 if [[ "$MODE" == "existing" ]]; then
@@ -91,7 +100,7 @@ migrate_image_id="$(docker image inspect \
   "$AGENT_MEMORY_IMAGE_PREFIX-migrate:$AGENT_MEMORY_VERSION" --format '{{.Id}}')"
 vault_key_sha256="$(shasum -a 256 "$AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE" | awk '{print $1}')"
 
-python3 - "$AGENT_MEMORY_PREDEPLOY_STATE_FILE" "$api_image_id" \
+python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" "$api_image_id" \
   "$worker_image_id" "$migrate_image_id" "$vault_key_sha256" "$MODE" <<'PY'
 import json
 import sys
@@ -105,6 +114,7 @@ if mode == "existing" and state.get("resume_status") in {
     "ready_for_canary",
     "canary_config_prepared",
     "canary_active",
+    "production_active",
 }:
     status = state["resume_status"]
 state.update({
@@ -124,4 +134,19 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 bash scripts/predeploy-preflight.sh "$ENV_FILE" existing >/dev/null
-echo "{\"status\":\"PASS\",\"check\":\"predeploy_up\",\"project\":\"$AGENT_MEMORY_COMPOSE_PROJECT\",\"namespace\":\"$AGENT_MEMORY_NAMESPACE\",\"api_url\":\"http://127.0.0.1:$AGENT_MEMORY_API_PORT\",\"hermes_connected\":false}"
+python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    state = json.load(handle)
+print(json.dumps({
+    "status": "PASS",
+    "check": "production_up",
+    "deployment_status": state["status"],
+    "project": state["compose_project"],
+    "namespace": state["namespace"],
+    "api_url": state["api_url"],
+    "hermes_connected": state["hermes_connected"],
+}, sort_keys=True))
+PY

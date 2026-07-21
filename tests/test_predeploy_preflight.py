@@ -15,27 +15,32 @@ def _write_predeploy_env(tmp_path: Path, **overrides: str) -> Path:
     data_dir = tmp_path / "postgres"
     backup_dir = tmp_path / "backups"
     vault_key = tmp_path / "vault_root_key"
+    model_key = tmp_path / "model_api_key"
     data_dir.mkdir()
     backup_dir.mkdir()
     vault_key.write_text("predeploy-only-vault-root-key\n", encoding="utf-8")
     vault_key.chmod(0o600)
+    model_key.write_text("", encoding="utf-8")
+    model_key.chmod(0o600)
     values = {
         "AGENT_MEMORY_VERSION": (ROOT / "VERSION").read_text().strip(),
         "AGENT_MEMORY_REVISION": REVISION,
-        "AGENT_MEMORY_DEPLOYMENT_TIER": "predeploy",
-        "AGENT_MEMORY_COMPOSE_PROJECT": "agent-memory-predeploy-test",
-        "AGENT_MEMORY_IMAGE_PREFIX": "agent-memory-predeploy-test",
+        "AGENT_MEMORY_DEPLOYMENT_TIER": "production",
+        "AGENT_MEMORY_DEPLOYMENT_PHASE": "canary",
+        "AGENT_MEMORY_COMPOSE_PROJECT": "agent-memory-production",
+        "AGENT_MEMORY_IMAGE_PREFIX": "agent-memory-production",
         "AGENT_MEMORY_POSTGRES_DATA_DIR": str(data_dir),
         "AGENT_MEMORY_BACKEND_SUBNET": "172.16.252.0/24",
         "AGENT_MEMORY_EDGE_SUBNET": "172.16.253.0/24",
         "AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE": str(vault_key),
-        "AGENT_MEMORY_PREDEPLOY_BACKUP_ROOT": str(backup_dir),
-        "AGENT_MEMORY_PREDEPLOY_STATE_FILE": str(tmp_path / "PREDEPLOY-STATE.json"),
+        "AGENT_MEMORY_MODEL_API_KEY_HOST_FILE": str(model_key),
+        "AGENT_MEMORY_BACKUP_ROOT": str(backup_dir),
+        "AGENT_MEMORY_DEPLOYMENT_STATE_FILE": str(tmp_path / "DEPLOYMENT-STATE.json"),
         "AGENT_MEMORY_DB_PASSWORD": "d" * 32,
         "AGENT_MEMORY_SERVICE_TOKEN": "t" * 32,
-        "AGENT_MEMORY_NAMESPACE": "hermes:predeploy-test",
+        "AGENT_MEMORY_NAMESPACE": "hermes:user-primary",
         "AGENT_MEMORY_API_PORT": "7812",
-        "AGENT_MEMORY_IMPORT_NAMESPACE": "hermes:predeploy-test-import",
+        "AGENT_MEMORY_IMPORT_NAMESPACE": "hermes:production-import",
         "AGENT_MEMORY_IMPORT_API_PORT": "7813",
         "AGENT_MEMORY_UI_PASSWORD_HASH": "scrypt$16384$8$1$salt$hash",
         "AGENT_MEMORY_UI_SESSION_SECRET": "s" * 32,
@@ -43,9 +48,10 @@ def _write_predeploy_env(tmp_path: Path, **overrides: str) -> Path:
         "AGENT_MEMORY_IMPORT_MODEL_ENABLED": "false",
         "AGENT_MEMORY_MODEL_ALLOW_EXTERNAL_DATA": "false",
         "AGENT_MEMORY_MODEL_API_KEY": "",
+        "AGENT_MEMORY_MODEL_API_KEY_FILE": "/run/secrets/model_api_key",
     }
     values.update(overrides)
-    env_file = tmp_path / "predeploy.env"
+    env_file = tmp_path / "production.env"
     env_file.write_text(
         "\n".join(f"{key}={shlex.quote(value)}" for key, value in values.items()) + "\n",
         encoding="utf-8",
@@ -79,7 +85,7 @@ def test_predeploy_preflight_accepts_new_disconnected_environment(tmp_path: Path
         inherited={
             "AGENT_MEMORY_TEST_UI_PASSWORD": "release-only-password",
             "AGENT_MEMORY_MODEL_ENABLED": "true",
-            "AGENT_MEMORY_NAMESPACE": "hermes:user-primary",
+            "AGENT_MEMORY_NAMESPACE": "hermes:inherited-override",
         },
     )
     assert result.returncode == 0, result.stderr
@@ -104,7 +110,7 @@ def test_predeploy_preflight_rejects_production_namespace_model_and_reserved_por
 ) -> None:
     namespace = _run(
         _write_predeploy_env(
-            tmp_path / "namespace", AGENT_MEMORY_NAMESPACE="hermes:user-primary"
+            tmp_path / "namespace", AGENT_MEMORY_NAMESPACE="hermes:wrong"
         )
     )
     assert namespace.returncode != 0
@@ -114,7 +120,7 @@ def test_predeploy_preflight_rejects_production_namespace_model_and_reserved_por
         _write_predeploy_env(tmp_path / "model", AGENT_MEMORY_MODEL_ENABLED="true")
     )
     assert model.returncode != 0
-    assert "model worker disabled" in model.stderr
+    assert "initial empty production Gate" in model.stderr
 
     port = _run(
         _write_predeploy_env(tmp_path / "port", AGENT_MEMORY_API_PORT="7788")
@@ -125,15 +131,15 @@ def test_predeploy_preflight_rejects_production_namespace_model_and_reserved_por
 
 def test_predeploy_preflight_requires_matching_existing_state(tmp_path: Path) -> None:
     env_file = _write_predeploy_env(tmp_path)
-    state_file = tmp_path / "PREDEPLOY-STATE.json"
+    state_file = tmp_path / "DEPLOYMENT-STATE.json"
     state_file.write_text(
         json.dumps(
             {
                 "status": "ready_for_canary",
                 "version": (ROOT / "VERSION").read_text().strip(),
                 "revision": REVISION,
-                "compose_project": "agent-memory-predeploy-test",
-                "namespace": "hermes:predeploy-test",
+                "compose_project": "agent-memory-production",
+                "namespace": "hermes:user-primary",
             }
         ),
         encoding="utf-8",
@@ -142,7 +148,11 @@ def test_predeploy_preflight_requires_matching_existing_state(tmp_path: Path) ->
     assert _run(env_file, "existing").returncode == 0
 
     state = json.loads(state_file.read_text(encoding="utf-8"))
-    state["namespace"] = "hermes:predeploy-other"
+    state["status"] = "production_active"
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+    assert _run(env_file, "existing").returncode == 0
+
+    state["namespace"] = "hermes:wrong"
     state_file.write_text(json.dumps(state), encoding="utf-8")
     mismatch = _run(env_file, "existing")
     assert mismatch.returncode != 0

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_FILE="${1:?usage: predeploy-verify.sh ENV_FILE [runtime|empty|canary] [bootstrap|existing] [PROFILE]}"
+ENV_FILE="${1:?usage: production-verify.sh ENV_FILE [runtime|empty|canary] [bootstrap|existing] [PROFILE]}"
 DATA_MODE="${2:-runtime}"
 PREFLIGHT_MODE="${3:-existing}"
 EXPECTED_PROFILE="${4:-}"
@@ -18,7 +18,11 @@ fi
 bash scripts/predeploy-preflight.sh "$ENV_FILE" "$PREFLIGHT_MODE" >/dev/null
 source "$ROOT/scripts/predeploy-env.sh"
 predeploy_load_env "$ENV_FILE"
-COMPOSE=(docker compose -f compose.yaml -f compose.predeploy.yaml --env-file "$ENV_FILE")
+COMPOSE=(docker compose)
+if [[ "${AGENT_MEMORY_MODEL_ENABLED:-false}" == "true" ]]; then
+  COMPOSE+=(--profile model)
+fi
+COMPOSE+=(-f compose.yaml -f compose.production.yaml --env-file "$ENV_FILE")
 
 for _ in {1..60}; do
   if curl --fail --silent "http://127.0.0.1:$AGENT_MEMORY_API_PORT/health/ready" \
@@ -53,14 +57,22 @@ running="$("${COMPOSE[@]}" ps --status running --services)"
 grep -qx 'api' <<<"$running" || { echo "predeploy API is not running" >&2; exit 1; }
 grep -qx 'postgres' <<<"$running" || { echo "predeploy PostgreSQL is not running" >&2; exit 1; }
 grep -qx 'worker' <<<"$running" || { echo "predeploy core worker is not running" >&2; exit 1; }
-if grep -qx 'model-worker' <<<"$running"; then
-  echo "predeploy model worker must remain stopped before canary approval" >&2
+if [[ "${AGENT_MEMORY_MODEL_ENABLED:-false}" == "true" ]]; then
+  grep -qx 'model-worker' <<<"$running" \
+    || { echo "approved production model worker is not running" >&2; exit 1; }
+elif grep -qx 'model-worker' <<<"$running"; then
+  echo "unapproved production model worker must remain stopped" >&2
   exit 1
 fi
 
 api_id="$("${COMPOSE[@]}" ps -q api)"
 worker_id="$("${COMPOSE[@]}" ps -q worker)"
-for container_id in "$api_id" "$worker_id"; do
+container_ids=("$api_id" "$worker_id")
+if [[ "${AGENT_MEMORY_MODEL_ENABLED:-false}" == "true" ]]; then
+  model_worker_id="$("${COMPOSE[@]}" ps -q model-worker)"
+  container_ids+=("$model_worker_id")
+fi
+for container_id in "${container_ids[@]}"; do
   [[ "$(docker inspect "$container_id" --format '{{.HostConfig.ReadonlyRootfs}}')" == "true" ]] \
     || { echo "predeploy app container root filesystem is not read-only" >&2; exit 1; }
   [[ "$(docker inspect "$container_id" --format '{{json .HostConfig.CapDrop}}')" == '["ALL"]' ]] \
@@ -77,6 +89,28 @@ worker_networks="$(docker inspect "$worker_id" --format '{{range $name,$value :=
 [[ "$worker_networks" == *"${AGENT_MEMORY_COMPOSE_PROJECT}_backend"* \
    && "$worker_networks" != *"${AGENT_MEMORY_COMPOSE_PROJECT}_edge"* ]] \
   || { echo "predeploy core worker must only use the backend network" >&2; exit 1; }
+if [[ "${AGENT_MEMORY_MODEL_ENABLED:-false}" == "true" ]]; then
+  model_networks="$(docker inspect "$model_worker_id" --format '{{range $name,$value := .NetworkSettings.Networks}}{{$name}} {{end}}')"
+  [[ "$model_networks" == *"${AGENT_MEMORY_COMPOSE_PROJECT}_backend"* \
+     && "$model_networks" == *"${AGENT_MEMORY_COMPOSE_PROJECT}_edge"* ]] \
+    || { echo "production model worker network isolation mismatch" >&2; exit 1; }
+  IFS=$'\t' read -r model_host model_port < <(
+    python3 - "$AGENT_MEMORY_MODEL_API_BASE" <<'PY'
+import sys
+from urllib.parse import urlparse
+
+parsed = urlparse(sys.argv[1])
+print(f"{parsed.hostname}\t{parsed.port or (443 if parsed.scheme == 'https' else 80)}")
+PY
+  )
+  docker exec "$model_worker_id" python - "$model_host" "$model_port" <<'PY'
+import socket
+import sys
+
+with socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=5):
+    pass
+PY
+fi
 
 for service in api worker migrate; do
   image="$AGENT_MEMORY_IMAGE_PREFIX-$service:$AGENT_MEMORY_VERSION"
@@ -116,19 +150,33 @@ elif [[ "$DATA_MODE" == "canary" ]]; then
     "SELECT count(*) FROM core.sources WHERE source_profile=:'expected_profile';")"
   event_count="$("${COMPOSE[@]}" exec -T postgres psql -U agent_memory -d agent_memory -qAtc \
     'SELECT count(*) FROM evidence.events;')"
-  [[ "$source_count" -gt 0 && "$event_count" -gt 0 ]] \
+  failed_job_count="$(python3 - "$counts" <<'PY'
+import json
+import sys
+
+print(json.loads(sys.argv[1])["failed_jobs"])
+PY
+)"
+  [[ "$source_count" -gt 0 && "$event_count" -gt 0 && "$failed_job_count" -eq 0 ]] \
     || { echo "canary profile has not produced traceable evidence" >&2; exit 1; }
-  python3 - "$AGENT_MEMORY_PREDEPLOY_STATE_FILE" "$EXPECTED_PROFILE" <<'PY'
+  python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" "$EXPECTED_PROFILE" <<'PY'
 import json
 import sys
 from datetime import UTC, datetime
 
 with open(sys.argv[1], encoding="utf-8") as handle:
     state = json.load(handle)
+if state.get("status") not in {"canary_config_prepared", "canary_active"}:
+    raise SystemExit(
+        "production canary verification requires a prepared or active canary state"
+    )
+if state.get("canary_profile") != sys.argv[2]:
+    raise SystemExit("production canary profile differs from the prepared profile")
 state.update({
     "status": "canary_active",
     "hermes_connected": True,
     "canary_profile": sys.argv[2],
+    "canary_started_at": state.get("canary_started_at") or datetime.now(UTC).isoformat(),
     "canary_verified_at": datetime.now(UTC).isoformat(),
 })
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
@@ -143,7 +191,7 @@ import sys
 
 print(json.dumps({
     "status": "PASS",
-    "check": "predeploy_verify",
+    "check": "production_verify",
     "mode": sys.argv[1],
     "counts": json.loads(sys.argv[2]),
 }, sort_keys=True))

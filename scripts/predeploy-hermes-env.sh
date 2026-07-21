@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_FILE="${1:?usage: predeploy-hermes-env.sh ENV_FILE PROFILE CONFIRMATION [OUTPUT_FILE]}"
+ENV_FILE="${1:?usage: production-hermes-env.sh ENV_FILE PROFILE CONFIRMATION [OUTPUT_FILE]}"
 PROFILE="${2:-}"
 CONFIRMATION="${3:-}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -9,15 +9,15 @@ cd "$ROOT"
 
 [[ "$PROFILE" =~ ^[A-Za-z0-9._:@-]{1,64}$ ]] \
   || { echo "canary profile must use 1-64 safe characters" >&2; exit 1; }
-[[ "$CONFIRMATION" == "PREPARE_HERMES_PREDEPLOY_CANARY" ]] \
-  || { echo "invalid predeploy canary confirmation phrase" >&2; exit 1; }
+[[ "$CONFIRMATION" == "PREPARE_HERMES_PRODUCTION_CANARY" ]] \
+  || { echo "invalid production canary confirmation phrase" >&2; exit 1; }
 
 bash scripts/predeploy-preflight.sh "$ENV_FILE" existing >/dev/null
 source "$ROOT/scripts/predeploy-env.sh"
 predeploy_load_env "$ENV_FILE"
 bash scripts/predeploy-verify.sh "$ENV_FILE" runtime existing >/dev/null
 
-state_status="$(python3 - "$AGENT_MEMORY_PREDEPLOY_STATE_FILE" <<'PY'
+state_status="$(python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" <<'PY'
 import json
 import sys
 
@@ -26,12 +26,12 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 PY
 )"
 [[ "$state_status" == "ready_for_canary" || "$state_status" == "canary_config_prepared" ]] \
-  || { echo "predeploy state is not ready to prepare a canary profile" >&2; exit 1; }
+  || { echo "production state is not ready to prepare a canary profile" >&2; exit 1; }
 
 runtime_root="$(cd "$(dirname "$ENV_FILE")" && pwd)"
-OUTPUT_FILE="${4:-$runtime_root/hermes-canary-$PROFILE.env}"
+OUTPUT_FILE="${4:-$runtime_root/hermes-production-$PROFILE.env}"
 [[ "$(cd "$(dirname "$OUTPUT_FILE")" && pwd)" == "$runtime_root" ]] \
-  || { echo "Hermes canary env must stay inside the predeploy runtime root" >&2; exit 1; }
+  || { echo "Hermes canary env must stay inside the production runtime root" >&2; exit 1; }
 [[ ! -e "$OUTPUT_FILE" ]] \
   || { echo "refusing to overwrite existing Hermes canary env: $OUTPUT_FILE" >&2; exit 1; }
 
@@ -41,13 +41,13 @@ umask 077
   printf 'AGENT_MEMORY_SERVICE_TOKEN=%s\n' "$AGENT_MEMORY_SERVICE_TOKEN"
   printf 'AGENT_MEMORY_NAMESPACE=%s\n' "$AGENT_MEMORY_NAMESPACE"
   printf 'AGENT_MEMORY_SOURCE_PROFILE=%s\n' "$PROFILE"
-  printf 'AGENT_MEMORY_SOURCE_INSTANCE=predeploy-canary-%s\n' "$PROFILE"
+  printf 'AGENT_MEMORY_SOURCE_INSTANCE=production-%s\n' "$PROFILE"
   printf 'AGENT_MEMORY_API_TIMEOUT_SECONDS=2\n'
 } > "$OUTPUT_FILE"
 chmod 600 "$OUTPUT_FILE"
 config_sha256="$(shasum -a 256 "$OUTPUT_FILE" | awk '{print $1}')"
 
-python3 - "$AGENT_MEMORY_PREDEPLOY_STATE_FILE" "$PROFILE" "$OUTPUT_FILE" \
+python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" "$PROFILE" "$OUTPUT_FILE" \
   "$config_sha256" <<'PY'
 import json
 import sys
@@ -68,5 +68,5 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
     handle.write("\n")
 PY
 
-echo "Prepared Hermes predeploy canary env: $OUTPUT_FILE"
+echo "Prepared Hermes production canary env: $OUTPUT_FILE"
 echo "No Hermes configuration was changed and no Hermes process was started."

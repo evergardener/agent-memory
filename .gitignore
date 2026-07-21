@@ -6,7 +6,7 @@
 .env.*
 !.env.example
 !.env.release.example
-!.env.predeploy.example
+!.env.production.example
 secrets/
 data/
 backups/
