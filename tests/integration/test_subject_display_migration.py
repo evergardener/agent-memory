@@ -21,6 +21,10 @@ def _database_url(base_url: str, database: str) -> str:
 def _alembic(database_url: str, *arguments: str) -> None:
     environment = os.environ.copy()
     environment["AGENT_MEMORY_DATABASE_URL"] = database_url
+    source_path = str(ROOT / "src")
+    environment["PYTHONPATH"] = os.pathsep.join(
+        value for value in (source_path, environment.get("PYTHONPATH", "")) if value
+    )
     subprocess.run(
         [sys.executable, "-m", "alembic", *arguments],
         cwd=ROOT,
