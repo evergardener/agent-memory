@@ -14,6 +14,7 @@
 - 收紧跨 profile 召回回归的异步等待条件，同时校验内容与来源 profile，避免共享关键词导致的竞态误判。
 - 生产试运行改为最终资产从第一天起固定：`agent-memory-production`、正式 namespace、生产 data/Vault/备份目录；真实 canary 通过后原地晋级，不迁库、不换 namespace。
 - 新增生产晋级记录、最新恢复验证备份门禁和跨主机 handoff Gate；每个开发批次都要求干净且已推送的可复现提交。
+- `de7b82c` 已通过独立 ARM64 Release Gate 及最终生产形态空栈、状态清单、备份恢复和 Vault 往返演练；未接入 Hermes/模型，临时容器与网络已停止。
 
 - 完成 `weighted-core-expansion-v1` 关系社区、可重叠成员、关系证据链、人工治理/撤销、布局偏好和主/子宇宙 UI；阶段 C 代码提交为 `935faf8`，当前小样本验收状态提交为 `02656de`；
 - 新增 `0013_relation_galaxies`、社区评测与投影、已审关系影子写入器，以及 API/数据库/恢复回归；
