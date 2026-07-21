@@ -61,62 +61,63 @@ def test_subject_display_name_origin_upgrade_preserves_audited_manual_names():
                 "INSERT INTO core.namespaces(id,stable_key) VALUES (%s,%s)",
                 (namespace_id, f"migration-test:{uuid4().hex}"),
             )
-            connection.executemany(
-                """INSERT INTO memory.entities(
-                     id,namespace_id,entity_type,canonical_name,normalized_name
-                   ) VALUES (%s,%s,%s,%s,%s)""",
-                (
-                    (user_entity_id, namespace_id, "person", "User", "__subject__:user"),
+            with connection.cursor() as cursor:
+                cursor.executemany(
+                    """INSERT INTO memory.entities(
+                         id,namespace_id,entity_type,canonical_name,normalized_name
+                       ) VALUES (%s,%s,%s,%s,%s)""",
                     (
-                        automatic_entity_id,
-                        namespace_id,
-                        "agent",
-                        "Hermes · daily",
-                        "__subject__:profile:daily",
+                        (user_entity_id, namespace_id, "person", "User", "__subject__:user"),
+                        (
+                            automatic_entity_id,
+                            namespace_id,
+                            "agent",
+                            "Hermes · daily",
+                            "__subject__:profile:daily",
+                        ),
+                        (
+                            manual_entity_id,
+                            namespace_id,
+                            "agent",
+                            "Hermes · work",
+                            "__subject__:profile:work",
+                        ),
                     ),
+                )
+                cursor.executemany(
+                    """INSERT INTO core.subjects(
+                         id,namespace_id,entity_id,kind,stable_key,display_name,color
+                       ) VALUES (%s,%s,%s,%s,%s,%s,%s)""",
                     (
-                        manual_entity_id,
-                        namespace_id,
-                        "agent",
-                        "Hermes · work",
-                        "__subject__:profile:work",
+                        (
+                            user_subject_id,
+                            namespace_id,
+                            user_entity_id,
+                            "user",
+                            "user",
+                            "User",
+                            "#efd095",
+                        ),
+                        (
+                            automatic_subject_id,
+                            namespace_id,
+                            automatic_entity_id,
+                            "profile_persona",
+                            "profile:daily",
+                            "Hermes · daily",
+                            "#91cfb2",
+                        ),
+                        (
+                            manual_subject_id,
+                            namespace_id,
+                            manual_entity_id,
+                            "profile_persona",
+                            "profile:work",
+                            "工作人格",
+                            "#9db9ee",
+                        ),
                     ),
-                ),
-            )
-            connection.executemany(
-                """INSERT INTO core.subjects(
-                     id,namespace_id,entity_id,kind,stable_key,display_name,color
-                   ) VALUES (%s,%s,%s,%s,%s,%s,%s)""",
-                (
-                    (
-                        user_subject_id,
-                        namespace_id,
-                        user_entity_id,
-                        "user",
-                        "user",
-                        "User",
-                        "#efd095",
-                    ),
-                    (
-                        automatic_subject_id,
-                        namespace_id,
-                        automatic_entity_id,
-                        "profile_persona",
-                        "profile:daily",
-                        "Hermes · daily",
-                        "#91cfb2",
-                    ),
-                    (
-                        manual_subject_id,
-                        namespace_id,
-                        manual_entity_id,
-                        "profile_persona",
-                        "profile:work",
-                        "工作人格",
-                        "#9db9ee",
-                    ),
-                ),
-            )
+                )
             connection.execute(
                 """INSERT INTO audit.events(
                      id,namespace_id,actor_type,actor_id,action,target_type,target_id,
