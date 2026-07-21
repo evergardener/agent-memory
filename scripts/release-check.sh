@@ -92,6 +92,11 @@ AGENT_MEMORY_DATABASE_URL="postgresql://agent_memory:${AGENT_MEMORY_DB_PASSWORD}
   env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYDANTIC_DISABLE_PLUGINS=__all__ \
   .venv/bin/pytest -q tests/integration/test_community_projection_db.py
 
+stage "Subject display identity migration round-trip"
+AGENT_MEMORY_DATABASE_URL="postgresql://agent_memory:${AGENT_MEMORY_DB_PASSWORD}@127.0.0.1:${AGENT_MEMORY_RELEASE_POSTGRES_PORT}/agent_memory" \
+  env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYDANTIC_DISABLE_PLUGINS=__all__ \
+  .venv/bin/pytest -q tests/integration/test_subject_display_migration.py
+
 stage "worker lease recovery"
 bash scripts/verify-worker-recovery.sh "$ENV_FILE"
 stage "backup restore and Vault decrypt"

@@ -179,10 +179,17 @@ def test_profile_subjects_group_instances_and_support_audited_mapping_governance
     response.raise_for_status()
     subjects = response.json()
     assert sum(item["kind"] == "user" for item in subjects) == 1
+    user_subject = next(item for item in subjects if item["kind"] == "user")
+    assert user_subject["display_name"] == "User"
+    assert user_subject["display_name_origin"] == "default"
     shared = next(item for item in subjects if item["stable_key"] == "profile:phase-a-shared")
     separate = next(
         item for item in subjects if item["stable_key"] == "profile:phase-a-separate"
     )
+    assert shared["display_name"] == "phase-a-shared"
+    assert shared["display_name_origin"] == "source"
+    assert separate["display_name"] == "phase-a-separate"
+    assert separate["display_name_origin"] == "source"
     assert {source["source_instance"] for source in shared["sources"]} >= {
         "phase-a-instance-1",
         "phase-a-instance-2",
@@ -204,6 +211,9 @@ def test_profile_subjects_group_instances_and_support_audited_mapping_governance
         if node["data"].get("kind") == "subject"
     ]
     assert any(node["record_id"] == shared["id"] for node in subject_nodes)
+    shared_node = next(node for node in subject_nodes if node["record_id"] == shared["id"])
+    assert shared_node["label"] == "phase-a-shared"
+    assert shared_node["display_name_origin"] == "source"
     subject_entity_ids = {item["entity_id"] for item in subjects}
     assert not any(
         node["data"].get("kind") == "entity"
@@ -217,14 +227,23 @@ def test_profile_subjects_group_instances_and_support_audited_mapping_governance
             f"/api/v1/graph/subjects/{separate['id']}",
             json={
                 "context": context("user", f"subject-rename-{RUN_ID}"),
-                "display_name": "Hermes · Phase A Separate",
+                "display_name": "Phase A Separate",
                 "color": "#8fd1d1",
                 "reason": "Phase A subject display governance verification",
             },
         )
         renamed.raise_for_status()
-        assert renamed.json()["display_name"] == "Hermes · Phase A Separate"
+        assert renamed.json()["display_name"] == "Phase A Separate"
+        assert renamed.json()["display_name_origin"] == "manual"
         assert renamed.json()["color"] == "#8fd1d1"
+
+        ingest_source("phase-a-separate", "phase-a-instance-4", "separate-repeat")
+        refreshed = get(
+            "/api/v1/graph/subjects", {"shared_namespace": TEST_NAMESPACE}
+        ).json()
+        preserved = next(item for item in refreshed if item["id"] == separate["id"])
+        assert preserved["display_name"] == "Phase A Separate"
+        assert preserved["display_name_origin"] == "manual"
         assigned = ui.post(
             f"/api/v1/graph/subjects/{separate['id']}/sources/{shared_source['source_id']}",
             json={

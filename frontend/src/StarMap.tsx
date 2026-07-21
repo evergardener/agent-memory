@@ -542,7 +542,8 @@ export function StarMap({
         className={`stellar-core ${node.data.subject_kind === "user" ? "stellar-user" : "stellar-profile"}`}
         style={{ left: `calc(50% + ${x}px)`, top: `calc(50% + ${y}px)`, color: node.data.color } as CSSProperties}
         onClick={() => onSelect(node.data)}
-        aria-label={`${node.data.label} · ${node.data.subject_kind === "user" ? "用户主体恒星" : "profile 人格恒星"}`}
+        title={`${node.data.label} · ${node.data.subject_kind === "user" ? "用户恒星" : "Hermes Profile 恒星"}`}
+        aria-label={`${node.data.label} · ${node.data.subject_kind === "user" ? "用户恒星" : "Hermes Profile 恒星"}`}
       >
         <i className="stellar-glow" /><i className="stellar-ray ray-horizontal" /><i className="stellar-ray ray-vertical" /><b /><span>{node.data.label}</span>
       </button>)}

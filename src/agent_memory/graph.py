@@ -125,6 +125,9 @@ def load_graph(
         profiles = sorted(
             {source["source_profile"] for source in subject["sources"]}
         )
+        instances = sorted(
+            {source["source_instance"] for source in subject["sources"]}
+        )
         subject_node_id = f"subject:{subject['id']}"
         celestial_by_entity_id[subject["entity_id"]] = subject_node_id
         for profile in profiles:
@@ -136,6 +139,7 @@ def load_graph(
                     "record_id": str(subject["id"]),
                     "entity_id": str(subject["entity_id"]),
                     "label": redact_text(subject["display_name"]).text,
+                    "display_name_origin": subject["display_name_origin"],
                     "kind": "subject",
                     "celestial_kind": "star",
                     "subject_kind": subject["kind"],
@@ -143,6 +147,7 @@ def load_graph(
                     "color": subject["color"],
                     "state": subject["status"],
                     "source_profiles": json.dumps(profiles, ensure_ascii=False),
+                    "source_instances": json.dumps(instances, ensure_ascii=False),
                     "source_count": str(len(subject["sources"])),
                     "visibility": subject_visibility(
                         subject["kind"], subject["sources"]

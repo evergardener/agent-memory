@@ -9,6 +9,7 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 
 from .ids import new_uuid, stable_uuid
+from .model_adapter import is_internal_entity_label
 from .redaction import redact_text
 
 SUBJECT_KINDS = {"user", "profile_persona"}
@@ -33,6 +34,18 @@ def _profile_color(profile_key: str) -> str:
     return PROFILE_COLORS[digest[0] % len(PROFILE_COLORS)]
 
 
+def profile_display_name(source_profile: str) -> str:
+    """Return a safe human-facing persona name without exposing source internals."""
+    candidate = redact_text(" ".join(source_profile.split()).strip()).text.strip()
+    if (
+        not candidate
+        or candidate in {"[REDACTED]", "«REDACTED_SECRET»"}
+        or is_internal_entity_label(candidate)
+    ):
+        return "未命名助手"
+    return candidate
+
+
 def _ensure_subject(
     connection: Connection,
     namespace_id: UUID,
@@ -40,6 +53,7 @@ def _ensure_subject(
     kind: str,
     stable_key: str,
     display_name: str,
+    display_name_origin: str,
     entity_type: str,
     color: str,
 ) -> UUID:
@@ -58,10 +72,20 @@ def _ensure_subject(
     subject_id = stable_uuid("subject", f"{namespace_id}:{stable_key}")
     row = connection.execute(
         """INSERT INTO core.subjects(
-             id,namespace_id,entity_id,kind,stable_key,display_name,color
-           ) VALUES (%s,%s,%s,%s,%s,%s,%s)
+             id,namespace_id,entity_id,kind,stable_key,display_name,
+             display_name_origin,color
+           ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
            ON CONFLICT(namespace_id,stable_key) DO UPDATE
-             SET updated_at=core.subjects.updated_at
+             SET display_name=CASE
+                   WHEN core.subjects.display_name_origin='manual'
+                     THEN core.subjects.display_name
+                   ELSE excluded.display_name
+                 END,
+                 display_name_origin=CASE
+                   WHEN core.subjects.display_name_origin='manual' THEN 'manual'
+                   ELSE excluded.display_name_origin
+                 END,
+                 updated_at=now()
            RETURNING id""",
         (
             subject_id,
@@ -70,6 +94,7 @@ def _ensure_subject(
             kind,
             stable_key,
             display_name,
+            display_name_origin,
             color,
         ),
     ).fetchone()
@@ -83,6 +108,7 @@ def ensure_user_subject(connection: Connection, namespace_id: UUID) -> UUID:
         kind="user",
         stable_key="user",
         display_name="User",
+        display_name_origin="default",
         entity_type="person",
         color="#efd095",
     )
@@ -94,13 +120,13 @@ def ensure_profile_subject(
     profile_key = normalize_profile(source_profile)
     if not profile_key:
         raise ValueError("SOURCE_PROFILE_INVALID")
-    display_profile = " ".join(source_profile.split()).strip()
     return _ensure_subject(
         connection,
         namespace_id,
         kind="profile_persona",
         stable_key=f"profile:{profile_key}",
-        display_name=f"Hermes · {display_profile}",
+        display_name=profile_display_name(source_profile),
+        display_name_origin="source",
         entity_type="agent",
         color=_profile_color(profile_key),
     )
@@ -143,7 +169,8 @@ def list_subjects(connection: Connection, namespace_key: str) -> list[dict]:
     with connection.cursor(row_factory=dict_row) as cursor:
         cursor.execute(
             """SELECT subject.id,subject.entity_id,subject.kind,subject.stable_key,
-                      subject.display_name,subject.color,subject.status,
+                      subject.display_name,subject.display_name_origin,
+                      subject.color,subject.status,
                       subject.created_at,subject.updated_at,
                       COALESCE(jsonb_agg(jsonb_build_object(
                         'source_id',source.id,
@@ -178,7 +205,7 @@ def update_subject(
 ) -> dict | None:
     namespace_id = stable_uuid("namespace", namespace_key)
     current = connection.execute(
-        """SELECT kind,display_name,color,status FROM core.subjects
+        """SELECT kind,display_name,display_name_origin,color,status FROM core.subjects
            WHERE id=%s AND namespace_id=%s FOR UPDATE""",
         (subject_id, namespace_id),
     ).fetchone()
@@ -189,18 +216,20 @@ def update_subject(
         next_name = redact_text(display_name).text.strip()
         if not next_name or next_name in {"[REDACTED]", "«REDACTED_SECRET»"}:
             raise ValueError("SUBJECT_NAME_INVALID")
-    next_color = color or current[2]
+    next_origin = "manual" if display_name is not None else current[2]
+    next_color = color or current[3]
     if not COLOR_PATTERN.fullmatch(next_color):
         raise ValueError("SUBJECT_COLOR_INVALID")
-    next_status = status or current[3]
+    next_status = status or current[4]
     if next_status not in SUBJECT_STATUSES:
         raise ValueError("SUBJECT_STATUS_INVALID")
     if current[0] == "user" and next_status != "active":
         raise ValueError("USER_SUBJECT_CANNOT_BE_HIDDEN")
     connection.execute(
-        """UPDATE core.subjects SET display_name=%s,color=%s,status=%s,updated_at=now()
+        """UPDATE core.subjects SET display_name=%s,display_name_origin=%s,
+                                    color=%s,status=%s,updated_at=now()
            WHERE id=%s""",
-        (next_name, next_color.lower(), next_status, subject_id),
+        (next_name, next_origin, next_color.lower(), next_status, subject_id),
     )
     _audit(
         connection,
@@ -213,11 +242,13 @@ def update_subject(
         metadata={
             "previous": {
                 "display_name": current[1],
-                "color": current[2],
-                "status": current[3],
+                "display_name_origin": current[2],
+                "color": current[3],
+                "status": current[4],
             },
             "current": {
                 "display_name": next_name,
+                "display_name_origin": next_origin,
                 "color": next_color.lower(),
                 "status": next_status,
             },

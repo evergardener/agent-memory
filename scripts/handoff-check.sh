@@ -20,6 +20,7 @@ required=(
   scripts/production-verify.sh scripts/production-backup.sh
   scripts/production-hermes-env.sh scripts/production-promote.sh
   scripts/production-configure-model.sh
+  scripts/production-canary-readiness.sh
 )
 for path in "${required[@]}"; do
   git ls-files --error-unmatch "$path" >/dev/null 2>&1 \

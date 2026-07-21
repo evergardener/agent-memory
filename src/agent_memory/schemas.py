@@ -220,6 +220,7 @@ class SubjectSummary(BaseModel):
     kind: Literal["user", "profile_persona"]
     stable_key: str
     display_name: str
+    display_name_origin: Literal["default", "source", "manual"]
     color: str
     status: Literal["active", "hidden"]
     created_at: datetime

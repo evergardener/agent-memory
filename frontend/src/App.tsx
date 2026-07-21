@@ -60,6 +60,15 @@ function splitIds(value = "") {
   return value.split("|").filter(Boolean);
 }
 
+function parseStringList(value = "") {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 function compactText(value = "", maximum = 96) {
   const compact = value.replace(/\s+/g, " ").trim();
   return compact.length <= maximum ? compact : `${compact.slice(0, maximum - 1)}…`;
@@ -869,8 +878,11 @@ export default function App() {
                 <dl>
                   {selected.state && <><dt>状态</dt><dd>{selected.state}</dd></>}
                   {selected.source_profile && <><dt>来源</dt><dd>{selected.source_profile}</dd></>}
-                  {selected.subject_kind && <><dt>主体类型</dt><dd>{selected.subject_kind === "user" ? "用户" : "Hermes profile 人格"}</dd></>}
-                  {selected.source_count && <><dt>来源实例</dt><dd>{selected.source_count}</dd></>}
+                  {selected.subject_kind && <><dt>主体类型</dt><dd>{selected.subject_kind === "user" ? "用户" : "Hermes Profile"}</dd></>}
+                  {selected.display_name_origin && <><dt>名称来源</dt><dd>{{ default: "系统默认", source: "Profile 来源", manual: "用户设置" }[selected.display_name_origin] || selected.display_name_origin}</dd></>}
+                  {selected.source_profiles && <><dt>来源 Profile</dt><dd>{parseStringList(selected.source_profiles).join("、") || "无"}</dd></>}
+                  {selected.source_instances && <><dt>来源实例</dt><dd>{parseStringList(selected.source_instances).join("、") || "无"}</dd></>}
+                  {selected.source_count && <><dt>绑定来源数</dt><dd>{selected.source_count}</dd></>}
                   {selected.entity_type && <><dt>行星类型</dt><dd>{selected.entity_type}</dd></>}
                   {selected.relation_type && <><dt>关系语义</dt><dd>{RELATION_LABELS[selected.relation_type] || selected.relation_type}</dd></>}
                   {selected.transport && <><dt>传输路径</dt><dd>{selected.transport}</dd></>}
