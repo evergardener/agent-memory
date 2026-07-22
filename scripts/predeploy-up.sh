@@ -11,6 +11,7 @@ elif [[ -n "${2:-}" ]]; then
 fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+skip_build="${AGENT_MEMORY_PRODUCTION_SKIP_BUILD:-0}"
 
 if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
   echo "production deployment requires a clean Git worktree" >&2
@@ -72,7 +73,7 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 chmod 600 "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE"
 
-if [[ "${AGENT_MEMORY_PRODUCTION_SKIP_BUILD:-0}" == "1" ]]; then
+if [[ "$skip_build" == "1" ]]; then
   for service in api worker migrate; do
     docker image inspect \
       "$AGENT_MEMORY_IMAGE_PREFIX-$service:$AGENT_MEMORY_VERSION" >/dev/null

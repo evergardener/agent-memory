@@ -42,6 +42,14 @@ def test_canary_verification_uses_nonexistent_report_targets() -> None:
     assert 'attestation_file="$(mktemp)"' not in verify_script
 
 
+def test_production_up_preserves_skip_build_control_before_loading_env() -> None:
+    up_script = (ROOT / "scripts/predeploy-up.sh").read_text(encoding="utf-8")
+
+    capture = 'skip_build="${AGENT_MEMORY_PRODUCTION_SKIP_BUILD:-0}"'
+    assert up_script.index(capture) < up_script.index('predeploy_load_env "$ENV_FILE"')
+    assert 'if [[ "$skip_build" == "1" ]]; then' in up_script
+
+
 def test_source_policy_mutations_have_state_and_policy_rollback() -> None:
     hermes_script = (ROOT / "scripts/predeploy-hermes-env.sh").read_text(encoding="utf-8")
     policy_script = (ROOT / "scripts/production-source-policy.sh").read_text(
