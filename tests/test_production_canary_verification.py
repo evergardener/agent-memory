@@ -32,6 +32,16 @@ def test_canary_backup_and_multi_profile_promotion_fail_closed_contracts() -> No
     assert "live profile source has no first verification timestamp" in promote_script
 
 
+def test_canary_verification_uses_nonexistent_report_targets() -> None:
+    verify_script = (ROOT / "scripts/predeploy-verify.sh").read_text(encoding="utf-8")
+
+    assert 'verification_temp_dir="$(mktemp -d)"' in verify_script
+    assert 'inventory_file="$verification_temp_dir/source-inventory.json"' in verify_script
+    assert 'attestation_file="$verification_temp_dir/source-attestation.json"' in verify_script
+    assert 'inventory_file="$(mktemp)"' not in verify_script
+    assert 'attestation_file="$(mktemp)"' not in verify_script
+
+
 def test_source_policy_mutations_have_state_and_policy_rollback() -> None:
     hermes_script = (ROOT / "scripts/predeploy-hermes-env.sh").read_text(encoding="utf-8")
     policy_script = (ROOT / "scripts/production-source-policy.sh").read_text(

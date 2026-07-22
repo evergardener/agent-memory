@@ -38,12 +38,12 @@ done
 curl --fail --silent "http://127.0.0.1:$AGENT_MEMORY_API_PORT/health/ready" >/dev/null
 
 response_file="$(mktemp)"
+verification_temp_dir=""
 inventory_file=""
 attestation_file=""
 cleanup() {
   rm -f "$response_file"
-  [[ -z "$inventory_file" ]] || rm -f "$inventory_file"
-  [[ -z "$attestation_file" ]] || rm -f "$attestation_file"
+  [[ -z "$verification_temp_dir" ]] || rm -rf "$verification_temp_dir"
 }
 trap cleanup EXIT
 unauthorized_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
@@ -185,8 +185,9 @@ if len(matches) != 1:
 print(matches[0]["source_instance"])
 PY
 )"
-  inventory_file="$(mktemp)"
-  attestation_file="$(mktemp)"
+  verification_temp_dir="$(mktemp -d)"
+  inventory_file="$verification_temp_dir/source-inventory.json"
+  attestation_file="$verification_temp_dir/source-attestation.json"
   bash scripts/predeploy-source-inventory.sh "$ENV_FILE" --json "$inventory_file" \
     >/dev/null
   source_summary="$(python3 scripts/production_control.py attest-sources \
