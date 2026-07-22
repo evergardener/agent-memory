@@ -26,7 +26,8 @@ if [[ "$PROJECT" != "agent-memory-production" ]]; then
 fi
 
 umask 077
-mkdir -p "$RUNTIME_ROOT/postgres" "$RUNTIME_ROOT/backups"
+mkdir -p "$RUNTIME_ROOT/postgres" "$RUNTIME_ROOT/backups" \
+  "$RUNTIME_ROOT/deployment-bundle"
 db_password="$(openssl rand -hex 32)"
 service_token="$(openssl rand -hex 32)"
 ui_password="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
@@ -51,6 +52,8 @@ chmod 600 "$RUNTIME_ROOT/model_api_key"
   printf 'AGENT_MEMORY_MODEL_API_KEY_HOST_FILE=%s\n' "$RUNTIME_ROOT/model_api_key"
   printf 'AGENT_MEMORY_BACKUP_ROOT=%s\n' "$RUNTIME_ROOT/backups"
   printf 'AGENT_MEMORY_DEPLOYMENT_STATE_FILE=%s\n' "$RUNTIME_ROOT/DEPLOYMENT-STATE.json"
+  printf 'AGENT_MEMORY_DEPLOYMENT_BUNDLE_ROOT=%s\n' "$RUNTIME_ROOT/deployment-bundle"
+  printf 'AGENT_MEMORY_SOURCE_POLICY_FILE=%s\n' "$RUNTIME_ROOT/SOURCE-POLICY.json"
   printf 'AGENT_MEMORY_DB_PASSWORD=%s\n' "$db_password"
   printf 'AGENT_MEMORY_SERVICE_TOKEN=%s\n' "$service_token"
   printf 'AGENT_MEMORY_NAMESPACE=%s\n' "${AGENT_MEMORY_PRODUCTION_NAMESPACE:-hermes:user-primary}"
@@ -84,6 +87,10 @@ chmod 600 "$RUNTIME_ROOT/model_api_key"
   printf 'AGENT_MEMORY_TRUSTED_OBSERVATION_TOOL_ALLOWLIST=terminal,exec,execute_code,shell,health_probe\n'
 } > "$ENV_FILE"
 chmod 600 "$ENV_FILE"
+
+python3 "$ROOT/scripts/production_control.py" init-source-policy \
+  --namespace "${AGENT_MEMORY_PRODUCTION_NAMESPACE:-hermes:user-primary}" \
+  --output "$RUNTIME_ROOT/SOURCE-POLICY.json" >/dev/null
 
 bash "$ROOT/scripts/predeploy-preflight.sh" "$ENV_FILE" new >/dev/null
 echo "Created production-candidate environment: $ENV_FILE"

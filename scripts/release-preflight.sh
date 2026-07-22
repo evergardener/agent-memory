@@ -58,6 +58,33 @@ done
 [[ "$AGENT_MEMORY_UI_PASSWORD_HASH" == 'scrypt$'* ]] \
   || fail "release UI password hash must use scrypt"
 
+# Reject primary runtime paths before checking whether they exist. A clean Git
+# worktree may not contain data/postgres yet, but that must not make the primary
+# path an acceptable release target.
+python3 - "$ROOT" "$AGENT_MEMORY_POSTGRES_DATA_DIR" \
+  "$AGENT_MEMORY_RELEASE_BACKUP_ROOT" "$AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE" <<'PY'
+import os
+import sys
+
+root, data, backups, vault = map(os.path.realpath, sys.argv[1:])
+primary_data = os.path.join(root, "data")
+primary_backups = os.path.join(root, "backups")
+primary_vault = os.path.join(root, "secrets", "vault_root_key")
+
+if os.path.commonpath((data, primary_data)) == primary_data:
+    raise SystemExit(
+        "RELEASE_PREFLIGHT_FAILED: release data directory resolves inside the primary data tree"
+    )
+if os.path.commonpath((backups, primary_backups)) == primary_backups:
+    raise SystemExit(
+        "RELEASE_PREFLIGHT_FAILED: release backups must not use the primary backup tree"
+    )
+if vault == primary_vault:
+    raise SystemExit(
+        "RELEASE_PREFLIGHT_FAILED: release stack must not use the primary Vault root key"
+    )
+PY
+
 [[ -d "$AGENT_MEMORY_POSTGRES_DATA_DIR" ]] \
   || fail "release PostgreSQL data directory must already exist"
 [[ -d "$AGENT_MEMORY_RELEASE_BACKUP_ROOT" ]] \

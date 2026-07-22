@@ -16,11 +16,15 @@ upstream_revision="$(git rev-parse '@{upstream}')"
 required=(
   VERSION uv.lock compose.yaml compose.production.yaml .env.production.example
   docs/handoff.md docs/V1.0-生产候选接入与原地晋级手册.md
+  docs/V1.0-生产来源治理与部署冻结设计.md
+  docs/V1.0-rc8生产边界验证报告.md
   scripts/init-production-env.sh scripts/production-up.sh
   scripts/production-verify.sh scripts/production-backup.sh
   scripts/production-hermes-env.sh scripts/production-promote.sh
   scripts/production-configure-model.sh
   scripts/production-canary-readiness.sh
+  scripts/production-source-inventory.sh scripts/production-source-policy.sh
+  scripts/production_control.py
 )
 for path in "${required[@]}"; do
   git ls-files --error-unmatch "$path" >/dev/null 2>&1 \
@@ -36,7 +40,8 @@ grep -q "\"version\": \"$version\"" frontend/package.json \
 
 env UV_CACHE_DIR="${TMPDIR:-/tmp}/agent-memory-handoff-uv-cache" uv lock --check --offline
 bash -n scripts/*.sh
-.venv/bin/ruff check src integrations tests migrations scripts/predeploy_host_check.py
+.venv/bin/ruff check src integrations tests migrations scripts/predeploy_host_check.py \
+  scripts/production_control.py
 env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYDANTIC_DISABLE_PLUGINS=__all__ .venv/bin/pytest -q
 npm --prefix frontend run check-build
 
