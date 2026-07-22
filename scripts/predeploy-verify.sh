@@ -145,9 +145,11 @@ for key in ("events", "facts", "vault_entries", "failed_jobs"):
         raise SystemExit(f"empty predeploy contains unexpected {key}: {counts.get(key)}")
 PY
 elif [[ "$DATA_MODE" == "canary" ]]; then
+  # EXPECTED_PROFILE is restricted above to an SQL-literal-safe ASCII allowlist.
+  # psql does not expand :variables supplied to a command passed with -c.
   source_count="$("${COMPOSE[@]}" exec -T postgres psql -U agent_memory -d agent_memory \
-    -v expected_profile="$EXPECTED_PROFILE" -qAtc \
-    "SELECT count(*) FROM core.sources WHERE source_profile=:'expected_profile';")"
+    -qAtc \
+    "SELECT count(*) FROM core.sources WHERE source_profile='$EXPECTED_PROFILE';")"
   event_count="$("${COMPOSE[@]}" exec -T postgres psql -U agent_memory -d agent_memory -qAtc \
     'SELECT count(*) FROM evidence.events;')"
   failed_job_count="$(python3 - "$counts" <<'PY'
