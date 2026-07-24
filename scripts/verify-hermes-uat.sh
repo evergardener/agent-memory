@@ -81,7 +81,7 @@ docker run -d --rm \
   --env-file "$automated_env" \
   -e "AGENT_MEMORY_NAMESPACE=$automated_namespace" \
   -v "$ROOT/secrets/vault_root_key:/run/secrets/vault_root_key:ro" \
-  agent-memory-api:${AGENT_MEMORY_VERSION:-1.0.0-rc.7} >/dev/null
+  agent-memory-api:${AGENT_MEMORY_VERSION:-1.0.0-rc.8} >/dev/null
 docker network connect agent-memory_backend "$automated_api_name"
 for _ in {1..30}; do
   curl -fsS "http://127.0.0.1:${automated_api_port}/health/ready" >/dev/null && break

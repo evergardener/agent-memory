@@ -4,10 +4,13 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from tests.production_runtime_helpers import (
+    bind_state_to_current_checkout,
+    fake_production_docker_env,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
-REVISION = subprocess.check_output(
-    ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
-).strip()
+REVISION = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
 
 
 def _write_predeploy_env(tmp_path: Path, **overrides: str) -> Path:
@@ -18,10 +21,25 @@ def _write_predeploy_env(tmp_path: Path, **overrides: str) -> Path:
     model_key = tmp_path / "model_api_key"
     data_dir.mkdir()
     backup_dir.mkdir()
+    bundle_dir = tmp_path / "deployment-bundle"
+    bundle_dir.mkdir()
     vault_key.write_text("predeploy-only-vault-root-key\n", encoding="utf-8")
     vault_key.chmod(0o600)
     model_key.write_text("", encoding="utf-8")
     model_key.chmod(0o600)
+    source_policy = tmp_path / "SOURCE-POLICY.json"
+    source_policy.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "namespace": "hermes:user-primary",
+                "sources": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    source_policy.chmod(0o600)
     values = {
         "AGENT_MEMORY_VERSION": (ROOT / "VERSION").read_text().strip(),
         "AGENT_MEMORY_REVISION": REVISION,
@@ -36,6 +54,8 @@ def _write_predeploy_env(tmp_path: Path, **overrides: str) -> Path:
         "AGENT_MEMORY_MODEL_API_KEY_HOST_FILE": str(model_key),
         "AGENT_MEMORY_BACKUP_ROOT": str(backup_dir),
         "AGENT_MEMORY_DEPLOYMENT_STATE_FILE": str(tmp_path / "DEPLOYMENT-STATE.json"),
+        "AGENT_MEMORY_DEPLOYMENT_BUNDLE_ROOT": str(bundle_dir),
+        "AGENT_MEMORY_SOURCE_POLICY_FILE": str(source_policy),
         "AGENT_MEMORY_DB_PASSWORD": "d" * 32,
         "AGENT_MEMORY_SERVICE_TOKEN": "t" * 32,
         "AGENT_MEMORY_NAMESPACE": "hermes:user-primary",
@@ -109,22 +129,16 @@ def test_predeploy_preflight_rejects_production_namespace_model_and_reserved_por
     tmp_path: Path,
 ) -> None:
     namespace = _run(
-        _write_predeploy_env(
-            tmp_path / "namespace", AGENT_MEMORY_NAMESPACE="hermes:wrong"
-        )
+        _write_predeploy_env(tmp_path / "namespace", AGENT_MEMORY_NAMESPACE="hermes:wrong")
     )
     assert namespace.returncode != 0
     assert "namespace" in namespace.stderr
 
-    model = _run(
-        _write_predeploy_env(tmp_path / "model", AGENT_MEMORY_MODEL_ENABLED="true")
-    )
+    model = _run(_write_predeploy_env(tmp_path / "model", AGENT_MEMORY_MODEL_ENABLED="true"))
     assert model.returncode != 0
     assert "initial empty production Gate" in model.stderr
 
-    port = _run(
-        _write_predeploy_env(tmp_path / "port", AGENT_MEMORY_API_PORT="7788")
-    )
+    port = _run(_write_predeploy_env(tmp_path / "port", AGENT_MEMORY_API_PORT="7788"))
     assert port.returncode != 0
     assert "must not reuse" in port.stderr
 
@@ -132,28 +146,32 @@ def test_predeploy_preflight_rejects_production_namespace_model_and_reserved_por
 def test_predeploy_preflight_requires_matching_existing_state(tmp_path: Path) -> None:
     env_file = _write_predeploy_env(tmp_path)
     state_file = tmp_path / "DEPLOYMENT-STATE.json"
+    state = bind_state_to_current_checkout(
+        tmp_path,
+        {
+            "status": "ready_for_canary",
+            "version": (ROOT / "VERSION").read_text().strip(),
+            "revision": REVISION,
+            "compose_project": "agent-memory-production",
+            "namespace": "hermes:user-primary",
+        },
+        REVISION,
+    )
     state_file.write_text(
-        json.dumps(
-            {
-                "status": "ready_for_canary",
-                "version": (ROOT / "VERSION").read_text().strip(),
-                "revision": REVISION,
-                "compose_project": "agent-memory-production",
-                "namespace": "hermes:user-primary",
-            }
-        ),
+        json.dumps(state),
         encoding="utf-8",
     )
     state_file.chmod(0o600)
-    assert _run(env_file, "existing").returncode == 0
+    docker_env = fake_production_docker_env(tmp_path, REVISION)
+    assert _run(env_file, "existing", docker_env).returncode == 0
 
     state = json.loads(state_file.read_text(encoding="utf-8"))
     state["status"] = "production_active"
     state_file.write_text(json.dumps(state), encoding="utf-8")
-    assert _run(env_file, "existing").returncode == 0
+    assert _run(env_file, "existing", docker_env).returncode == 0
 
     state["namespace"] = "hermes:wrong"
     state_file.write_text(json.dumps(state), encoding="utf-8")
-    mismatch = _run(env_file, "existing")
+    mismatch = _run(env_file, "existing", docker_env)
     assert mismatch.returncode != 0
     assert "state namespace mismatch" in mismatch.stderr

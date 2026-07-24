@@ -43,13 +43,21 @@ if state.get("hermes_connected") is not False:
     raise SystemExit("Hermes must not be connected before approval")
 if state.get("model_enabled") is not False:
     raise SystemExit("model must remain disabled before approval")
-for forbidden in ("canary_profile", "hermes_env_file", "canary_configured_at"):
+for forbidden in (
+    "canary_profile", "canary_profiles", "canary_sources",
+    "hermes_env_file", "canary_configured_at",
+):
     if state.get(forbidden):
         raise SystemExit(f"unexpected pre-approval state field: {forbidden}")
 
 prepared_envs = list(runtime_root.glob("hermes-production-*.env"))
 if prepared_envs:
     raise SystemExit("Hermes canary configuration already exists")
+source_policy_path = Path(state.get("source_policy_path") or runtime_root / "SOURCE-POLICY.json")
+with source_policy_path.open(encoding="utf-8") as handle:
+    source_policy = json.load(handle)
+if source_policy.get("sources"):
+    raise SystemExit("pre-approval source policy must be empty")
 
 backup_path = Path(str(state.get("last_backup_path") or "")).resolve()
 try:
@@ -74,6 +82,7 @@ report = {
     "database_empty": True,
     "hermes_connected": False,
     "hermes_config_prepared": False,
+    "approved_live_profiles": [],
     "model_enabled": False,
     "verified_backup_path": str(backup_path),
     "verified_backup_manifest_sha256": manifest_sha256,

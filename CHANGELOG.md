@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 将已部署的 rc.8 生产边界实现与 `main` 的 CI 修复收敛，更新 README、交接、阶段计划和验收状态；此源码收敛不重启生产容器、不修改 Hermes profile 或生产数据。
+- 记录真实 `jiuyue:production-jiuyue` canary 已运行于 `47a1506…`，模型关闭、0 failed jobs、尚无晋级记录；72 小时观察和覆盖新增 events 的恢复验证备份仍是晋级门禁。
+- 准备 `1.0.0-rc.8`：生产 canary 从单一全局计数升级为显式 source policy；每个 live profile/instance 必须以自身 evidence 通过门禁，历史导入来源可保留但不能替代 live source。
+- 生产来源清单只输出 profile、instance、计数与时间范围；未知来源默认失败关闭，状态仅记录来源清单指纹和无正文验证摘要。
+- 支持多个 Hermes profile 各自投影为稳定人格恒星；同 profile 多实例仍复用同一恒星。每个新接入 live source 独立计算观察窗口，不能继承先前 profile 的 canary 时长。
+- 部署时生成只读 bundle 与清单，绑定 Git revision、版本、关键 Compose/运维脚本 SHA、镜像 ID 和 OCI revision；工作树、镜像或清单漂移时生产操作失败关闭。
+- 备份在暂停 API/worker 写入后执行 dump 与恢复计数验证，完成后可靠恢复写入；canary 前备份只可通过显式观察例外使用，晋级强制要求 canary 后恢复验证备份。
+- 新增只读生产来源 inventory 与显式 `live_profile|historical_import` 治理入口；不提供按 profile 批量删除命令。
 - 冻结主体恒星展示身份规则：用户使用可治理显示名，profile 恒星标题只保留人格名；类型、source profile 和实例只在详情/无障碍语义中显示，并规划 `display_name_origin` 防止自动同步覆盖人工名称。
 - 准备 `1.0.0-rc.7`：完成阶段 C 类型化关系星系、可重叠社区、人工治理、证据追溯及主/子宇宙联动；
 - 发布 Gate 改为独立 Docker project、镜像前缀、data/backup/Vault 路径、端口与网段，并加入失败关闭预检、只读根文件系统、最小 capability、readiness 与 OCI version/revision 校验；

@@ -11,6 +11,7 @@ elif [[ -n "${2:-}" ]]; then
 fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+skip_build="${AGENT_MEMORY_PRODUCTION_SKIP_BUILD:-0}"
 
 if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
   echo "production deployment requires a clean Git worktree" >&2
@@ -72,7 +73,7 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 chmod 600 "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE"
 
-if [[ "${AGENT_MEMORY_PRODUCTION_SKIP_BUILD:-0}" == "1" ]]; then
+if [[ "$skip_build" == "1" ]]; then
   for service in api worker migrate; do
     docker image inspect \
       "$AGENT_MEMORY_IMAGE_PREFIX-$service:$AGENT_MEMORY_VERSION" >/dev/null
@@ -98,15 +99,59 @@ worker_image_id="$(docker image inspect \
   "$AGENT_MEMORY_IMAGE_PREFIX-worker:$AGENT_MEMORY_VERSION" --format '{{.Id}}')"
 migrate_image_id="$(docker image inspect \
   "$AGENT_MEMORY_IMAGE_PREFIX-migrate:$AGENT_MEMORY_VERSION" --format '{{.Id}}')"
+images_file="$(mktemp)"
+trap 'rm -f "$images_file"' EXIT
+python3 - "$images_file" "$api_image_id" "$worker_image_id" "$migrate_image_id" \
+  "$AGENT_MEMORY_REVISION" <<'PY'
+import json
+import sys
+
+path, api_image, worker_image, migrate_image, revision = sys.argv[1:]
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump({
+        "api": {"image_id": api_image, "oci_revision": revision},
+        "worker": {"image_id": worker_image, "oci_revision": revision},
+        "migrate": {"image_id": migrate_image, "oci_revision": revision},
+    }, handle, sort_keys=True)
+    handle.write("\n")
+PY
+deployment_manifest_path=""
+deployment_manifest_sha256=""
+if [[ "$MODE" == "new" ]]; then
+  bundle_result="$(python3 scripts/production_control.py create-deployment-bundle \
+    --root "$ROOT" \
+    --bundle-root "$AGENT_MEMORY_DEPLOYMENT_BUNDLE_ROOT" \
+    --revision "$AGENT_MEMORY_REVISION" \
+    --version "$AGENT_MEMORY_VERSION" \
+    --images "$images_file")"
+  deployment_manifest_path="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["deployment_manifest"])' "$bundle_result")"
+  deployment_manifest_sha256="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["manifest_sha256"])' "$bundle_result")"
+else
+  IFS=$'\t' read -r deployment_manifest_path deployment_manifest_sha256 < <(
+    python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    state = json.load(handle)
+print("\t".join((state["deployment_manifest_path"], state["deployment_manifest_sha256"])))
+PY
+  )
+fi
 vault_key_sha256="$(shasum -a 256 "$AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE" | awk '{print $1}')"
+source_policy_sha256="$(shasum -a 256 "$AGENT_MEMORY_SOURCE_POLICY_FILE" | awk '{print $1}')"
 
 python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" "$api_image_id" \
-  "$worker_image_id" "$migrate_image_id" "$vault_key_sha256" "$MODE" <<'PY'
+  "$worker_image_id" "$migrate_image_id" "$vault_key_sha256" "$MODE" \
+  "$deployment_manifest_path" "$deployment_manifest_sha256" \
+  "$AGENT_MEMORY_SOURCE_POLICY_FILE" "$source_policy_sha256" <<'PY'
 import json
 import sys
 from datetime import UTC, datetime
 
-path, api_image, worker_image, migrate_image, vault_fingerprint, mode = sys.argv[1:]
+(
+    path, api_image, worker_image, migrate_image, vault_fingerprint, mode,
+    manifest_path, manifest_sha, source_policy_path, source_policy_sha,
+) = sys.argv[1:]
 with open(path, encoding="utf-8") as handle:
     state = json.load(handle)
 status = "ready_for_canary"
@@ -124,6 +169,10 @@ state.update({
     "worker_image_id": worker_image,
     "migrate_image_id": migrate_image,
     "vault_key_sha256": vault_fingerprint,
+    "deployment_manifest_path": manifest_path,
+    "deployment_manifest_sha256": manifest_sha,
+    "source_policy_path": source_policy_path,
+    "source_policy_sha256": source_policy_sha,
 })
 state.pop("resume_status", None)
 if status == "ready_for_canary":
@@ -132,6 +181,8 @@ with open(path, "w", encoding="utf-8") as handle:
     json.dump(state, handle, ensure_ascii=False, indent=2, sort_keys=True)
     handle.write("\n")
 PY
+rm -f "$images_file"
+trap - EXIT
 
 bash scripts/predeploy-preflight.sh "$ENV_FILE" existing >/dev/null
 python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" <<'PY'

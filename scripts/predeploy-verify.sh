@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_FILE="${1:?usage: production-verify.sh ENV_FILE [runtime|empty|canary] [bootstrap|existing] [PROFILE]}"
+ENV_FILE="${1:?usage: production-verify.sh ENV_FILE [runtime|empty|canary] [bootstrap|existing] [PROFILE] [--allow-pre-canary-backup-for-observation]}"
 DATA_MODE="${2:-runtime}"
 PREFLIGHT_MODE="${3:-existing}"
 EXPECTED_PROFILE="${4:-}"
+BACKUP_EXCEPTION="${5:-}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
@@ -14,6 +15,9 @@ if [[ "$DATA_MODE" == "canary" ]]; then
   [[ "$EXPECTED_PROFILE" =~ ^[A-Za-z0-9._:@-]{1,64}$ ]] \
     || { echo "canary verification requires a safe profile name" >&2; exit 1; }
 fi
+[[ -z "$BACKUP_EXCEPTION" || ( "$DATA_MODE" == "canary" \
+   && "$BACKUP_EXCEPTION" == "--allow-pre-canary-backup-for-observation" ) ]] \
+  || { echo "invalid canary backup exception" >&2; exit 1; }
 
 bash scripts/predeploy-preflight.sh "$ENV_FILE" "$PREFLIGHT_MODE" >/dev/null
 source "$ROOT/scripts/predeploy-env.sh"
@@ -34,7 +38,14 @@ done
 curl --fail --silent "http://127.0.0.1:$AGENT_MEMORY_API_PORT/health/ready" >/dev/null
 
 response_file="$(mktemp)"
-trap 'rm -f "$response_file"' EXIT
+verification_temp_dir=""
+inventory_file=""
+attestation_file=""
+cleanup() {
+  rm -f "$response_file"
+  [[ -z "$verification_temp_dir" ]] || rm -rf "$verification_temp_dir"
+}
+trap cleanup EXIT
 unauthorized_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
   "http://127.0.0.1:$AGENT_MEMORY_API_PORT/api/v1/ui/config")"
 [[ "$unauthorized_status" == "401" ]] \
@@ -133,6 +144,19 @@ counts="$("${COMPOSE[@]}" exec -T postgres psql -U agent_memory -d agent_memory 
      'vault_entries',(SELECT count(*) FROM vault.entries),
      'failed_jobs',(SELECT count(*) FROM ops.jobs WHERE status='failed')
    )::text;")"
+source_summary='null'
+backup_summary='null'
+
+if [[ -n "$(python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle).get("last_backup_verified_at", ""))
+PY
+)" ]]; then
+  backup_summary="$(python3 scripts/production_control.py backup-freshness \
+    --state "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" --mode runtime)"
+fi
 
 if [[ "$DATA_MODE" == "empty" ]]; then
   python3 - "$counts" <<'PY'
@@ -145,13 +169,34 @@ for key in ("events", "facts", "vault_entries", "failed_jobs"):
         raise SystemExit(f"empty predeploy contains unexpected {key}: {counts.get(key)}")
 PY
 elif [[ "$DATA_MODE" == "canary" ]]; then
-  # EXPECTED_PROFILE is restricted above to an SQL-literal-safe ASCII allowlist.
-  # psql does not expand :variables supplied to a command passed with -c.
-  source_count="$("${COMPOSE[@]}" exec -T postgres psql -U agent_memory -d agent_memory \
-    -qAtc \
-    "SELECT count(*) FROM core.sources WHERE source_profile='$EXPECTED_PROFILE';")"
-  event_count="$("${COMPOSE[@]}" exec -T postgres psql -U agent_memory -d agent_memory -qAtc \
-    'SELECT count(*) FROM evidence.events;')"
+  expected_instance="$(python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" \
+    "$EXPECTED_PROFILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    state = json.load(handle)
+matches = [
+    item for item in state.get("canary_sources", [])
+    if item.get("source_profile") == sys.argv[2] and item.get("role") == "live_profile"
+]
+if len(matches) != 1:
+    raise SystemExit("canary profile must map to exactly one prepared live source")
+print(matches[0]["source_instance"])
+PY
+)"
+  verification_temp_dir="$(mktemp -d)"
+  inventory_file="$verification_temp_dir/source-inventory.json"
+  attestation_file="$verification_temp_dir/source-attestation.json"
+  bash scripts/predeploy-source-inventory.sh "$ENV_FILE" --json "$inventory_file" \
+    >/dev/null
+  source_summary="$(python3 scripts/production_control.py attest-sources \
+    --policy "$AGENT_MEMORY_SOURCE_POLICY_FILE" \
+    --inventory "$inventory_file" \
+    --namespace "$AGENT_MEMORY_NAMESPACE" \
+    --profile "$EXPECTED_PROFILE" \
+    --instance "$expected_instance" \
+    --output "$attestation_file")"
   failed_job_count="$(python3 - "$counts" <<'PY'
 import json
 import sys
@@ -159,35 +204,82 @@ import sys
 print(json.loads(sys.argv[1])["failed_jobs"])
 PY
 )"
-  [[ "$source_count" -gt 0 && "$event_count" -gt 0 && "$failed_job_count" -eq 0 ]] \
+  [[ "$failed_job_count" -eq 0 ]] \
     || { echo "canary profile has not produced traceable evidence" >&2; exit 1; }
-  python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" "$EXPECTED_PROFILE" <<'PY'
+  python3 scripts/production_control.py backup-freshness \
+    --state "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" --mode canary \
+    ${BACKUP_EXCEPTION:+--allow-pre-canary} >/dev/null
+  python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" "$EXPECTED_PROFILE" \
+    "$expected_instance" "$attestation_file" <<'PY'
 import json
 import sys
 from datetime import UTC, datetime
 
 with open(sys.argv[1], encoding="utf-8") as handle:
     state = json.load(handle)
+with open(sys.argv[4], encoding="utf-8") as handle:
+    attestation = json.load(handle)
 if state.get("status") not in {"canary_config_prepared", "canary_active"}:
     raise SystemExit(
         "production canary verification requires a prepared or active canary state"
     )
-if state.get("canary_profile") != sys.argv[2]:
-    raise SystemExit("production canary profile differs from the prepared profile")
+sources = []
+matched = False
+for item in state.get("canary_sources", []):
+    current = dict(item)
+    if (
+        current.get("source_profile") == sys.argv[2]
+        and current.get("source_instance") == sys.argv[3]
+    ):
+        current.update({
+            "verification_status": "verified",
+            "verified_event_count": attestation["expected_source"]["event_count"],
+            "verified_at": attestation["verified_at"],
+            "first_verified_at": current.get("first_verified_at") or attestation["verified_at"],
+        })
+        matched = True
+    sources.append(current)
+if not matched:
+    raise SystemExit("production canary source differs from prepared sources")
+profiles = sorted({item["source_profile"] for item in sources if item.get("role") == "live_profile"})
+verified_counts = [
+    {
+        "source_profile": item["source_profile"],
+        "source_instance": item["source_instance"],
+        "event_count": item["verified_event_count"],
+    }
+    for item in sources
+    if item.get("role") == "live_profile" and item.get("verification_status") == "verified"
+]
 state.update({
     "status": "canary_active",
     "hermes_connected": True,
-    "canary_profile": sys.argv[2],
+    "canary_profile": state.get("canary_profile") or sys.argv[2],
+    "canary_profiles": profiles,
+    "canary_sources": sources,
     "canary_started_at": state.get("canary_started_at") or datetime.now(UTC).isoformat(),
     "canary_verified_at": datetime.now(UTC).isoformat(),
+    "source_policy_sha256": attestation["source_policy_sha256"],
+    "source_inventory_sha256": attestation["source_inventory_sha256"],
+    "source_bound_canary_event_counts": verified_counts,
+    "last_source_attestation": {
+        "source_profile": sys.argv[2],
+        "source_instance": sys.argv[3],
+        "event_count": attestation["expected_source"]["event_count"],
+        "source_inventory_sha256": attestation["source_inventory_sha256"],
+        "verified_at": attestation["verified_at"],
+    },
 })
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
     json.dump(state, handle, ensure_ascii=False, indent=2, sort_keys=True)
     handle.write("\n")
 PY
+  backup_summary="$(python3 scripts/production_control.py backup-freshness \
+    --state "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" --mode canary \
+    ${BACKUP_EXCEPTION:+--allow-pre-canary})"
 fi
 
-python3 - "$DATA_MODE" "$counts" <<'PY'
+python3 - "$DATA_MODE" "$counts" "$source_summary" "$backup_summary" <<'PY'
 import json
 import sys
 
@@ -196,5 +288,7 @@ print(json.dumps({
     "check": "production_verify",
     "mode": sys.argv[1],
     "counts": json.loads(sys.argv[2]),
+    "source_attestation": json.loads(sys.argv[3]),
+    "backup_freshness": json.loads(sys.argv[4]),
 }, sort_keys=True))
 PY

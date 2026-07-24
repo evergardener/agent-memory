@@ -3,10 +3,13 @@ import os
 import subprocess
 from pathlib import Path
 
+from tests.production_runtime_helpers import (
+    bind_state_to_current_checkout,
+    fake_production_docker_env,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
-REVISION = subprocess.check_output(
-    ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
-).strip()
+REVISION = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
 
 
 def test_external_production_model_key_is_sealed_outside_env(tmp_path: Path) -> None:
@@ -28,22 +31,26 @@ def test_external_production_model_key_is_sealed_outside_env(tmp_path: Path) -> 
     )
     assert initialized.returncode == 0, initialized.stderr
     state_file = runtime_root / "DEPLOYMENT-STATE.json"
+    state = bind_state_to_current_checkout(
+        runtime_root,
+        {
+            "status": "ready_for_canary",
+            "version": (ROOT / "VERSION").read_text().strip(),
+            "revision": REVISION,
+            "compose_project": "agent-memory-production",
+            "namespace": "hermes:user-primary",
+        },
+        REVISION,
+    )
     state_file.write_text(
-        json.dumps(
-            {
-                "status": "ready_for_canary",
-                "version": (ROOT / "VERSION").read_text().strip(),
-                "revision": REVISION,
-                "compose_project": "agent-memory-production",
-                "namespace": "hermes:user-primary",
-            }
-        ),
+        json.dumps(state),
         encoding="utf-8",
     )
     state_file.chmod(0o600)
     key_input = tmp_path / "input-key"
     key_input.write_text("production-only-key\n", encoding="utf-8")
     key_input.chmod(0o600)
+    command_env = {**os.environ, **fake_production_docker_env(runtime_root, REVISION)}
 
     configured = subprocess.run(
         [
@@ -60,6 +67,7 @@ def test_external_production_model_key_is_sealed_outside_env(tmp_path: Path) -> 
         check=False,
         text=True,
         capture_output=True,
+        env=command_env,
     )
     assert configured.returncode == 0, configured.stderr
     env_contents = env_file.read_text(encoding="utf-8")
@@ -87,6 +95,7 @@ def test_external_production_model_key_is_sealed_outside_env(tmp_path: Path) -> 
         check=False,
         text=True,
         capture_output=True,
+        env=command_env,
     )
     assert configured_local.returncode == 0, configured_local.stderr
     assert (runtime_root / "model_api_key").read_text(encoding="utf-8") == ""
@@ -108,6 +117,7 @@ def test_external_production_model_key_is_sealed_outside_env(tmp_path: Path) -> 
         check=False,
         text=True,
         capture_output=True,
+        env=command_env,
     )
     assert rejected_loopback.returncode != 0
     assert "container loopback" in rejected_loopback.stderr
@@ -130,6 +140,7 @@ def test_external_production_model_key_is_sealed_outside_env(tmp_path: Path) -> 
         check=False,
         text=True,
         capture_output=True,
+        env=command_env,
     )
     assert rejected_permissions.returncode != 0
     assert "mode 600 or 400" in rejected_permissions.stderr
@@ -138,5 +149,5 @@ def test_external_production_model_key_is_sealed_outside_env(tmp_path: Path) -> 
 def test_production_up_preserves_approved_model_enabled_state() -> None:
     script = (ROOT / "scripts" / "predeploy-up.sh").read_text(encoding="utf-8")
 
-    assert '"${AGENT_MEMORY_MODEL_ENABLED:-false}" <<\'PY\'' in script
+    assert "\"${AGENT_MEMORY_MODEL_ENABLED:-false}\" <<'PY'" in script
     assert '"model_enabled": model_enabled == "true"' in script

@@ -1,17 +1,18 @@
 # Agent Memory for Hermes
 
-Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。当前源码候选为 `1.0.0-rc.7`，已通过隔离上线前 Review，正在准备使用最终生产资产进行真实 Hermes 单 profile canary。系统支持 Hermes 多 profile 共享身份、只读原始证据、事实/情节/长期脉络、三路召回、生命周期治理、确定性互动状态、整理报告、关系型星系和独立加密 Vault。
+Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。当前源码候选和生产 canary 均为 `1.0.0-rc.8`；生产运行 revision 为 `47a1506ae94a5a08fde6b4066f1daa24e2d27608`，状态为 `canary_active`，尚未晋级。系统支持 Hermes 多 profile 共享记忆空间与独立人格恒星、只读原始证据、事实/情节/长期脉络、三路召回、生命周期治理、确定性互动状态、整理报告、关系型星系和独立加密 Vault。生产 canary 对每个 profile/instance 单独验证来源和观察窗口，历史导入数据不能替代 live profile 门禁。
 
-这是供接入测试的候选版本，不应成为真实凭据或重要数据的唯一副本。需求与实现边界见 [`docs/V1.0-项目需求文档.md`](docs/V1.0-项目需求文档.md)，逐项验证状态见 [`docs/V1.0-release验收矩阵.md`](docs/V1.0-release验收矩阵.md)。阶段 C 已实现类型化关系、可重叠社区、成员证据、治理/布局、主子宇宙联动和关系证据追溯；正式 namespace、生产 Hermes 配置和下一候选版本仍未启用。
+这是供生产 canary 验证的候选版本，不应成为真实凭据或重要数据的唯一副本。需求与实现边界见 [`docs/V1.0-项目需求文档.md`](docs/V1.0-项目需求文档.md)，逐项验证状态见 [`docs/V1.0-release验收矩阵.md`](docs/V1.0-release验收矩阵.md)。当前仅 `jiuyue:production-jiuyue` 是 live canary，`qishuo:hermes-session-export` 是显式保留的历史导入；模型保持关闭。新增来源、模型启用、容器更新或生产晋级仍须分别批准。
 
 ## 文档入口
 
 - 新开发者或运维接手：[`docs/handoff.md`](docs/handoff.md)
 - 从零部署、开发、升级、备份和排障：[`docs/V1.0-开发部署与运维手册.md`](docs/V1.0-开发部署与运维手册.md)
-- `rc.7` 正式迁移、灰度和回滚：[`docs/V1.0-正式迁移与灰度发布方案.md`](docs/V1.0-正式迁移与灰度发布方案.md)
+- 正式迁移、灰度和回滚：[`docs/V1.0-正式迁移与灰度发布方案.md`](docs/V1.0-正式迁移与灰度发布方案.md)
 - 当前阶段 C 验证证据：[`docs/V1.0-阶段C实施验证报告.md`](docs/V1.0-阶段C实施验证报告.md)
 - 最新上线前风险和 Gate：[`docs/V1.0-上线前Review报告.md`](docs/V1.0-上线前Review报告.md)
-- 真实生产候选、单 profile canary 与原地晋级：[`docs/V1.0-生产候选接入与原地晋级手册.md`](docs/V1.0-生产候选接入与原地晋级手册.md)
+- 真实生产候选、多 profile 来源门禁与原地晋级：[`docs/V1.0-生产候选接入与原地晋级手册.md`](docs/V1.0-生产候选接入与原地晋级手册.md)
+- 多 profile 来源治理、部署冻结和备份新鲜度：[`docs/V1.0-生产来源治理与部署冻结设计.md`](docs/V1.0-生产来源治理与部署冻结设计.md)
 - 跨主机开发与交接标准：[`docs/跨主机开发与交接标准.md`](docs/跨主机开发与交接标准.md)
 - 后续阶段开发与生产 canary 任务：[`docs/V1.0-后续阶段开发计划.md`](docs/V1.0-后续阶段开发计划.md)
 

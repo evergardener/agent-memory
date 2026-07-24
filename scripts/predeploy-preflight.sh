@@ -6,6 +6,12 @@ MODE="${2:-new}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+deployment_images_file=""
+cleanup() {
+  [[ -z "$deployment_images_file" ]] || rm -f "$deployment_images_file"
+}
+trap cleanup EXIT
+
 fail() {
   echo "PREDEPLOY_PREFLIGHT_FAILED: $1" >&2
   exit 1
@@ -50,6 +56,8 @@ for variable in \
   AGENT_MEMORY_MODEL_API_KEY_HOST_FILE \
   AGENT_MEMORY_BACKUP_ROOT \
   AGENT_MEMORY_DEPLOYMENT_STATE_FILE \
+  AGENT_MEMORY_DEPLOYMENT_BUNDLE_ROOT \
+  AGENT_MEMORY_SOURCE_POLICY_FILE \
   AGENT_MEMORY_DB_PASSWORD \
   AGENT_MEMORY_SERVICE_TOKEN \
   AGENT_MEMORY_UI_PASSWORD_HASH \
@@ -88,6 +96,22 @@ runtime_root="$(cd "$(dirname "$ENV_FILE")" && pwd)"
   || fail "model API key must be runtime_root/model_api_key"
 [[ "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" == "$runtime_root/DEPLOYMENT-STATE.json" ]] \
   || fail "deployment state file must be runtime_root/DEPLOYMENT-STATE.json"
+[[ "$(realpath "$AGENT_MEMORY_DEPLOYMENT_BUNDLE_ROOT")" == "$runtime_root/deployment-bundle" ]] \
+  || fail "deployment bundle root must be runtime_root/deployment-bundle"
+[[ "$(realpath "$AGENT_MEMORY_SOURCE_POLICY_FILE")" == "$runtime_root/SOURCE-POLICY.json" ]] \
+  || fail "source policy must be runtime_root/SOURCE-POLICY.json"
+[[ -f "$AGENT_MEMORY_SOURCE_POLICY_FILE" ]] \
+  || fail "production source policy file must exist"
+source_policy_mode="$(stat -f '%Lp' "$AGENT_MEMORY_SOURCE_POLICY_FILE" 2>/dev/null \
+  || stat -c '%a' "$AGENT_MEMORY_SOURCE_POLICY_FILE")"
+[[ "$source_policy_mode" == "600" || "$source_policy_mode" == "400" ]] \
+  || fail "production source policy must have mode 600 or 400"
+source_policy_report="$(python3 scripts/production_control.py render-source-inventory \
+  --inventory <(printf '{"schema_version":1,"namespace":"%s","sources":[],"direct_fact_origins":[],"vault":{}}\n' "$AGENT_MEMORY_NAMESPACE") \
+  --policy "$AGENT_MEMORY_SOURCE_POLICY_FILE" \
+  --namespace "$AGENT_MEMORY_NAMESPACE" --format json)"
+source_policy_sha256="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["source_policy_sha256"])' \
+  "$source_policy_report")"
 
 vault_mode="$(stat -f '%Lp' "$AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE" 2>/dev/null \
   || stat -c '%a' "$AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE")"
@@ -110,7 +134,9 @@ elif [[ "$MODE" == "existing" ]]; then
     || stat -c '%a' "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE")"
   [[ "$state_mode" == "600" || "$state_mode" == "400" ]] \
     || fail "predeploy state file must have mode 600 or 400"
-  python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" "$AGENT_MEMORY_VERSION" \
+  IFS=$'\t' read -r deployment_manifest_path deployment_manifest_sha256 \
+    state_source_policy_sha256 < <(
+    python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" "$AGENT_MEMORY_VERSION" \
     "$AGENT_MEMORY_REVISION" "$AGENT_MEMORY_COMPOSE_PROJECT" \
     "$AGENT_MEMORY_NAMESPACE" <<'PY'
 import json
@@ -136,7 +162,53 @@ if state.get("status") not in {
     "stopped",
 }:
     raise SystemExit("PREDEPLOY_PREFLIGHT_FAILED: invalid predeploy state status")
+print("\t".join((
+    str(state.get("deployment_manifest_path", "")),
+    str(state.get("deployment_manifest_sha256", "")),
+    str(state.get("source_policy_sha256", "")),
+)))
 PY
+  )
+  [[ -n "$deployment_manifest_path" && -n "$deployment_manifest_sha256" ]] \
+    || fail "existing deployment is not bound to an immutable deployment manifest"
+  deployment_images_file="$(mktemp)"
+  image_records=()
+  for service in api worker migrate; do
+    image="$AGENT_MEMORY_IMAGE_PREFIX-$service:$AGENT_MEMORY_VERSION"
+    image_id="$(docker image inspect "$image" --format '{{.Id}}')" \
+      || fail "missing deployment image: $image"
+    image_revision="$(docker image inspect "$image" \
+      --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" \
+      || fail "cannot inspect deployment image: $image"
+    image_records+=("$service" "$image_id" "$image_revision")
+  done
+  python3 - "$deployment_images_file" "${image_records[@]}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+values = sys.argv[2:]
+records = {
+    values[index]: {
+        "image_id": values[index + 1],
+        "oci_revision": values[index + 2],
+    }
+    for index in range(0, len(values), 3)
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(records, handle, sort_keys=True)
+    handle.write("\n")
+PY
+  python3 scripts/production_control.py verify-deployment-bundle \
+    --root "$ROOT" \
+    --manifest "$deployment_manifest_path" \
+    --manifest-sha256 "$deployment_manifest_sha256" \
+    --bundle-root "$AGENT_MEMORY_DEPLOYMENT_BUNDLE_ROOT" \
+    --revision "$AGENT_MEMORY_REVISION" \
+    --version "$AGENT_MEMORY_VERSION" \
+    --images "$deployment_images_file" >/dev/null
+  [[ "$source_policy_sha256" == "$state_source_policy_sha256" ]] \
+    || fail "source policy fingerprint differs from deployment state"
 fi
 
 python3 - "$AGENT_MEMORY_BACKEND_SUBNET" "$AGENT_MEMORY_EDGE_SUBNET" <<'PY'
