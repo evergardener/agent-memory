@@ -60,7 +60,7 @@ pass "worker-secret-isolation"
 
 ./.venv/bin/ruff check src integrations tests migrations
 PYTHONPATH=src PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-  ./.venv/bin/pytest -q tests --ignore=tests/integration
+  .venv/bin/python -m pytest -q tests --ignore=tests/integration
 pass "static-and-unit"
 
 automated_api_name="agent-memory-automated-test-api"
@@ -95,7 +95,7 @@ AGENT_MEMORY_SERVICE_TOKEN="$token" \
 AGENT_MEMORY_TEST_NAMESPACE="$automated_namespace" \
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 PYDANTIC_DISABLE_PLUGINS=__all__ \
-  ./.venv/bin/pytest -q -m integration
+  .venv/bin/python -m pytest -q -m integration
 pass "api-integration"
 
 AGENT_MEMORY_API_URL="http://127.0.0.1:${automated_api_port}" \

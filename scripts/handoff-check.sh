@@ -42,7 +42,8 @@ env UV_CACHE_DIR="${TMPDIR:-/tmp}/agent-memory-handoff-uv-cache" uv lock --check
 bash -n scripts/*.sh
 .venv/bin/ruff check src integrations tests migrations scripts/predeploy_host_check.py \
   scripts/production_control.py
-env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYDANTIC_DISABLE_PLUGINS=__all__ .venv/bin/pytest -q
+env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYDANTIC_DISABLE_PLUGINS=__all__ \
+  .venv/bin/python -m pytest -q
 npm --prefix frontend run check-build
 
 echo "{\"status\":\"PASS\",\"check\":\"cross_host_handoff\",\"revision\":\"$head_revision\",\"upstream\":\"$upstream\"}"
