@@ -67,6 +67,18 @@ def build_quality_report(
            ) duplicates""",
         (namespace_id, list(QUALITY_MEMORY_STATES)),
     ).fetchone()[0]
+    repeated_tool_event_groups, repeated_tool_event_copies = connection.execute(
+        """SELECT count(*),COALESCE(sum(turn_count - 1),0) FROM (
+             SELECT se.id,e.event_type,e.payload_hash,count(DISTINCT e.turn_id) AS turn_count
+             FROM evidence.events e
+             JOIN core.turns t ON t.id=e.turn_id
+             JOIN core.sessions se ON se.id=t.session_id
+             WHERE e.namespace_id=%s AND e.event_type IN ('tool_call','tool_result')
+             GROUP BY se.id,e.event_type,e.payload_hash
+             HAVING count(DISTINCT e.turn_id) > 1
+           ) repeated""",
+        (namespace_id,),
+    ).fetchone()
     trusted = list(trusted_tools)
     untrusted_tool_facts = connection.execute(
         """SELECT count(*) FROM (
@@ -155,6 +167,8 @@ def build_quality_report(
             "valid_entity_mentions": int(valid_mentions),
             "entity_mention_span_rate": rate(valid_mentions, total_mentions),
             "duplicate_fact_support": int(duplicate_fact_support),
+            "repeated_tool_event_groups": int(repeated_tool_event_groups),
+            "repeated_tool_event_copies": int(repeated_tool_event_copies),
             "raw_sensitive_facts": int(raw_sensitive_facts),
             "untrusted_tool_facts": int(untrusted_tool_facts),
             "disallowed_model_facts": int(disallowed_model_facts),

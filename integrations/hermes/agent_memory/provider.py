@@ -121,6 +121,24 @@ class AgentMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         return self._recall(query, intent="conversation", session_id=session_id)
 
+    @staticmethod
+    def _current_turn_messages(
+        messages: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        """Return only the suffix belonging to the most recent user turn.
+
+        Hermes passes the complete OpenAI-style conversation at turn completion.
+        Replaying every historical tool message on each sync amplifies evidence,
+        so only the messages after the final user message are eligible. A
+        user-less list is retained for compatibility with callers that already
+        provide a current-turn delta.
+        """
+        all_messages = messages or []
+        for index in range(len(all_messages) - 1, -1, -1):
+            if all_messages[index].get("role") == "user":
+                return all_messages[index + 1 :]
+        return all_messages
+
     def sync_turn(
         self,
         user_content: str,
@@ -134,7 +152,7 @@ class AgentMemoryProvider(MemoryProvider):
             {"type": "assistant_message", "sequence": 2, "content": assistant_content},
         ]
         sequence = 3
-        for message in messages or []:
+        for message in self._current_turn_messages(messages):
             for tool_call in message.get("tool_calls") or []:
                 function = tool_call.get("function") or {}
                 tool_name = str(function.get("name") or "unknown")
@@ -196,6 +214,34 @@ class AgentMemoryProvider(MemoryProvider):
                     "type": "object",
                     "properties": {"query": {"type": "string"}},
                     "required": ["query"],
+                },
+            },
+            {
+                "name": "agent_memory_browse",
+                "description": (
+                    "Browse recent evidence-linked memories without relying on "
+                    "semantic query matching."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "source_profile": {"type": "string"},
+                        "fact_type": {"type": "string"},
+                        "state": {
+                            "type": "string",
+                            "enum": ["candidate", "active", "dormant", "forgotten"],
+                        },
+                        "updated_after": {
+                            "type": "string",
+                            "description": "Optional ISO-8601 timestamp.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 50,
+                            "default": 10,
+                        },
+                    },
                 },
             },
             {
@@ -265,7 +311,35 @@ class AgentMemoryProvider(MemoryProvider):
     def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs: Any) -> str:
         if tool_name == "agent_memory_recall":
             context = self._recall(str(args["query"]), intent="explicit")
-            return json.dumps({"context": context}, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "context": context,
+                    "status": "matched" if context else "no_match",
+                    "hint": (
+                        None
+                        if context
+                        else "No recall-eligible match. Use agent_memory_browse "
+                        "to verify recent writes without semantic matching."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        if tool_name == "agent_memory_browse":
+            query = {
+                "shared_namespace": self.shared_namespace,
+                "source_profile": str(args.get("source_profile") or self.profile),
+                "limit": str(args.get("limit") or 10),
+            }
+            for key in ("fact_type", "state", "updated_after"):
+                if args.get(key):
+                    query[key] = str(args[key])
+            try:
+                result = self.client.get("/api/v1/memories", query)
+            except ApiResponseError as error:
+                return json.dumps({"error": error.code.lower()})
+            except ApiUnavailable:
+                return json.dumps({"error": "service_unavailable"})
+            return json.dumps(result, ensure_ascii=False)
         if tool_name == "agent_memory_trace_source":
             try:
                 result = self.client.get(

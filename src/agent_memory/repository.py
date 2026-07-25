@@ -20,6 +20,8 @@ from .schemas import (
     EvidenceTraceItem,
     GovernanceTraceItem,
     IngestTurnRequest,
+    MemoryBrowseItem,
+    MemoryBrowseResponse,
     MemoryTraceResponse,
     RecallItem,
     RecallRequest,
@@ -194,6 +196,39 @@ def _overlapping_deterministic_fact_ids(records: dict[UUID, dict]) -> set[UUID]:
     return suppressed
 
 
+def _duplicate_fact_ids(
+    records: dict[UUID, dict], scores: dict[UUID, float]
+) -> set[UUID]:
+    """Collapse exact repeated facts while retaining every supporting evidence ID."""
+    canonical_by_text: dict[tuple[str, str], UUID] = {}
+    suppressed: set[UUID] = set()
+    for memory_id in sorted(
+        records,
+        key=lambda item: (-scores.get(item, 0), str(item)),
+    ):
+        row = records[memory_id]
+        if row.get("kind") != "fact":
+            continue
+        key = (
+            str(row.get("source_profile") or ""),
+            " ".join(str(row.get("text_redacted") or "").split()).casefold(),
+        )
+        canonical_id = canonical_by_text.get(key)
+        if canonical_id is None:
+            canonical_by_text[key] = memory_id
+            continue
+        canonical = records[canonical_id]
+        canonical["source_ids"] = sorted(
+            {
+                *canonical.get("source_ids", ()),
+                *row.get("source_ids", ()),
+            },
+            key=str,
+        )
+        suppressed.add(memory_id)
+    return suppressed
+
+
 def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallItem], bool]:
     namespace_id = stable_uuid("namespace", request.context.shared_namespace)
     query_embedding = vector_literal(deterministic_embedding(request.query))
@@ -365,6 +400,7 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
     used_chars = 0
     truncated = False
     suppressed = _overlapping_deterministic_fact_ids(records)
+    suppressed.update(_duplicate_fact_ids(records, scores))
     for memory_id, score in sorted(scores.items(), key=lambda item: item[1], reverse=True):
         if memory_id in suppressed:
             continue
@@ -390,6 +426,86 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
         )
         used_chars += len(text)
     return items, truncated
+
+
+def browse_memories(
+    connection: Connection,
+    *,
+    namespace_key: str,
+    source_profile: str | None,
+    fact_type: str | None,
+    state: str | None,
+    updated_after,
+    limit: int,
+) -> MemoryBrowseResponse:
+    """List recent recall-eligible facts for deterministic write verification."""
+    namespace_id = stable_uuid("namespace", namespace_key)
+    filters = [
+        "f.namespace_id=%s",
+        "f.memory_state IN ('candidate','active','dormant','forgotten')",
+        "(f.valid_to IS NULL OR f.valid_to > now())",
+    ]
+    parameters: list[object] = [namespace_id]
+    if source_profile:
+        filters.append("f.source_profile=%s")
+        parameters.append(source_profile)
+    if fact_type:
+        filters.append("f.fact_type=%s")
+        parameters.append(fact_type)
+    if state:
+        filters.append("f.memory_state=%s")
+        parameters.append(state)
+    if updated_after:
+        filters.append("f.updated_at >= %s")
+        parameters.append(updated_after)
+    fetch_limit = min(200, max(limit * 4, limit + 1))
+    with connection.cursor(row_factory=dict_row) as cursor:
+        cursor.execute(
+            f"""SELECT f.id AS memory_id,f.statement,f.fact_type,
+                      f.memory_state AS state,f.source_profile,f.confidence,
+                      f.extraction_method,f.updated_at,
+                      array_remove(array_agg(DISTINCT fe.event_id),NULL) AS source_ids
+                 FROM memory.facts f
+                 LEFT JOIN memory.fact_evidence fe ON fe.fact_id=f.id
+                WHERE {' AND '.join(filters)}
+                GROUP BY f.id
+                ORDER BY f.updated_at DESC,f.id DESC
+                LIMIT %s""",
+            [*parameters, fetch_limit],
+        )
+        rows = cursor.fetchall()
+    items: list[MemoryBrowseItem] = []
+    item_by_text: dict[tuple[str, str], MemoryBrowseItem] = {}
+    truncated = len(rows) == fetch_limit
+    for row in rows:
+        statement = redact_text(row["statement"]).text
+        if not is_recallable_memory_content(statement):
+            continue
+        normalized = (row["source_profile"], " ".join(statement.split()).casefold())
+        if normalized in item_by_text:
+            existing = item_by_text[normalized]
+            existing.source_ids = sorted(
+                {*existing.source_ids, *row["source_ids"]},
+                key=str,
+            )
+            continue
+        if len(items) >= limit:
+            truncated = True
+            break
+        item = MemoryBrowseItem(
+            memory_id=row["memory_id"],
+            statement=statement,
+            fact_type=row["fact_type"],
+            state=row["state"],
+            source_profile=row["source_profile"],
+            confidence=float(row["confidence"]),
+            source_ids=row["source_ids"],
+            extraction_method=row["extraction_method"],
+            updated_at=row["updated_at"],
+        )
+        item_by_text[normalized] = item
+        items.append(item)
+    return MemoryBrowseResponse(items=items, truncated=truncated)
 
 
 def trace_memory(

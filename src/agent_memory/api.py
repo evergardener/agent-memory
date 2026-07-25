@@ -29,6 +29,7 @@ from .graph import GraphLens, load_graph
 from .ids import stable_uuid
 from .quality import build_quality_report
 from .repository import (
+    browse_memories,
     change_entity_fact_relation,
     correct_memory,
     ingest_turn,
@@ -59,6 +60,7 @@ from .schemas import (
     LayoutPreferenceRequest,
     MemoryActionRequest,
     MemoryActionResponse,
+    MemoryBrowseResponse,
     MemoryTraceResponse,
     PurgeRequest,
     PurgeResponse,
@@ -250,6 +252,33 @@ def recall_endpoint(request_body: RecallRequest, request: Request):
     return RecallResponse(
         items=items, truncated=truncated, correlation_id=request_body.context.correlation_id
     )
+
+
+@app.get(
+    "/api/v1/memories",
+    response_model=MemoryBrowseResponse,
+    dependencies=[Depends(require_api_access)],
+)
+def browse_memories_endpoint(
+    request: Request,
+    shared_namespace: str,
+    source_profile: str | None = Query(default=None, min_length=1, max_length=128),
+    fact_type: str | None = Query(default=None, min_length=1, max_length=64),
+    state: Literal["candidate", "active", "dormant", "forgotten"] | None = None,
+    updated_after: datetime | None = None,
+    limit: int = Query(default=10, ge=1, le=50),
+):
+    _check_namespace(shared_namespace)
+    with request.app.state.database.connection() as connection:
+        return browse_memories(
+            connection,
+            namespace_key=shared_namespace,
+            source_profile=source_profile,
+            fact_type=fact_type,
+            state=state,
+            updated_after=updated_after,
+            limit=limit,
+        )
 
 
 @app.get(

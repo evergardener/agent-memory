@@ -1,6 +1,6 @@
 # Agent Memory for Hermes
 
-Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。当前源码候选和生产 canary 均为 `1.0.0-rc.8`；生产运行 revision 为 `47a1506ae94a5a08fde6b4066f1daa24e2d27608`，状态为 `canary_active`，尚未晋级。系统支持 Hermes 多 profile 共享记忆空间与独立人格恒星、只读原始证据、事实/情节/长期脉络、三路召回、生命周期治理、确定性互动状态、整理报告、关系型星系和独立加密 Vault。生产 canary 对每个 profile/instance 单独验证来源和观察窗口，历史导入数据不能替代 live profile 门禁。
+Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。当前源码候选和生产 canary 均为 `1.0.0-rc.8`；生产运行 revision 为 `47a1506ae94a5a08fde6b4066f1daa24e2d27608`，状态为 `canary_active`，尚未晋级。源码已包含 `jiuyue` 试运行发现的当前回合采集、中文偏好召回、问句分流和最近记忆浏览修复，但该修复尚未部署到生产 revision。系统支持 Hermes 多 profile 共享记忆空间与独立人格恒星、只读原始证据、事实/情节/长期脉络、三路召回、生命周期治理、确定性互动状态、整理报告、关系型星系和独立加密 Vault。生产 canary 对每个 profile/instance 单独验证来源和观察窗口，历史导入数据不能替代 live profile 门禁。
 
 这是供生产 canary 验证的候选版本，不应成为真实凭据或重要数据的唯一副本。需求与实现边界见 [`docs/V1.0-项目需求文档.md`](docs/V1.0-项目需求文档.md)，逐项验证状态见 [`docs/V1.0-release验收矩阵.md`](docs/V1.0-release验收矩阵.md)。当前仅 `jiuyue:production-jiuyue` 是 live canary，`qishuo:hermes-session-export` 是显式保留的历史导入；模型保持关闭。新增来源、模型启用、容器更新或生产晋级仍须分别批准。
 
@@ -52,7 +52,7 @@ python3 scripts/hermes-plugin.py upgrade --hermes-home "${HERMES_HOME:-$HOME/.he
 python3 scripts/hermes-plugin.py uninstall --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
 ```
 
-脚本只覆盖带 `.agent-memory-managed` 标记的插件目录，不会删除同名非托管目录。完整说明见 [`integrations/hermes/README.md`](integrations/hermes/README.md)。
+脚本只覆盖带 `.agent-memory-managed` 标记的插件目录，不会删除同名非托管目录。完整说明见 [`integrations/hermes/README.md`](integrations/hermes/README.md)。显式 `agent_memory_recall` 用于按主题检索；验证刚写入的内容应使用 `agent_memory_browse`，它默认浏览当前 profile 的最近记忆，不依赖语义匹配。
 
 ### 导入既有 Hermes 对话
 
@@ -190,7 +190,10 @@ bash scripts/production-backup.sh "$runtime_root/production.env"
 
 - `migrate` 退出非零：运行 `docker compose --env-file .env logs migrate`，不要手工把 Alembic 版本标成最新。
 - API 未就绪：先检查 `postgres` health、`migrate` exit code，再看 `api` 日志；`docker compose up -d` 不代表 healthcheck 已通过。
-- Hermes 回合正常但无记忆：确认 Provider token/namespace、API 地址和 worker 是否在线；API 故障按设计 fail-soft。
+- Hermes 回合正常但无记忆：先用 `agent_memory_browse` 验证最近事实，再用
+  `agent_memory_recall` 检查主题召回；若浏览存在而召回为空，应检查分类/召回质量，
+  不要直接判定写入失败。随后确认 Provider token/namespace、API 地址和 worker 是否在线；
+  API 故障按设计 fail-soft。
 - worker 任务积压：检查 `worker` 日志与 `ops.jobs.last_error_code`；过期租约会自动取回。
 - Vault 无法解密：确认恢复的是与数据库同一时期的 `vault_root_key`，不要创建新 key 覆盖旧 key。
 - 星图登录失败：重新运行初始化不会覆盖现有 `.env`；需要按运行文档显式生成并替换密码 hash。

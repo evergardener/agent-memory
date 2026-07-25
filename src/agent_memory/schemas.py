@@ -83,6 +83,23 @@ class RecallResponse(BaseModel):
     correlation_id: UUID
 
 
+class MemoryBrowseItem(BaseModel):
+    memory_id: UUID
+    statement: str
+    fact_type: str
+    state: str
+    source_profile: str
+    confidence: float
+    source_ids: list[UUID]
+    extraction_method: str
+    updated_at: datetime
+
+
+class MemoryBrowseResponse(BaseModel):
+    items: list[MemoryBrowseItem]
+    truncated: bool
+
+
 class MemoryActionRequest(BaseModel):
     context: ProviderContext
     reason: str = Field(min_length=1, max_length=2000)

@@ -50,6 +50,29 @@ def test_recall_question_keeps_evidence_only():
     assert not result.create_fact
 
 
+def test_unpunctuated_chinese_questions_keep_evidence_only():
+    for content in (
+        "那么记忆写入是否正常",
+        "现在能从记忆层读取到写入的记忆吗",
+        "或者你告诉我在哪里能查到",
+        "星图的管理密码是多少",
+    ):
+        result = classify_event("user_message", content, NOW)
+        assert result.fact_type == "evidence_only"
+        assert not result.create_fact
+
+
+def test_user_preference_directive_is_long_term_and_recallable():
+    content = (
+        "不要使用‘如果 xxx 想，xxx’的句式，"
+        "比如你可以直接说‘下一步我可以继续帮着确认 xxx’"
+    )
+    result = classify_event("user_message", content, NOW)
+    assert (result.fact_type, result.memory_state) == ("long_term", "active")
+    assert result.create_fact
+    assert is_recallable_memory_content(content)
+
+
 def test_retrieval_tool_result_keeps_evidence_only():
     result = classify_event(
         "tool_result",

@@ -623,6 +623,52 @@ def test_review_queue_is_paginated_filterable_and_namespace_scoped():
     assert invalid.status_code == 422
 
 
+def test_browse_verifies_recent_preference_and_excludes_question_facts():
+    profile = f"browse-{RUN_ID}"
+    marker = f"BrowsePreference-{RUN_ID}"
+    preference = f"不要使用 {marker} 这种句式"
+    question = f"那么 {marker} 是否写入正常"
+    response = post(
+        "/api/v1/ingest/turn",
+        {
+            "context": context(profile, f"browse-turn-{RUN_ID}"),
+            "idempotency_key": f"browse-turn-{RUN_ID}",
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "events": [
+                {"type": "user_message", "sequence": 1, "content": preference},
+                {"type": "user_message", "sequence": 2, "content": question},
+            ],
+        },
+    )
+    response.raise_for_status()
+    parameters = {
+        "shared_namespace": TEST_NAMESPACE,
+        "source_profile": profile,
+        "state": "active",
+        "limit": 10,
+    }
+    for _ in range(40):
+        browsed = get("/api/v1/memories", parameters)
+        browsed.raise_for_status()
+        if any(item["statement"] == preference for item in browsed.json()["items"]):
+            break
+        time.sleep(0.25)
+    else:
+        pytest.fail("recent preference did not become browseable")
+    payload = browsed.json()
+    assert all(item["statement"] != question for item in payload["items"])
+    assert all(item["source_profile"] == profile for item in payload["items"])
+    assert any(item["source_ids"] for item in payload["items"])
+    recalled = recall(marker, profile=profile, intent="explicit")
+    assert any(item["text"] == preference for item in recalled["items"])
+
+    denied = get(
+        "/api/v1/memories",
+        {"shared_namespace": "hermes:wrong", "limit": 10},
+    )
+    assert denied.status_code == 403
+
+
 def test_concurrent_duplicate_turn_has_one_winner():
     marker = f"concurrent-{RUN_ID}"
     payload = {

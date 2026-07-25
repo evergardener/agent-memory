@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- 修复真实 `jiuyue` 试运行发现的整段会话工具历史重复回灌：Provider 只采集最后一个用户回合之后的工具调用与结果，重复回合仍由稳定 turn idempotency key 拒绝。
+- 修复中文用户约束被“指令前缀”误挡在召回出口的问题；“不要使用某句式”等偏好进入长期事实并可召回，而“那么……是否”“能否”“在哪里”“多少”等无标点问句只保留为证据。
+- 新增 service-token/UI-session 共用的只读 `GET /api/v1/memories` 和 Hermes `agent_memory_browse`，可按 profile、类型、状态、更新时间浏览最近记忆，不再用语义召回来猜测写入是否成功；空显式召回返回 `no_match` 和浏览提示。
+- 召回与浏览对同 profile 完全同文事实合并展示并保留全部 evidence IDs；质量报告新增跨 turn 重复工具 payload 分组和副本计数，用于审计既有重复证据，不修改只读原始 evidence。
 - 将已部署的 rc.8 生产边界实现与 `main` 的 CI 修复收敛，更新 README、交接、阶段计划和验收状态；此源码收敛不重启生产容器、不修改 Hermes profile 或生产数据。
 - 记录真实 `jiuyue:production-jiuyue` canary 已运行于 `47a1506…`，模型关闭、0 failed jobs、尚无晋级记录；72 小时观察和覆盖新增 events 的恢复验证备份仍是晋级门禁。
 - 准备 `1.0.0-rc.8`：生产 canary 从单一全局计数升级为显式 source policy；每个 live profile/instance 必须以自身 evidence 通过门禁，历史导入来源可保留但不能替代 live source。

@@ -27,6 +27,9 @@ class CapturingClient:
         self.posts.append((path, payload))
         return {}
 
+    def get(self, path: str, query: dict) -> dict:
+        return {"path": path, "query": query, "items": []}
+
 
 class LiveHermesProviderTests(unittest.TestCase):
     def test_internal_memory_tool_results_are_not_reingested(self) -> None:
@@ -38,6 +41,7 @@ class LiveHermesProviderTests(unittest.TestCase):
             "trace the source",
             "The source is available.",
             messages=[
+                {"role": "user", "content": "trace the source"},
                 {
                     "role": "assistant",
                     "tool_calls": [
@@ -69,6 +73,75 @@ class LiveHermesProviderTests(unittest.TestCase):
         self.assertEqual([event["tool_name"] for event in tool_events], ["health_probe"] * 2)
         self.assertNotIn("redacted_payload", json.dumps(events))
 
+    def test_sync_turn_only_ingests_tools_after_latest_user_message(self) -> None:
+        client = CapturingClient()
+        provider = AgentMemoryProvider(client=client)
+        provider.initialize("session-1", agent_identity="jiuyue")
+        provider.on_turn_start(2, "new request")
+        provider.sync_turn(
+            "new request",
+            "done",
+            messages=[
+                {"role": "user", "content": "old request"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "old_probe",
+                                "arguments": '{"target":"old"}',
+                            }
+                        }
+                    ],
+                },
+                {"role": "tool", "name": "old_probe", "content": "old result"},
+                {"role": "assistant", "content": "old answer"},
+                {"role": "user", "content": "new request"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "new_probe",
+                                "arguments": '{"target":"new"}',
+                            }
+                        }
+                    ],
+                },
+                {"role": "tool", "name": "new_probe", "content": "new result"},
+                {"role": "assistant", "content": "done"},
+            ],
+        )
+
+        events = client.posts[0][1]["events"]
+        assert [event.get("tool_name") for event in events[2:]] == [
+            "new_probe",
+            "new_probe",
+        ]
+
+    def test_browse_defaults_to_current_profile(self) -> None:
+        client = CapturingClient()
+        provider = AgentMemoryProvider(client=client)
+        provider.initialize("session-1", agent_identity="jiuyue")
+
+        result = json.loads(provider.handle_tool_call("agent_memory_browse", {"limit": 5}))
+
+        self.assertEqual(result["path"], "/api/v1/memories")
+        self.assertEqual(result["query"]["source_profile"], "jiuyue")
+        self.assertEqual(result["query"]["limit"], "5")
+
+    def test_empty_explicit_recall_explains_how_to_verify_recent_writes(self) -> None:
+        client = CapturingClient()
+        provider = AgentMemoryProvider(client=client)
+        provider.initialize("session-1", agent_identity="jiuyue")
+
+        result = json.loads(
+            provider.handle_tool_call("agent_memory_recall", {"query": "missing"})
+        )
+
+        self.assertEqual(result["status"], "no_match")
+        self.assertIn("agent_memory_browse", result["hint"])
+
     @unittest.skipUnless(
         os.getenv("AGENT_MEMORY_LIVE_PROVIDER_TESTS") == "1",
         "set AGENT_MEMORY_LIVE_PROVIDER_TESTS=1 against the isolated test API",
@@ -95,6 +168,10 @@ class LiveHermesProviderTests(unittest.TestCase):
             session_id=f"personal-{run_id}",
             messages=[
                 {
+                    "role": "user",
+                    "content": f"project:Nebula-{run_id} uses service:relay-{run_id}.",
+                },
+                {
                     "role": "tool",
                     "name": "health_probe",
                     "content": f"service:relay-{run_id} health passed",
@@ -114,6 +191,15 @@ class LiveHermesProviderTests(unittest.TestCase):
             self.fail("formal provider did not recall persisted cross-profile evidence")
         self.assertIn("profile: personal", recalled)
         self.assertIn("evidence_ids:", recalled)
+        browsed = json.loads(
+            personal.handle_tool_call(
+                "agent_memory_browse",
+                {"source_profile": "personal", "fact_type": "stage", "limit": 10},
+            )
+        )
+        self.assertTrue(
+            any(f"Nebula-{run_id}" in item["statement"] for item in browsed["items"])
+        )
 
         memory_match = re.search(r"memory: ([0-9a-f-]+)", recalled)
         self.assertIsNotNone(memory_match)

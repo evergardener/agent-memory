@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from agent_memory.repository import _overlapping_deterministic_fact_ids
+from agent_memory.repository import _duplicate_fact_ids, _overlapping_deterministic_fact_ids
 
 EVENT_A = UUID("00000000-0000-0000-0000-000000000a01")
 EVENT_B = UUID("00000000-0000-0000-0000-000000000b01")
@@ -40,3 +40,15 @@ def test_atomic_quote_does_not_suppress_other_evidence_or_manual_correction() ->
     }
 
     assert _overlapping_deterministic_fact_ids(records) == set()
+
+
+def test_exact_duplicate_facts_merge_evidence_without_score_amplification() -> None:
+    duplicate = UUID("00000000-0000-0000-0000-000000000104")
+    records = {
+        PARENT: fact("deterministic-v1", "服务 Aurora 状态正常。", [EVENT_A]),
+        duplicate: fact("deterministic-v1", " 服务 Aurora 状态正常。 ", [EVENT_B]),
+    }
+    scores = {PARENT: 0.02, duplicate: 0.01}
+
+    assert _duplicate_fact_ids(records, scores) == {duplicate}
+    assert records[PARENT]["source_ids"] == [EVENT_A, EVENT_B]

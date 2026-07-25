@@ -11,7 +11,16 @@ STAGE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 LONG_TERM_PATTERN = re.compile(
-    r"(?:偏好|喜欢|不喜欢|决定|内网|部署在|用户信息|长期|prefer|decision|always|never)",
+    r"(?:偏好|喜欢|不喜欢|决定|内网|部署在|用户信息|长期|"
+    r"prefer|decision|always|never|don't|do\s+not)",
+    re.IGNORECASE,
+)
+PREFERENCE_DIRECTIVE_PATTERN = re.compile(
+    r"^(?:(?:请|以后|之后|回答时|回复时|和我(?:对话|交流)时)\s*)?"
+    r"(?:不要|禁止|别|避免|允许|必须).{0,24}"
+    r"(?:使用|采用|说|写|称呼|提醒|推荐|询问|删除|保存|同步|修改)|"
+    r"^(?:please\s+)?(?:don't|do\s+not|never|always|only).{0,24}"
+    r"(?:use|say|write|call|remind|recommend|ask|delete|save|sync|change)",
     re.IGNORECASE,
 )
 LOW_VALUE_PATTERN = re.compile(
@@ -24,7 +33,10 @@ NO_MEMORY_PATTERN = re.compile(
 )
 QUERY_ONLY_PATTERN = re.compile(
     r"(?:[?？]|^[>\s]*(?:请|告诉我|帮我|查询|搜索|回忆|是否|哪些|什么|如何|为什么|"
-    r"please|tell\s+me|show\s+me|what|which|how|why|where|when))",
+    r"please|tell\s+me|show\s+me|what|which|how|why|where|when)|"
+    r"(?:是否|能否|可否|有没有|是不是).{0,80}$|"
+    r"(?:哪里|在哪(?:里)?|多少|为何|为什么|怎么|如何).{0,80}$|"
+    r"(?:吗|么|呢)[。.!！\s]*$)",
     re.IGNORECASE,
 )
 DIRECTIVE_PREFIX_PATTERN = re.compile(
@@ -63,8 +75,12 @@ def is_recallable_memory_content(content: str) -> bool:
         stripped
         and len(content) <= 2000
         and not stripped.startswith(("{", "["))
+        and not NO_MEMORY_PATTERN.search(content)
         and not QUERY_ONLY_PATTERN.search(content)
-        and not DIRECTIVE_PREFIX_PATTERN.search(stripped)
+        and (
+            not DIRECTIVE_PREFIX_PATTERN.search(stripped)
+            or PREFERENCE_DIRECTIVE_PATTERN.search(stripped)
+        )
         and not STRUCTURED_FIELD_PATTERN.search(stripped)
         and not SCALAR_ONLY_PATTERN.fullmatch(stripped.strip())
         and not COMMAND_ONLY_PATTERN.fullmatch(stripped.strip())
@@ -99,6 +115,8 @@ def classify_event(
         return Classification("evidence_only", "candidate", 1, create_fact=False)
     if QUERY_ONLY_PATTERN.search(content):
         return Classification("evidence_only", "candidate", 1, create_fact=False)
+    if PREFERENCE_DIRECTIVE_PATTERN.search(content):
+        return Classification("long_term", "active", 0.85)
     if event_type == "tool_result" and (
         EVIDENCE_ONLY_TOOL_PATTERN.match(tool_name)
         or len(content) > 2000
