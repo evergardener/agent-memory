@@ -45,6 +45,9 @@ def test_published_images_are_independently_verified_by_the_complete_gate() -> N
     assert 'grep -F "linux/arm64"' in verify
     assert "AGENT_MEMORY_SKIP_BUILD=1" in verify
     assert 'bash scripts/release-check.sh "$runtime_root/release.env"' in verify
+    assert "Published-image release gate failure" in verify
+    assert 'tail -n 80 "$log_file"' in verify
+    assert 'echo "::error title=published-image release gate failed::$message"' in verify
     assert "if: always()" in verify
     assert "down --volumes --remove-orphans" in verify
 
