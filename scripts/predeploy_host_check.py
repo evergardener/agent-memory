@@ -90,11 +90,11 @@ def main() -> None:
     parser.add_argument("--edge", required=True)
     parser.add_argument("--port", required=True, type=int)
     parser.add_argument("--project", required=True)
-    parser.add_argument("--mode", choices=("new", "existing"), required=True)
+    parser.add_argument("--mode", choices=("new", "existing", "upgrade"), required=True)
     arguments = parser.parse_args()
 
     ignored = set()
-    if arguments.mode == "existing":
+    if arguments.mode in {"existing", "upgrade"}:
         ignored = {
             f"{arguments.project}_backend",
             f"{arguments.project}_edge",

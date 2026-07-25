@@ -131,7 +131,7 @@ for service in api worker migrate; do
     || { echo "predeploy $service image revision label mismatch" >&2; exit 1; }
 done
 
-expected_head="$(.venv/bin/alembic heads | awk 'NR==1 {print $1}')"
+expected_head="$(.venv/bin/python -m alembic heads | awk 'NR==1 {print $1}')"
 database_head="$("${COMPOSE[@]}" exec -T postgres psql -U agent_memory -d agent_memory -qAtc \
   'SELECT version_num FROM alembic_version;')"
 [[ "$database_head" == "$expected_head" ]] \

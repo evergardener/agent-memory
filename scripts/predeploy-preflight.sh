@@ -17,8 +17,9 @@ fail() {
   exit 1
 }
 
-[[ "$MODE" == "new" || "$MODE" == "bootstrap" || "$MODE" == "existing" ]] \
-  || fail "mode must be new, bootstrap, or existing"
+[[ "$MODE" == "new" || "$MODE" == "bootstrap" || "$MODE" == "existing" \
+   || "$MODE" == "upgrade" ]] \
+  || fail "mode must be new, bootstrap, existing, or upgrade"
 [[ -f "$ENV_FILE" ]] || fail "missing predeploy env: $ENV_FILE"
 env_mode="$(stat -c '%a' "$ENV_FILE" 2>/dev/null || stat -f '%Lp' "$ENV_FILE")"
 [[ "$env_mode" == "600" || "$env_mode" == "400" ]] \
@@ -128,7 +129,7 @@ if [[ "$MODE" == "new" ]]; then
     || fail "new predeploy data directory must be empty"
   [[ ! -e "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" ]] \
     || fail "new predeploy state file must not already exist"
-elif [[ "$MODE" == "existing" ]]; then
+elif [[ "$MODE" == "existing" || "$MODE" == "upgrade" ]]; then
   [[ -f "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" ]] \
     || fail "existing deployment requires DEPLOYMENT-STATE.json"
   state_mode="$(stat -c '%a' "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" 2>/dev/null \
@@ -136,21 +137,23 @@ elif [[ "$MODE" == "existing" ]]; then
   [[ "$state_mode" == "600" || "$state_mode" == "400" ]] \
     || fail "predeploy state file must have mode 600 or 400"
   IFS=$'\t' read -r deployment_manifest_path deployment_manifest_sha256 \
-    state_source_policy_sha256 < <(
+    state_source_policy_sha256 state_revision state_version \
+    last_backup_path last_backup_manifest_sha256 last_backup_verified_at < <(
     python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" "$AGENT_MEMORY_VERSION" \
     "$AGENT_MEMORY_REVISION" "$AGENT_MEMORY_COMPOSE_PROJECT" \
-    "$AGENT_MEMORY_NAMESPACE" <<'PY'
+    "$AGENT_MEMORY_NAMESPACE" "$MODE" <<'PY'
 import json
 import sys
 
 with open(sys.argv[1], encoding="utf-8") as handle:
     state = json.load(handle)
 expected = {
-    "version": sys.argv[2],
-    "revision": sys.argv[3],
     "compose_project": sys.argv[4],
     "namespace": sys.argv[5],
 }
+if sys.argv[6] == "existing":
+    expected["version"] = sys.argv[2]
+    expected["revision"] = sys.argv[3]
 for key, value in expected.items():
     if state.get(key) != value:
         raise SystemExit(f"PREDEPLOY_PREFLIGHT_FAILED: state {key} mismatch")
@@ -167,23 +170,29 @@ print("\t".join((
     str(state.get("deployment_manifest_path", "")),
     str(state.get("deployment_manifest_sha256", "")),
     str(state.get("source_policy_sha256", "")),
+    str(state.get("revision", "")),
+    str(state.get("version", "")),
+    str(state.get("last_backup_path", "")),
+    str(state.get("last_backup_manifest_sha256", "")),
+    str(state.get("last_backup_verified_at", "")),
 )))
 PY
   )
   [[ -n "$deployment_manifest_path" && -n "$deployment_manifest_sha256" ]] \
     || fail "existing deployment is not bound to an immutable deployment manifest"
-  deployment_images_file="$(mktemp)"
-  image_records=()
-  for service in api worker migrate; do
-    image="$AGENT_MEMORY_IMAGE_PREFIX-$service:$AGENT_MEMORY_IMAGE_TAG"
-    image_id="$(docker image inspect "$image" --format '{{.Id}}')" \
-      || fail "missing deployment image: $image"
-    image_revision="$(docker image inspect "$image" \
-      --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" \
-      || fail "cannot inspect deployment image: $image"
-    image_records+=("$service" "$image_id" "$image_revision")
-  done
-  python3 - "$deployment_images_file" "${image_records[@]}" <<'PY'
+  if [[ "$MODE" == "existing" ]]; then
+    deployment_images_file="$(mktemp)"
+    image_records=()
+    for service in api worker migrate; do
+      image="$AGENT_MEMORY_IMAGE_PREFIX-$service:$AGENT_MEMORY_IMAGE_TAG"
+      image_id="$(docker image inspect "$image" --format '{{.Id}}')" \
+        || fail "missing deployment image: $image"
+      image_revision="$(docker image inspect "$image" \
+        --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" \
+        || fail "cannot inspect deployment image: $image"
+      image_records+=("$service" "$image_id" "$image_revision")
+    done
+    python3 - "$deployment_images_file" "${image_records[@]}" <<'PY'
 import json
 import sys
 
@@ -200,14 +209,29 @@ with open(path, "w", encoding="utf-8") as handle:
     json.dump(records, handle, sort_keys=True)
     handle.write("\n")
 PY
-  python3 scripts/production_control.py verify-deployment-bundle \
-    --root "$ROOT" \
-    --manifest "$deployment_manifest_path" \
-    --manifest-sha256 "$deployment_manifest_sha256" \
-    --bundle-root "$AGENT_MEMORY_DEPLOYMENT_BUNDLE_ROOT" \
-    --revision "$AGENT_MEMORY_REVISION" \
-    --version "$AGENT_MEMORY_VERSION" \
-    --images "$deployment_images_file" >/dev/null
+    python3 scripts/production_control.py verify-deployment-bundle \
+      --root "$ROOT" \
+      --manifest "$deployment_manifest_path" \
+      --manifest-sha256 "$deployment_manifest_sha256" \
+      --bundle-root "$AGENT_MEMORY_DEPLOYMENT_BUNDLE_ROOT" \
+      --revision "$AGENT_MEMORY_REVISION" \
+      --version "$AGENT_MEMORY_VERSION" \
+      --images "$deployment_images_file" >/dev/null
+  else
+    [[ "$state_revision" =~ ^[0-9a-f]{40}$ && -n "$state_version" ]] \
+      || fail "upgrade source deployment identity is invalid"
+    [[ -n "$last_backup_path" && -d "$last_backup_path" \
+       && -n "$last_backup_manifest_sha256" && -n "$last_backup_verified_at" ]] \
+      || fail "upgrade requires a restore-verified production backup"
+    deployment_bundle_path="$(dirname "$deployment_manifest_path")"
+    python3 scripts/production_control.py verify-deployment-bundle \
+      --root "$deployment_bundle_path" \
+      --manifest "$deployment_manifest_path" \
+      --manifest-sha256 "$deployment_manifest_sha256" \
+      --bundle-root "$AGENT_MEMORY_DEPLOYMENT_BUNDLE_ROOT" \
+      --revision "$state_revision" \
+      --version "$state_version" >/dev/null
+  fi
   [[ "$source_policy_sha256" == "$state_source_policy_sha256" ]] \
     || fail "source policy fingerprint differs from deployment state"
 fi
@@ -255,7 +279,7 @@ done
   || fail "predeploy env must not persist a plaintext UI test password"
 
 if [[ "${AGENT_MEMORY_MODEL_ENABLED:-false}" == "true" ]]; then
-  [[ "$MODE" == "existing" ]] \
+  [[ "$MODE" == "existing" || "$MODE" == "upgrade" ]] \
     || fail "model worker may only be enabled after the initial empty production Gate"
   [[ -n "${AGENT_MEMORY_MODEL_NAME:-}" && -n "${AGENT_MEMORY_MODEL_API_BASE:-}" ]] \
     || fail "enabled model requires name and API base"

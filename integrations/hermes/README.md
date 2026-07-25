@@ -27,18 +27,50 @@ profile，支持 `source_profile`、`fact_type`、`state`、`updated_after` 和 
 
 ## 安装与卸载
 
-先启动 Agent Memory，再安装到用户插件目录：
+先启动 Agent Memory，再按实际加载范围安装。对于 `jiuyue` 这类 Hermes profile，
+插件必须安装到 profile 自己的插件目录：
 
 ```bash
-python3 scripts/hermes-plugin.py install --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
-hermes memory setup agent_memory
+python3 scripts/hermes-plugin.py install \
+  --hermes-home "${HERMES_HOME:-$HOME/.hermes}" \
+  --profile jiuyue
+hermes -p jiuyue memory setup agent_memory
 ```
+
+`memory setup` 只在首次配置 Provider 时执行。日常升级使用：
+
+```bash
+python3 scripts/hermes-plugin.py upgrade \
+  --hermes-home "${HERMES_HOME:-$HOME/.hermes}" \
+  --profile jiuyue
+```
+
+升级是文件替换，不会热更新已运行的 Agent。完成后退出旧 Agent 进程并新开
+`jiuyue` session；启动日志应显示 Provider 已激活，新版应包含
+`agent_memory_browse`。不要只在旧 session 中重复查询来判断升级是否生效。
+
+不传 `--profile` 时才安装到 `$HERMES_HOME/plugins/agent_memory` 全局目录。全局目录和
+profile 目录若同时存在，以 Hermes 实际加载日志为准；不要把全局安装成功误认为指定
+profile 已更新。
 
 脚本只会升级带 `.agent-memory-managed` 标记的目录；遇到同名非托管目录会拒绝覆盖。卸载同样只删除该托管目录，不自动改写 Hermes 其他配置：
 
 ```bash
-python3 scripts/hermes-plugin.py uninstall --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
+python3 scripts/hermes-plugin.py uninstall \
+  --hermes-home "${HERMES_HOME:-$HOME/.hermes}" \
+  --profile jiuyue
 ```
+
+升级后按以下顺序验收：
+
+1. `agent_memory_current_state`：确认 API 可用且 namespace/profile 正确；
+2. 写入一条不含敏感信息、可明确识别的长期偏好；
+3. `agent_memory_browse`：先确认最近写入已经投影，不依赖语义匹配；
+4. `agent_memory_recall`：再以同义主题查询，确认语义召回；
+5. `agent_memory_trace_source`：抽查 evidence 可追溯。
+
+空 `recall` 只表示无召回资格的匹配，不能单独证明写入失败；先用 `browse` 区分
+“没有写入/尚未投影”和“已写入但语义未命中”。
 
 ## 真实 Hermes 源码测试
 

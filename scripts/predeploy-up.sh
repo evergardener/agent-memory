@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_FILE="${1:?usage: production-up.sh ENV_FILE [--existing]}"
+ENV_FILE="${1:?usage: production-up.sh ENV_FILE [--existing|--upgrade]}"
 MODE="new"
 if [[ "${2:-}" == "--existing" ]]; then
   MODE="existing"
+elif [[ "${2:-}" == "--upgrade" ]]; then
+  MODE="upgrade"
 elif [[ -n "${2:-}" ]]; then
   echo "unknown option: $2" >&2
   exit 1
@@ -57,6 +59,7 @@ except FileNotFoundError:
     state = {}
 created_at = state.get("created_at") or datetime.now(UTC).isoformat()
 resume_status = state.get("previous_status") if state.get("status") == "stopped" else state.get("status")
+previous_revision = state.get("revision")
 state.update({
     "status": "initializing",
     "created_at": created_at,
@@ -69,6 +72,8 @@ state.update({
     "model_enabled": model_enabled == "true",
     "resume_status": resume_status,
 })
+if previous_revision and previous_revision != revision:
+    state["previous_revision"] = previous_revision
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(state, handle, ensure_ascii=False, indent=2, sort_keys=True)
     handle.write("\n")
@@ -95,9 +100,7 @@ fi
 "${COMPOSE[@]}" up -d --no-build "${services[@]}"
 
 verify_data_mode="empty"
-if [[ "$MODE" == "existing" ]]; then
-  verify_data_mode="runtime"
-fi
+[[ "$MODE" == "new" ]] || verify_data_mode="runtime"
 bash scripts/predeploy-verify.sh "$ENV_FILE" "$verify_data_mode" bootstrap
 
 api_image_id="$(docker image inspect \
@@ -124,7 +127,7 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 deployment_manifest_path=""
 deployment_manifest_sha256=""
-if [[ "$MODE" == "new" ]]; then
+if [[ "$MODE" == "new" || "$MODE" == "upgrade" ]]; then
   bundle_result="$(python3 scripts/production_control.py create-deployment-bundle \
     --root "$ROOT" \
     --bundle-root "$AGENT_MEMORY_DEPLOYMENT_BUNDLE_ROOT" \
@@ -162,7 +165,7 @@ from datetime import UTC, datetime
 with open(path, encoding="utf-8") as handle:
     state = json.load(handle)
 status = "ready_for_canary"
-if mode == "existing" and state.get("resume_status") in {
+if mode in {"existing", "upgrade"} and state.get("resume_status") in {
     "ready_for_canary",
     "canary_config_prepared",
     "canary_active",

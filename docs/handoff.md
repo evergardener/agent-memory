@@ -4,9 +4,9 @@
 
 ## 1. 一句话状态
 
-V1 核心能力、阶段 C 关系星系、阶段 E0 展示身份和 rc.8 生产边界已完成。真实生产当前运行 `1.0.0-rc.8` / `47a1506ae94a5a08fde6b4066f1daa24e2d27608`，状态为 `canary_active`；`jiuyue:production-jiuyue` 正在持续写入，模型关闭，尚未生成晋级记录。2026-07-25 真实复测确认写入链路在线，但生产 Provider 存在累计工具历史重复回灌，中文偏好存在“已成事实但召回出口过滤”的缺陷；生产晋级因此阻断。
+V1 核心能力、阶段 C 关系星系、阶段 E0 展示身份和 rc.8 生产边界已完成。真实生产当前运行 `1.0.0-rc.8` / `e05a492b7ba5e225e9eadcaca0fc63018f6d6600` 的 GHCR 精确 SHA 镜像，状态为 `canary_active`；`jiuyue:production-jiuyue` 正在持续写入，模型关闭，尚未生成晋级记录。2026-07-25 写入/召回缺陷修复已部署，`jiuyue` profile Provider 已升级并由新 session 注册 7 个工具；`browse` 实际返回最近记录。
 
-当前源码修复当前回合切分、中文偏好/问句判定、最近记忆浏览、同文召回去重和重复工具事件质量指标；它不会重启生产容器、修改 Hermes profile 或写入生产数据。新 Git SHA 与运行 revision 不同，必须通过完整源码 Gate，并在单独批准后才能更新生产。
+源码包含当前回合切分、中文偏好/问句判定、最近记忆浏览、同文召回去重和重复工具事件质量指标。后续又修复 profile 级 Provider 升级文档、可重定位 Alembic 调用及 production `--upgrade` 绑定流程；这些后续运维改动仍需按新 Git SHA 经过 CI/GHCR Gate 后才能更新生产。
 
 当前源码还新增质量门禁后的 GHCR 多架构发布与生产 pull-only 链路：三个应用镜像使用
 `sha-<full revision>`，包含 SBOM/provenance/attestation；生产预检拒绝 `main/latest`。
@@ -38,19 +38,19 @@ Vault key UID 映射问题已在隔离 Gate 内修复；生产应用仍为固定
 - 阶段 C 功能提交：`935faf8 feat: complete phase C relation galaxies`；
 - 阶段 C 验收记录：`02656de docs: record phase C acceptance`；
 - `VERSION` / Python package：`1.0.0-rc.8` / `1.0.0rc8`；
-- 生产已部署 rc.8 revision `47a1506…`；源码正在收敛回主线，尚未打正式 tag 或晋级 V1.0；
+- 生产已部署 rc.8 revision `e05a492…`；尚未打正式 tag 或晋级 V1.0；
 - 工作区中的 `data/`、`backups/`、`secrets/`、`release-artifacts/` 全部是 Git 忽略的本地资产。
 
 ## 4. 当前运行状态
 
-2026-07-24 只读生产核验（计数会随新会话增长；接手时重新核对）：
+2026-07-25 更新后生产核验（计数会随新会话增长；接手时重新核对）：
 
 | 入口/组件 | 状态 | 说明 |
 | --- | --- | --- |
-| `127.0.0.1:7810` | 生产 canary API healthy | project `agent-memory-production`，运行镜像 revision `47a1506…`，模型关闭 |
-| `jiuyue:production-jiuyue` | 当前 live canary 来源 | 3 sessions / 6 turns / 494 events；首次 source-bound 验证为 361 events |
+| `127.0.0.1:7810` | 生产 canary API healthy | project `agent-memory-production`，GHCR 镜像 revision `e05a492…`，模型关闭 |
+| `jiuyue:production-jiuyue` | 当前 live canary 来源 | 1,610 events / 29 linked facts；首次 source-bound 验证为 361 events |
 | `qishuo:hermes-session-export` | 既有历史导入来源 | 只读核验时 9,117 events；当前不是 live Agent Memory Provider |
-| `facts` / `failed_jobs` | 12 / 0 | 只读核验值 |
+| Hermes Provider | 新 session 已激活 7 tools | `browse` 返回最近记录，直接 Provider recall 可命中 |
 
 隔离 Review 栈使用 `7802/7804/7805` 和独立 project/data/network；它不属于正式运行面，可在记录结果后停止。
 
@@ -59,7 +59,7 @@ Vault key UID 映射问题已在隔离 Gate 内修复；生产应用仍为固定
 `agent-memory-production` 完成正式 namespace 空库、安全属性、状态清单、备份恢复和 Vault
 往返演练；演练后同样已无损停止，未接入 Hermes、未启用模型。
 
-生产运行目录是 `$HOME/.local/share/agent-memory/production`。不得读取或复制其中的 env、token、数据库密码、UI secret、模型 key 或 Vault root key。当前 deployment state 已绑定 rc.8 bundle/source policy，最新恢复验证备份为 `20260722T134722Z`，覆盖首次验证时的 361 个 live events；之后新增的数据尚未进入新的恢复验证备份。
+生产运行目录是 `$HOME/.local/share/agent-memory/production`。不得读取或复制其中的 env、token、数据库密码、UI secret、模型 key 或 Vault root key。当前 deployment state 已绑定 `e05a492…` bundle/source policy；GHCR 切换前恢复验证备份为 `20260725T110234Z-ghcr-precutover`。后续 revision 升级前仍需生成覆盖新增 events 的新备份。
 
 ## 5. 接手后前 15 分钟
 
@@ -108,8 +108,7 @@ curl --fail http://127.0.0.1:7810/health/ready
 | 优先级 | 任务 | 完成标准 |
 | --- | --- | --- |
 | P0 | 收敛 rc.8 到主线 | 合并生产边界分支与 CI 修复，更新文档，最终 SHA 的本地/隔离/handoff Gate PASS |
-| P0 | 修复 `jiuyue` 写入/召回缺陷 | 当前回合采集、中文偏好/问句、浏览工具、同文去重及重复指标回归和完整 Gate PASS |
-| P0 | 单独批准生产缺陷更新 | 新 revision 备份、部署、Provider upgrade、写入/浏览/召回复测；不得由源码提交自动触发 |
+| P0 | 修复并部署 `jiuyue` 写入/召回缺陷 | 已完成；Provider 7 tools、browse 与直接 recall 已验证 |
 | P0 | 完成 `jiuyue` 72 小时观察 | 到 2026-07-25 13:44 UTC 后复核健康、来源、失败任务、召回、追溯、星图与脱敏 |
 | P0 | 创建最新恢复验证备份 | 72 小时门禁满足后单独执行生产备份，覆盖首次验证后新增 events，并验证恢复/Vault |
 | P1 | 真实数据质量校准 | 对 canary 新增事实做证据追溯、重复率、虚假实体和分类人工抽检 |
@@ -134,4 +133,4 @@ npm --prefix frontend run build
 ## 10. 交接完成标准
 
 接手者能说明版本与工作树的区别，能找到正确备份但不查看密钥，能安全检查两套入口，能运行本地回归，
-并知道生产 canary 正在 rc.8 revision `47a1506…` 上运行，主线收敛提交不会自动改变运行容器。提交推送后必须通过 `scripts/handoff-check.sh`；72 小时、最新恢复验证备份、主观验收和用户批准缺一不可，禁止提前晋级。
+并知道生产 canary 正在 rc.8 revision `e05a492…` 上运行，主线后续提交不会自动改变运行容器。提交推送后必须通过 `scripts/handoff-check.sh`；72 小时、最新恢复验证备份、主观验收和用户批准缺一不可，禁止提前晋级。

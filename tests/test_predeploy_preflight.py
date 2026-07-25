@@ -193,3 +193,34 @@ def test_predeploy_preflight_requires_matching_existing_state(tmp_path: Path) ->
     mismatch = _run(env_file, "existing", docker_env)
     assert mismatch.returncode != 0
     assert "state namespace mismatch" in mismatch.stderr
+
+
+def test_predeploy_preflight_accepts_bound_restore_verified_upgrade_source(
+    tmp_path: Path,
+) -> None:
+    env_file = _write_predeploy_env(tmp_path)
+    previous_revision = "a" * 40
+    backup_path = tmp_path / "backups" / "verified"
+    backup_path.mkdir()
+    state = bind_state_to_current_checkout(
+        tmp_path,
+        {
+            "status": "canary_active",
+            "version": (ROOT / "VERSION").read_text().strip(),
+            "revision": previous_revision,
+            "compose_project": "agent-memory-production",
+            "namespace": "hermes:user-primary",
+            "last_backup_path": str(backup_path),
+            "last_backup_manifest_sha256": "b" * 64,
+            "last_backup_verified_at": "2026-07-25T00:00:00+00:00",
+        },
+        previous_revision,
+    )
+    state_file = tmp_path / "DEPLOYMENT-STATE.json"
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+    state_file.chmod(0o600)
+
+    result = _run(env_file, "upgrade")
+
+    assert result.returncode == 0, result.stderr
+    assert '"mode":"upgrade"' in result.stdout

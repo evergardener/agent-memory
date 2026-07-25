@@ -54,6 +54,9 @@ def test_production_up_preserves_skip_build_control_before_loading_env() -> None
         '"${COMPOSE[@]}" up -d --no-build'
     )
     assert "org.opencontainers.image.revision" in up_script
+    assert '"--upgrade"' in up_script
+    assert 'MODE="upgrade"' in up_script
+    assert '"$MODE" == "new" || "$MODE" == "upgrade"' in up_script
 
 
 def test_runtime_file_mode_checks_try_gnu_stat_before_bsd_stat() -> None:

@@ -1,6 +1,6 @@
 # Agent Memory for Hermes
 
-Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。当前源码候选和生产 canary 均为 `1.0.0-rc.8`；生产运行 revision 为 `47a1506ae94a5a08fde6b4066f1daa24e2d27608`，状态为 `canary_active`，尚未晋级。源码已包含 `jiuyue` 试运行发现的当前回合采集、中文偏好召回、问句分流和最近记忆浏览修复，但该修复尚未部署到生产 revision。系统支持 Hermes 多 profile 共享记忆空间与独立人格恒星、只读原始证据、事实/情节/长期脉络、三路召回、生命周期治理、确定性互动状态、整理报告、关系型星系和独立加密 Vault。生产 canary 对每个 profile/instance 单独验证来源和观察窗口，历史导入数据不能替代 live profile 门禁。
+Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。当前源码候选和生产 canary 均为 `1.0.0-rc.8`；生产服务已运行 revision `e05a492b7ba5e225e9eadcaca0fc63018f6d6600` 的 GHCR 精确 SHA 镜像，状态为 `canary_active`，尚未晋级。该 revision 包含 `jiuyue` 试运行发现的当前回合采集、中文偏好召回、问句分流和最近记忆浏览修复。系统支持 Hermes 多 profile 共享记忆空间与独立人格恒星、只读原始证据、事实/情节/长期脉络、三路召回、生命周期治理、确定性互动状态、整理报告、关系型星系和独立加密 Vault。生产 canary 对每个 profile/instance 单独验证来源和观察窗口，历史导入数据不能替代 live profile 门禁。
 
 这是供生产 canary 验证的候选版本，不应成为真实凭据或重要数据的唯一副本。需求与实现边界见 [`docs/V1.0-项目需求文档.md`](docs/V1.0-项目需求文档.md)，逐项验证状态见 [`docs/V1.0-release验收矩阵.md`](docs/V1.0-release验收矩阵.md)。当前仅 `jiuyue:production-jiuyue` 是 live canary，`qishuo:hermes-session-export` 是显式保留的历史导入；模型保持关闭。新增来源、模型启用、容器更新或生产晋级仍须分别批准。
 
@@ -38,21 +38,34 @@ curl --fail http://127.0.0.1:7788/health/ready
 
 ## Hermes 接入
 
-先确认服务健康，再安装托管插件：
+先确认服务健康，再安装托管插件。Hermes profile 使用自己的
+`$HERMES_HOME/profiles/<profile>/plugins`，必须显式传入 `--profile`；否则命令只更新
+全局插件目录，已有 profile 仍可能加载旧副本：
 
 ```bash
-python3 scripts/hermes-plugin.py install --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
-hermes memory setup agent_memory
+python3 scripts/hermes-plugin.py install \
+  --hermes-home "${HERMES_HOME:-$HOME/.hermes}" \
+  --profile jiuyue
+hermes -p jiuyue memory setup agent_memory
 ```
 
 Provider 至少需要 `AGENT_MEMORY_API_URL`、`AGENT_MEMORY_SERVICE_TOKEN` 和共享 `AGENT_MEMORY_NAMESPACE`。不同 Hermes profile 使用同一 namespace，但保留各自 `source_profile`。升级和卸载命令：
 
 ```bash
-python3 scripts/hermes-plugin.py upgrade --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
-python3 scripts/hermes-plugin.py uninstall --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
+python3 scripts/hermes-plugin.py upgrade \
+  --hermes-home "${HERMES_HOME:-$HOME/.hermes}" \
+  --profile jiuyue
+python3 scripts/hermes-plugin.py uninstall \
+  --hermes-home "${HERMES_HOME:-$HOME/.hermes}" \
+  --profile jiuyue
 ```
 
-脚本只覆盖带 `.agent-memory-managed` 标记的插件目录，不会删除同名非托管目录。完整说明见 [`integrations/hermes/README.md`](integrations/hermes/README.md)。显式 `agent_memory_recall` 用于按主题检索；验证刚写入的内容应使用 `agent_memory_browse`，它默认浏览当前 profile 的最近记忆，不依赖语义匹配。
+脚本只覆盖带 `.agent-memory-managed` 标记的插件目录，不会删除同名非托管目录。
+`install` 与 `upgrade` 都执行原子替换；升级后必须结束旧进程并新开该 profile 的 session，
+再从启动日志确认工具数和工具名。完整说明见
+[`integrations/hermes/README.md`](integrations/hermes/README.md)。显式
+`agent_memory_recall` 用于按主题检索；验证刚写入的内容应使用
+`agent_memory_browse`，它默认浏览当前 profile 的最近记忆，不依赖语义匹配。
 
 ### 导入既有 Hermes 对话
 
