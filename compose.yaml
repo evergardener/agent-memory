@@ -36,7 +36,7 @@ services:
 
   migrate:
     <<: *app-hardening
-    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-migrate:${AGENT_MEMORY_VERSION:-1.0.0-rc.8}
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-migrate:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.8}
     build: *app-build
     command: ["alembic", "upgrade", "head"]
     environment: &app-env
@@ -70,7 +70,7 @@ services:
 
   api:
     <<: *app-hardening
-    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-api:${AGENT_MEMORY_VERSION:-1.0.0-rc.8}
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-api:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.8}
     build: *app-build
     command: ["agent-memory-api"]
     environment: *app-env
@@ -91,7 +91,7 @@ services:
   import-api:
     <<: *app-hardening
     profiles: ["import"]
-    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-api:${AGENT_MEMORY_VERSION:-1.0.0-rc.8}
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-api:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.8}
     build: *app-build
     command: ["agent-memory-api"]
     environment:
@@ -114,7 +114,7 @@ services:
   import-worker:
     <<: *app-hardening
     profiles: ["import"]
-    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.8}
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.8}
     build: *app-build
     command: ["agent-memory-worker"]
     environment:
@@ -131,7 +131,7 @@ services:
   import-model-worker:
     <<: *app-hardening
     profiles: ["import"]
-    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.8}
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.8}
     build: *app-build
     command: ["agent-memory-worker"]
     environment:
@@ -156,7 +156,7 @@ services:
 
   worker:
     <<: *app-hardening
-    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.8}
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.8}
     build: *app-build
     command: ["agent-memory-worker"]
     environment:
@@ -171,7 +171,7 @@ services:
 
   model-worker:
     <<: *app-hardening
-    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_VERSION:-1.0.0-rc.8}
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.8}
     build: *app-build
     command: ["agent-memory-worker"]
     environment:

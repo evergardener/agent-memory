@@ -124,7 +124,7 @@ PY
 fi
 
 for service in api worker migrate; do
-  image="$AGENT_MEMORY_IMAGE_PREFIX-$service:$AGENT_MEMORY_VERSION"
+  image="$AGENT_MEMORY_IMAGE_PREFIX-$service:$AGENT_MEMORY_IMAGE_TAG"
   [[ "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" == "$AGENT_MEMORY_VERSION" ]] \
     || { echo "predeploy $service image version label mismatch" >&2; exit 1; }
   [[ "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" == "$AGENT_MEMORY_REVISION" ]] \

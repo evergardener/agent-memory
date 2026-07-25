@@ -7,6 +7,8 @@ REVISION="$(git -C "$ROOT" rev-parse HEAD)"
 RUNTIME_ROOT="${1:-$HOME/.local/share/agent-memory/production}"
 ENV_FILE="${2:-$RUNTIME_ROOT/production.env}"
 PROJECT="${AGENT_MEMORY_PRODUCTION_PROJECT:-agent-memory-production}"
+IMAGE_PREFIX="${AGENT_MEMORY_PRODUCTION_IMAGE_PREFIX:-ghcr.io/evergardener/agent-memory}"
+IMAGE_TAG="${AGENT_MEMORY_PRODUCTION_IMAGE_TAG:-sha-$REVISION}"
 
 if [[ "$RUNTIME_ROOT" != /* || "$RUNTIME_ROOT" =~ [[:space:]] ]]; then
   echo "production runtime root must be an absolute path without whitespace" >&2
@@ -22,6 +24,14 @@ if [[ -e "$RUNTIME_ROOT" && -n "$(find "$RUNTIME_ROOT" -mindepth 1 -print -quit)
 fi
 if [[ "$PROJECT" != "agent-memory-production" ]]; then
   echo "production project must be exactly agent-memory-production" >&2
+  exit 1
+fi
+if [[ "$IMAGE_PREFIX" != "ghcr.io/evergardener/agent-memory" ]]; then
+  echo "production image prefix must be exactly ghcr.io/evergardener/agent-memory" >&2
+  exit 1
+fi
+if [[ "$IMAGE_TAG" != "sha-$REVISION" ]]; then
+  echo "production image tag must be sha-$REVISION" >&2
   exit 1
 fi
 
@@ -41,10 +51,11 @@ chmod 600 "$RUNTIME_ROOT/model_api_key"
 {
   printf 'AGENT_MEMORY_VERSION=%s\n' "$VERSION"
   printf 'AGENT_MEMORY_REVISION=%s\n' "$REVISION"
+  printf 'AGENT_MEMORY_IMAGE_TAG=%s\n' "$IMAGE_TAG"
   printf 'AGENT_MEMORY_DEPLOYMENT_TIER=production\n'
   printf 'AGENT_MEMORY_DEPLOYMENT_PHASE=canary\n'
   printf 'AGENT_MEMORY_COMPOSE_PROJECT=%s\n' "$PROJECT"
-  printf 'AGENT_MEMORY_IMAGE_PREFIX=%s\n' "$PROJECT"
+  printf 'AGENT_MEMORY_IMAGE_PREFIX=%s\n' "$IMAGE_PREFIX"
   printf 'AGENT_MEMORY_POSTGRES_DATA_DIR=%s\n' "$RUNTIME_ROOT/postgres"
   printf 'AGENT_MEMORY_BACKEND_SUBNET=%s\n' "${AGENT_MEMORY_PRODUCTION_BACKEND_SUBNET:-172.16.250.0/24}"
   printf 'AGENT_MEMORY_EDGE_SUBNET=%s\n' "${AGENT_MEMORY_PRODUCTION_EDGE_SUBNET:-172.16.251.0/24}"

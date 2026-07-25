@@ -11,7 +11,9 @@ elif [[ -n "${2:-}" ]]; then
 fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-skip_build="${AGENT_MEMORY_PRODUCTION_SKIP_BUILD:-0}"
+skip_build="${AGENT_MEMORY_PRODUCTION_SKIP_BUILD:-1}"
+[[ "$skip_build" == "1" ]] \
+  || { echo "production deployment requires prebuilt GHCR images" >&2; exit 1; }
 
 if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
   echo "production deployment requires a clean Git worktree" >&2
@@ -73,14 +75,19 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 chmod 600 "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE"
 
-if [[ "$skip_build" == "1" ]]; then
-  for service in api worker migrate; do
-    docker image inspect \
-      "$AGENT_MEMORY_IMAGE_PREFIX-$service:$AGENT_MEMORY_VERSION" >/dev/null
-  done
-else
-  "${COMPOSE[@]}" build api worker migrate
-fi
+"${COMPOSE[@]}" pull api worker migrate
+for service in api worker migrate; do
+  image="$AGENT_MEMORY_IMAGE_PREFIX-$service:$AGENT_MEMORY_IMAGE_TAG"
+  docker image inspect "$image" >/dev/null
+  [[ "$(docker image inspect "$image" \
+    --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" \
+    == "$AGENT_MEMORY_VERSION" ]] \
+    || { echo "production $service image version label mismatch" >&2; exit 1; }
+  [[ "$(docker image inspect "$image" \
+    --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" \
+    == "$AGENT_MEMORY_REVISION" ]] \
+    || { echo "production $service image revision label mismatch" >&2; exit 1; }
+done
 services=(postgres migrate api worker)
 if [[ "${AGENT_MEMORY_MODEL_ENABLED:-false}" == "true" ]]; then
   services+=(model-worker)
@@ -94,11 +101,11 @@ fi
 bash scripts/predeploy-verify.sh "$ENV_FILE" "$verify_data_mode" bootstrap
 
 api_image_id="$(docker image inspect \
-  "$AGENT_MEMORY_IMAGE_PREFIX-api:$AGENT_MEMORY_VERSION" --format '{{.Id}}')"
+  "$AGENT_MEMORY_IMAGE_PREFIX-api:$AGENT_MEMORY_IMAGE_TAG" --format '{{.Id}}')"
 worker_image_id="$(docker image inspect \
-  "$AGENT_MEMORY_IMAGE_PREFIX-worker:$AGENT_MEMORY_VERSION" --format '{{.Id}}')"
+  "$AGENT_MEMORY_IMAGE_PREFIX-worker:$AGENT_MEMORY_IMAGE_TAG" --format '{{.Id}}')"
 migrate_image_id="$(docker image inspect \
-  "$AGENT_MEMORY_IMAGE_PREFIX-migrate:$AGENT_MEMORY_VERSION" --format '{{.Id}}')"
+  "$AGENT_MEMORY_IMAGE_PREFIX-migrate:$AGENT_MEMORY_IMAGE_TAG" --format '{{.Id}}')"
 images_file="$(mktemp)"
 trap 'rm -f "$images_file"' EXIT
 python3 - "$images_file" "$api_image_id" "$worker_image_id" "$migrate_image_id" \

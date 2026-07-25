@@ -36,6 +36,11 @@ def test_init_predeploy_env_creates_sealed_disconnected_runtime(tmp_path: Path) 
     contents = env_file.read_text(encoding="utf-8")
     assert "AGENT_MEMORY_DEPLOYMENT_TIER=production" in contents
     assert "AGENT_MEMORY_DEPLOYMENT_PHASE=canary" in contents
+    revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+    ).strip()
+    assert "AGENT_MEMORY_IMAGE_PREFIX=ghcr.io/evergardener/agent-memory" in contents
+    assert f"AGENT_MEMORY_IMAGE_TAG=sha-{revision}" in contents
     assert "AGENT_MEMORY_NAMESPACE=hermes:user-primary" in contents
     assert "AGENT_MEMORY_MODEL_ENABLED=false" in contents
     assert "AGENT_MEMORY_MODEL_API_KEY=\n" in contents

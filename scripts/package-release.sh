@@ -5,7 +5,7 @@ VERSION="$(tr -d '[:space:]' < VERSION)"
 OUTPUT_ROOT="${1:-release-artifacts}"
 OUTPUT_DIR="$OUTPUT_ROOT/$VERSION"
 ARCHIVE="$OUTPUT_DIR/agent-memory-$VERSION-source.tar.gz"
-IMAGE="${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-api:$VERSION"
+IMAGE="${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-api:${AGENT_MEMORY_IMAGE_TAG:-$VERSION}"
 
 mkdir -p "$OUTPUT_DIR"
 rm -f "$ARCHIVE" "$OUTPUT_DIR/SHA256SUMS" "$OUTPUT_DIR/IMAGE.txt"

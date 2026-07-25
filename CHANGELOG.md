@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- GitHub Actions 在 `main` 的源码、单测、前端和 shell 门禁通过后，一次构建并向 GHCR 发布 API/worker/migrate 三个 `linux/amd64,linux/arm64` 镜像；产物包含 SBOM、Buildx provenance 和 GitHub artifact attestation。
+- 生产镜像标签与应用版本解耦：生产 env 固定 `ghcr.io/evergardener/agent-memory-*:sha-<full revision>`，默认先 pull、核对 OCI version/revision 后 `--no-build` 启动；可变 `main` 标签在生产预检中失败关闭。
 - 修复真实 `jiuyue` 试运行发现的整段会话工具历史重复回灌：Provider 只采集最后一个用户回合之后的工具调用与结果，重复回合仍由稳定 turn idempotency key 拒绝。
 - 修复中文用户约束被“指令前缀”误挡在召回出口的问题；“不要使用某句式”等偏好进入长期事实并可召回，而“那么……是否”“能否”“在哪里”“多少”等无标点问句只保留为证据。
 - 新增 service-token/UI-session 共用的只读 `GET /api/v1/memories` 和 Hermes `agent_memory_browse`，可按 profile、类型、状态、更新时间浏览最近记忆，不再用语义召回来猜测写入是否成功；空显式召回返回 `no_match` 和浏览提示。

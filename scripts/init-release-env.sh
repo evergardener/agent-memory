@@ -32,6 +32,7 @@ chmod 600 "$RUNTIME_ROOT/vault_root_key"
 
 {
   printf 'AGENT_MEMORY_VERSION=%s\n' "$VERSION"
+  printf 'AGENT_MEMORY_IMAGE_TAG=%s\n' "$VERSION"
   printf 'AGENT_MEMORY_RELEASE_ISOLATED=true\n'
   printf 'AGENT_MEMORY_COMPOSE_PROJECT=%s\n' "$PROJECT"
   printf 'AGENT_MEMORY_IMAGE_PREFIX=%s\n' "$PROJECT"

@@ -38,10 +38,10 @@ version="$(tr -d '[:space:]' < VERSION)"
   || fail "AGENT_MEMORY_DEPLOYMENT_PHASE=canary is required before promotion"
 [[ "${AGENT_MEMORY_COMPOSE_PROJECT:-}" == "agent-memory-production" ]] \
   || fail "Compose project must be exactly agent-memory-production"
-[[ "${AGENT_MEMORY_IMAGE_PREFIX:-}" == "agent-memory-production" ]] \
-  || fail "image prefix must be exactly agent-memory-production"
-[[ "$AGENT_MEMORY_IMAGE_PREFIX" == "$AGENT_MEMORY_COMPOSE_PROJECT" ]] \
-  || fail "image prefix must match the predeploy Compose project"
+[[ "${AGENT_MEMORY_IMAGE_PREFIX:-}" == "ghcr.io/evergardener/agent-memory" ]] \
+  || fail "image prefix must be exactly ghcr.io/evergardener/agent-memory"
+[[ "${AGENT_MEMORY_IMAGE_TAG:-}" == "sha-$AGENT_MEMORY_REVISION" ]] \
+  || fail "image tag must be the immutable sha-<AGENT_MEMORY_REVISION> tag"
 [[ "${AGENT_MEMORY_NAMESPACE:-}" == "hermes:user-primary" ]] \
   || fail "production namespace must be exactly hermes:user-primary"
 [[ "${AGENT_MEMORY_IMPORT_NAMESPACE:-}" == "hermes:production-import" ]] \
@@ -50,6 +50,7 @@ version="$(tr -d '[:space:]' < VERSION)"
 for variable in \
   AGENT_MEMORY_POSTGRES_DATA_DIR \
   AGENT_MEMORY_IMAGE_PREFIX \
+  AGENT_MEMORY_IMAGE_TAG \
   AGENT_MEMORY_BACKEND_SUBNET \
   AGENT_MEMORY_EDGE_SUBNET \
   AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE \
@@ -174,7 +175,7 @@ PY
   deployment_images_file="$(mktemp)"
   image_records=()
   for service in api worker migrate; do
-    image="$AGENT_MEMORY_IMAGE_PREFIX-$service:$AGENT_MEMORY_VERSION"
+    image="$AGENT_MEMORY_IMAGE_PREFIX-$service:$AGENT_MEMORY_IMAGE_TAG"
     image_id="$(docker image inspect "$image" --format '{{.Id}}')" \
       || fail "missing deployment image: $image"
     image_revision="$(docker image inspect "$image" \

@@ -45,9 +45,15 @@ def test_canary_verification_uses_nonexistent_report_targets() -> None:
 def test_production_up_preserves_skip_build_control_before_loading_env() -> None:
     up_script = (ROOT / "scripts/predeploy-up.sh").read_text(encoding="utf-8")
 
-    capture = 'skip_build="${AGENT_MEMORY_PRODUCTION_SKIP_BUILD:-0}"'
+    capture = 'skip_build="${AGENT_MEMORY_PRODUCTION_SKIP_BUILD:-1}"'
     assert up_script.index(capture) < up_script.index('predeploy_load_env "$ENV_FILE"')
-    assert 'if [[ "$skip_build" == "1" ]]; then' in up_script
+    assert '"production deployment requires prebuilt GHCR images"' in up_script
+    assert '"${COMPOSE[@]}" build api worker migrate' not in up_script
+    assert '"${COMPOSE[@]}" pull api worker migrate' in up_script
+    assert up_script.index('"${COMPOSE[@]}" pull api worker migrate') < up_script.index(
+        '"${COMPOSE[@]}" up -d --no-build'
+    )
+    assert "org.opencontainers.image.revision" in up_script
 
 
 def test_source_policy_mutations_have_state_and_policy_rollback() -> None:

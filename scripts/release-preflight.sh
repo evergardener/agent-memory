@@ -22,6 +22,8 @@ set +a
 version="$(tr -d '[:space:]' < VERSION)"
 [[ "${AGENT_MEMORY_VERSION:-}" == "$version" ]] \
   || fail "AGENT_MEMORY_VERSION must equal VERSION ($version)"
+[[ "${AGENT_MEMORY_IMAGE_TAG:-}" == "$version" ]] \
+  || fail "AGENT_MEMORY_IMAGE_TAG must equal VERSION ($version)"
 [[ "${AGENT_MEMORY_RELEASE_ISOLATED:-false}" == "true" ]] \
   || fail "AGENT_MEMORY_RELEASE_ISOLATED=true is required"
 [[ "${AGENT_MEMORY_COMPOSE_PROJECT:-}" == agent-memory-release-* ]] \
@@ -36,6 +38,7 @@ version="$(tr -d '[:space:]' < VERSION)"
 for variable in \
   AGENT_MEMORY_POSTGRES_DATA_DIR \
   AGENT_MEMORY_IMAGE_PREFIX \
+  AGENT_MEMORY_IMAGE_TAG \
   AGENT_MEMORY_BACKEND_SUBNET \
   AGENT_MEMORY_EDGE_SUBNET \
   AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE \

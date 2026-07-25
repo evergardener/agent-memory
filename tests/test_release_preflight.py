@@ -15,8 +15,10 @@ def _write_release_env(tmp_path: Path, **overrides: str) -> Path:
     backup_dir.mkdir()
     vault_key.write_text("release-only-vault-root-key\n", encoding="utf-8")
     vault_key.chmod(0o600)
+    version = (ROOT / "VERSION").read_text().strip()
     values = {
-        "AGENT_MEMORY_VERSION": (ROOT / "VERSION").read_text().strip(),
+        "AGENT_MEMORY_VERSION": version,
+        "AGENT_MEMORY_IMAGE_TAG": version,
         "AGENT_MEMORY_RELEASE_ISOLATED": "true",
         "AGENT_MEMORY_COMPOSE_PROJECT": "agent-memory-release-test",
         "AGENT_MEMORY_IMAGE_PREFIX": "agent-memory-release-test",
@@ -67,6 +69,12 @@ def test_release_preflight_accepts_fully_isolated_environment(tmp_path: Path) ->
     assert '"status":"PASS"' in result.stdout
     assert "d" * 32 not in result.stdout
     assert "t" * 32 not in result.stdout
+
+
+def test_release_preflight_rejects_image_tag_version_drift(tmp_path: Path) -> None:
+    result = _run(_write_release_env(tmp_path, AGENT_MEMORY_IMAGE_TAG="main"))
+    assert result.returncode != 0
+    assert "AGENT_MEMORY_IMAGE_TAG must equal VERSION" in result.stderr
 
 
 def test_release_preflight_rejects_primary_network_and_external_model(tmp_path: Path) -> None:

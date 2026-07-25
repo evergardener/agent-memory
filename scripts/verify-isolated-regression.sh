@@ -12,6 +12,7 @@ set +a
 
 version="$(tr -d '[:space:]' < VERSION)"
 image_prefix="${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}"
+image_tag="${AGENT_MEMORY_IMAGE_TAG:-$version}"
 primary_namespace="${AGENT_MEMORY_NAMESPACE:-hermes:user-primary}"
 test_namespace="${AGENT_MEMORY_AUTOMATED_NAMESPACE:-hermes:automated-tests}"
 test_port="${AGENT_MEMORY_AUTOMATED_API_PORT:-7789}"
@@ -67,7 +68,7 @@ docker create \
   "${common_env[@]}" \
   -e "AGENT_MEMORY_NAMESPACE=$test_namespace" \
   -v "$vault_key_host_file:/run/secrets/vault_root_key:ro" \
-  "$image_prefix-api:$version" >/dev/null
+  "$image_prefix-api:$image_tag" >/dev/null
 docker network connect "$edge_network" "$container_name"
 docker start "$container_name" >/dev/null
 docker run -d \
@@ -76,7 +77,7 @@ docker run -d \
   "${common_env[@]}" \
   -e "AGENT_MEMORY_NAMESPACE=$test_namespace" \
   -e "AGENT_MEMORY_WORKER_ROLE=core" \
-  "$image_prefix-worker:$version" agent-memory-worker >/dev/null
+  "$image_prefix-worker:$image_tag" agent-memory-worker >/dev/null
 
 for _ in {1..40}; do
   curl -fsS "http://127.0.0.1:${test_port}/health/ready" >/dev/null && break

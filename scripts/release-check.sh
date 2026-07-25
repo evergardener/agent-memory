@@ -37,6 +37,7 @@ set -a
 source "$ENV_FILE"
 set +a
 IMAGE_PREFIX="${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}"
+IMAGE_TAG="${AGENT_MEMORY_IMAGE_TAG:-$VERSION}"
 if [[ "${AGENT_MEMORY_NAMESPACE:-hermes:user-primary}" != hermes:automated-tests* ]]; then
   echo "Release check requires an isolated hermes:automated-tests* namespace" >&2
   exit 1
@@ -53,7 +54,7 @@ stage "versioned compose build and readiness"
 "${COMPOSE[@]}" config --quiet
 if [[ "${AGENT_MEMORY_SKIP_BUILD:-0}" == "1" ]]; then
   for service in api worker migrate; do
-    docker image inspect "$IMAGE_PREFIX-$service:$VERSION" >/dev/null
+    docker image inspect "$IMAGE_PREFIX-$service:$IMAGE_TAG" >/dev/null
   done
 else
   "${COMPOSE[@]}" build
@@ -69,10 +70,10 @@ for _ in {1..60}; do
 done
 curl --fail --silent "http://127.0.0.1:${AGENT_MEMORY_API_PORT:-7788}/health/ready" \
   >/dev/null
-architecture="$(docker image inspect "$IMAGE_PREFIX-api:$VERSION" --format '{{.Architecture}}')"
-image_id="$(docker image inspect "$IMAGE_PREFIX-api:$VERSION" --format '{{.Id}}')"
-image_version="$(docker image inspect "$IMAGE_PREFIX-api:$VERSION" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')"
-image_revision="$(docker image inspect "$IMAGE_PREFIX-api:$VERSION" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
+architecture="$(docker image inspect "$IMAGE_PREFIX-api:$IMAGE_TAG" --format '{{.Architecture}}')"
+image_id="$(docker image inspect "$IMAGE_PREFIX-api:$IMAGE_TAG" --format '{{.Id}}')"
+image_version="$(docker image inspect "$IMAGE_PREFIX-api:$IMAGE_TAG" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')"
+image_revision="$(docker image inspect "$IMAGE_PREFIX-api:$IMAGE_TAG" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
 if [[ "$image_version" != "$VERSION" || "$image_revision" != "$revision" ]]; then
   echo "Release image provenance labels do not match version/revision" >&2
   exit 1

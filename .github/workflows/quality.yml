@@ -32,3 +32,73 @@ jobs:
       - run: npm --prefix frontend ci
       - run: npm --prefix frontend run check-build
       - run: bash -n scripts/*.sh
+
+  publish-images:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: source-and-unit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/agent-memory
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read application version
+        id: version
+        shell: bash
+        run: echo "value=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Build and publish immutable multi-platform images
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            AGENT_MEMORY_BUILD_VERSION=${{ steps.version.outputs.value }}
+            AGENT_MEMORY_BUILD_REVISION=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.version.outputs.value }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-api:sha-${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-worker:sha-${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-migrate:sha-${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-api:main
+            ${{ env.IMAGE_PREFIX }}-worker:main
+            ${{ env.IMAGE_PREFIX }}-migrate:main
+      - name: Attest API image
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ env.IMAGE_PREFIX }}-api
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - name: Attest worker image
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ env.IMAGE_PREFIX }}-worker
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - name: Attest migrate image
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ env.IMAGE_PREFIX }}-migrate
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

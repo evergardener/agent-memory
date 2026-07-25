@@ -43,10 +43,11 @@ def _write_predeploy_env(tmp_path: Path, **overrides: str) -> Path:
     values = {
         "AGENT_MEMORY_VERSION": (ROOT / "VERSION").read_text().strip(),
         "AGENT_MEMORY_REVISION": REVISION,
+        "AGENT_MEMORY_IMAGE_TAG": f"sha-{REVISION}",
         "AGENT_MEMORY_DEPLOYMENT_TIER": "production",
         "AGENT_MEMORY_DEPLOYMENT_PHASE": "canary",
         "AGENT_MEMORY_COMPOSE_PROJECT": "agent-memory-production",
-        "AGENT_MEMORY_IMAGE_PREFIX": "agent-memory-production",
+        "AGENT_MEMORY_IMAGE_PREFIX": "ghcr.io/evergardener/agent-memory",
         "AGENT_MEMORY_POSTGRES_DATA_DIR": str(data_dir),
         "AGENT_MEMORY_BACKEND_SUBNET": "172.16.252.0/24",
         "AGENT_MEMORY_EDGE_SUBNET": "172.16.253.0/24",
@@ -141,6 +142,23 @@ def test_predeploy_preflight_rejects_production_namespace_model_and_reserved_por
     port = _run(_write_predeploy_env(tmp_path / "port", AGENT_MEMORY_API_PORT="7788"))
     assert port.returncode != 0
     assert "must not reuse" in port.stderr
+
+
+def test_predeploy_preflight_rejects_mutable_or_wrong_registry_image(
+    tmp_path: Path,
+) -> None:
+    mutable = _run(_write_predeploy_env(tmp_path / "mutable", AGENT_MEMORY_IMAGE_TAG="main"))
+    assert mutable.returncode != 0
+    assert "immutable sha-" in mutable.stderr
+
+    wrong_registry = _run(
+        _write_predeploy_env(
+            tmp_path / "registry",
+            AGENT_MEMORY_IMAGE_PREFIX="docker.io/evergardener/agent-memory",
+        )
+    )
+    assert wrong_registry.returncode != 0
+    assert "ghcr.io/evergardener/agent-memory" in wrong_registry.stderr
 
 
 def test_predeploy_preflight_requires_matching_existing_state(tmp_path: Path) -> None:

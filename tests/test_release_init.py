@@ -32,6 +32,8 @@ def test_init_release_env_creates_isolated_preflight_valid_runtime(tmp_path: Pat
     assert (runtime_root / "vault_root_key").stat().st_mode & 0o777 == 0o600
     assert "AGENT_MEMORY_MODEL_ENABLED=false" in env_file.read_text()
     assert "AGENT_MEMORY_IMAGE_PREFIX=agent-memory-release-unit-test" in env_file.read_text()
+    version = (ROOT / "VERSION").read_text().strip()
+    assert f"AGENT_MEMORY_IMAGE_TAG={version}" in env_file.read_text()
     assert "AGENT_MEMORY_MODEL_API_KEY=\n" in env_file.read_text()
     assert "shown once" in result.stdout
 

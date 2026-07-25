@@ -175,6 +175,12 @@ HERMES_AGENT_ROOT="${HERMES_AGENT_ROOT:-$HOME/.hermes/hermes-agent}" \
 
 该 Gate 拒绝脏 Git 工作树、生产 namespace、标准端口/网段/数据目录、启用模型的环境和 OCI revision 不一致；不要把生产 `.env` 传给它。
 
+`main` 推送的 GitHub Actions 在上述源码质量门禁通过后，构建
+`linux/amd64`、`linux/arm64` 镜像并发布到 GHCR。生产只允许使用
+`sha-<完整 Git revision>` 不可变标签；`main` 标签只用于便捷检查，不得写入
+`production.env`。镜像发布、首次包可见性和证明验证见
+[`docs/V1.0-GHCR镜像发布与部署.md`](docs/V1.0-GHCR镜像发布与部署.md)。
+
 发布 Gate 通过后，从一开始就创建最终生产 project/data/Vault/namespace；canary 通过后原地晋级，不再新建数据库：
 
 ```bash
@@ -184,7 +190,11 @@ bash scripts/production-up.sh "$runtime_root/production.env"
 bash scripts/production-backup.sh "$runtime_root/production.env"
 ```
 
-此时系统仍为空、模型关闭且没有 Hermes profile 接入。随后同一套资产接收真实 canary 数据并在验收后原地晋级。
+`init-production-env.sh` 将镜像固定为
+`ghcr.io/evergardener/agent-memory-{api,worker,migrate}:sha-<revision>`；
+`production-up.sh` 默认先拉取并核验 OCI version/revision，再以 `--no-build`
+启动。此时系统仍为空、模型关闭且没有 Hermes profile 接入。随后同一套资产接收真实
+canary 数据并在验收后原地晋级。
 
 ## 常见故障
 
