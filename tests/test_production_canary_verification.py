@@ -79,6 +79,17 @@ def test_release_gate_surfaces_compose_startup_diagnostics() -> None:
     assert "postgres migrate api worker model-worker || true" in script
 
 
+def test_isolated_regression_preserves_ephemeral_container_failure_logs() -> None:
+    script = (ROOT / "scripts/verify-isolated-regression.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "status=$?" in script
+    assert 'echo "==> $container failure logs" >&2' in script
+    assert 'docker logs --tail=120 "$container" >&2 || true' in script
+    assert 'exit "$status"' in script
+
+
 def test_source_policy_mutations_have_state_and_policy_rollback() -> None:
     hermes_script = (ROOT / "scripts/predeploy-hermes-env.sh").read_text(encoding="utf-8")
     policy_script = (ROOT / "scripts/production-source-policy.sh").read_text(

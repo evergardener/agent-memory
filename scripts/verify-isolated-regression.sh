@@ -32,8 +32,19 @@ if [[ "$test_port" == "${AGENT_MEMORY_API_PORT:-7788}" ]]; then
 fi
 
 cleanup() {
+  status=$?
+  trap - EXIT
+  if [[ "$status" -ne 0 ]]; then
+    for container in "$container_name" "$worker_container_name"; do
+      if docker container inspect "$container" >/dev/null 2>&1; then
+        echo "==> $container failure logs" >&2
+        docker logs --tail=120 "$container" >&2 || true
+      fi
+    done
+  fi
   docker rm -f "$container_name" >/dev/null 2>&1 || true
   docker rm -f "$worker_container_name" >/dev/null 2>&1 || true
+  exit "$status"
 }
 trap cleanup EXIT
 
