@@ -3,8 +3,15 @@ services:
     networks:
       - backend
       - edge
+    volumes:
+      - type: volume
+        source: release-postgres-data
+        target: /var/lib/postgresql
     ports:
       - target: 5432
         published: ${AGENT_MEMORY_RELEASE_POSTGRES_PORT:-7805}
         host_ip: 127.0.0.1
         protocol: tcp
+
+volumes:
+  release-postgres-data:

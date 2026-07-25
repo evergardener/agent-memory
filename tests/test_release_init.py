@@ -5,6 +5,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_release_compose_uses_an_isolated_managed_postgres_volume() -> None:
+    release_compose = (ROOT / "compose.release.yaml").read_text(encoding="utf-8")
+
+    assert "source: release-postgres-data" in release_compose
+    assert "target: /var/lib/postgresql" in release_compose
+    assert "\nvolumes:\n  release-postgres-data:" in release_compose
+
+
 def test_init_release_env_creates_isolated_preflight_valid_runtime(tmp_path: Path) -> None:
     runtime_root = tmp_path / "release-runtime"
     env_file = runtime_root / "release.env"
