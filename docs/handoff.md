@@ -11,6 +11,9 @@ V1 核心能力、阶段 C 关系星系、阶段 E0 展示身份和 rc.8 生产�
 当前源码还新增质量门禁后的 GHCR 多架构发布与生产 pull-only 链路：三个应用镜像使用
 `sha-<full revision>`，包含 SBOM/provenance/attestation；生产预检拒绝 `main/latest`。
 本地开发和 Gate 不等于远端镜像已发布，必须在提交推送后确认 GitHub Actions 成功。
+实现提交为 `07533e6`；本地质量门禁、Compose/YAML 契约和运行输入等价的 ARM64
+全量 Release Gate 已通过。当前 Docker Hub manifest EOF 阻断了当前 SHA 的本地双平台重建，
+不得把等价复验表述为 GHCR 已发布。
 
 ## 2. 必读顺序
 
