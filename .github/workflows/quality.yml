@@ -28,7 +28,27 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: uv sync --frozen --extra dev --extra migrations
       - run: uv run ruff check src integrations tests migrations scripts/predeploy_host_check.py
-      - run: env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYDANTIC_DISABLE_PLUGINS=__all__ uv run pytest -q
+      - name: Run unit tests
+        shell: bash
+        run: |
+          set -o pipefail
+          log_file="$RUNNER_TEMP/pytest.log"
+          if env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYDANTIC_DISABLE_PLUGINS=__all__ \
+            uv run pytest -q 2>&1 | tee "$log_file"; then
+            exit 0
+          fi
+          {
+            echo "### pytest failure"
+            echo '```text'
+            tail -n 80 "$log_file"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          message="$(tail -n 20 "$log_file")"
+          message="${message//'%'/'%25'}"
+          message="${message//$'\r'/'%0D'}"
+          message="${message//$'\n'/'%0A'}"
+          echo "::error title=pytest failed::$message"
+          exit 1
       - run: npm --prefix frontend ci
       - run: npm --prefix frontend run check-build
       - run: bash -n scripts/*.sh

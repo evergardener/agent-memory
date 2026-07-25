@@ -7,6 +7,8 @@ def test_ghcr_publish_waits_for_quality_and_only_runs_on_main_push() -> None:
     workflow = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
 
     publish = workflow[workflow.index("  publish-images:") :]
+    assert 'echo "::error title=pytest failed::$message"' in workflow
+    assert 'tail -n 80 "$log_file"' in workflow
     assert "needs: source-and-unit" in publish
     assert "github.event_name == 'push'" in publish
     assert "github.ref == 'refs/heads/main'" in publish
