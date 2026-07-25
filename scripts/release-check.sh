@@ -59,6 +59,7 @@ if [[ "${AGENT_MEMORY_SKIP_BUILD:-0}" == "1" ]]; then
 else
   "${COMPOSE[@]}" build
 fi
+bash scripts/prepare-release-vault-key.sh "$ENV_FILE"
 if ! "${COMPOSE[@]}" up -d --no-build; then
   "${COMPOSE[@]}" ps --all || true
   "${COMPOSE[@]}" logs --no-color --tail=120 \

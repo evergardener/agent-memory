@@ -73,10 +73,30 @@ def test_runtime_file_mode_checks_try_gnu_stat_before_bsd_stat() -> None:
 def test_release_gate_surfaces_compose_startup_diagnostics() -> None:
     script = (ROOT / "scripts/release-check.sh").read_text(encoding="utf-8")
 
+    assert 'bash scripts/prepare-release-vault-key.sh "$ENV_FILE"' in script
     assert 'if ! "${COMPOSE[@]}" up -d --no-build; then' in script
     assert '"${COMPOSE[@]}" ps --all || true' in script
     assert '"${COMPOSE[@]}" logs --no-color --tail=120' in script
     assert "postgres migrate api worker model-worker || true" in script
+
+
+def test_release_vault_key_normalization_is_scoped_and_keeps_image_nonroot() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    script = (ROOT / "scripts/prepare-release-vault-key.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "USER agent-memory" in dockerfile
+    assert "agent-memory-entrypoint" not in dockerfile
+    assert "agent-memory-release-*" in script
+    assert '"$runtime_root/vault_root_key"' in script
+    assert "! -L" in script
+    assert "'{{.Config.User}}'" in script
+    assert "Release API image must run as agent-memory" in script
+    assert "--user 0:0" in script
+    assert "chown 10001:10001" in script
+    assert "chmod 0400" in script
+    assert "normalized" in script
 
 
 def test_isolated_regression_preserves_ephemeral_container_failure_logs() -> None:

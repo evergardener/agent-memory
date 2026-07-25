@@ -211,6 +211,7 @@ jobs:
           ) 2>&1 | tee "$log_file"; then
             exit 0
           fi
+          original_failure="$(tail -n 20 "$log_file")"
           if [[ -f "$runtime_root/release.env" ]]; then
             (
               set -a
@@ -245,7 +246,7 @@ jobs:
             tail -n 80 "$log_file"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          message="$(tail -n 20 "$log_file")"
+          message="$original_failure"
           message="${message//'%'/'%25'}"
           message="${message//$'\r'/'%0D'}"
           message="${message//$'\n'/'%0A'}"

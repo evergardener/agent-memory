@@ -48,6 +48,8 @@ def test_published_images_are_independently_verified_by_the_complete_gate() -> N
     assert "Published-image release gate failure" in verify
     assert 'tail -n 80 "$log_file"' in verify
     assert 'echo "::error title=published-image release gate failed::$message"' in verify
+    assert 'original_failure="$(tail -n 20 "$log_file")"' in verify
+    assert 'message="$original_failure"' in verify
     assert "failed release stack logs" in verify
     assert '"${AGENT_MEMORY_COMPOSE_PROJECT}-automated-test-api"' in verify
     assert 'docker logs --tail=120 "$container"' in verify
