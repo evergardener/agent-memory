@@ -119,6 +119,40 @@ class LiveHermesProviderTests(unittest.TestCase):
             "new_probe",
         ]
 
+    def test_sync_turn_without_current_tools_only_ingests_user_and_assistant(self) -> None:
+        client = CapturingClient()
+        provider = AgentMemoryProvider(client=client)
+        provider.initialize("session-1", agent_identity="jiuyue")
+        provider.on_turn_start(2, "new request")
+        provider.sync_turn(
+            "new request",
+            "done",
+            messages=[
+                {"role": "user", "content": "old request"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "old_probe",
+                                "arguments": '{"target":"old"}',
+                            }
+                        }
+                    ],
+                },
+                {"role": "tool", "name": "old_probe", "content": "old result"},
+                {"role": "assistant", "content": "old answer"},
+                {"role": "user", "content": "new request"},
+                {"role": "assistant", "content": "done"},
+            ],
+        )
+
+        events = client.posts[0][1]["events"]
+        self.assertEqual([event["type"] for event in events], [
+            "user_message",
+            "assistant_message",
+        ])
+
     def test_browse_defaults_to_current_profile(self) -> None:
         client = CapturingClient()
         provider = AgentMemoryProvider(client=client)

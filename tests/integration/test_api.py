@@ -553,6 +553,8 @@ def test_quality_report_is_aggregate_only_and_never_auto_promotes():
     assert report["metrics"]["facts"] >= 1
     assert report["metrics"]["traceable_facts"] == report["metrics"]["facts"]
     assert report["metrics"]["raw_sensitive_facts"] == 0
+    assert report["metrics"]["repeated_tool_event_groups"] >= 0
+    assert report["metrics"]["repeated_tool_event_copies"] >= 0
     assert set(report["gates"]) >= {
         "evidence_traceability",
         "model_atomic_coverage",
