@@ -10,10 +10,11 @@ V1 核心能力、阶段 C 关系星系、阶段 E0 展示身份和 rc.8 生产�
 
 当前源码还新增质量门禁后的 GHCR 多架构发布与生产 pull-only 链路：三个应用镜像使用
 `sha-<full revision>`，包含 SBOM/provenance/attestation；生产预检拒绝 `main/latest`。
-本地开发和 Gate 不等于远端镜像已发布，必须在提交推送后确认 GitHub Actions 成功。
-实现提交为 `07533e6`；本地质量门禁、Compose/YAML 契约和运行输入等价的 ARM64
-全量 Release Gate 已通过。当前 Docker Hub manifest EOF 阻断了当前 SHA 的本地双平台重建，
-不得把等价复验表述为 GHCR 已发布。
+revision `b9668d119509a2c17a757826140a060c3a1f3eb3` 的 Actions run
+`30152123281` 已完成源码质量、三包公开 GHCR 双架构发布、attestation、精确 SHA 镜像拉回
+和 skip-build 全量 Release Gate。Linux runner 上发现的 PostgreSQL bind 权限及临时
+Vault key UID 映射问题已在隔离 Gate 内修复；生产应用仍为固定非 root 用户且
+`cap_drop: ALL`。镜像已达到可部署制品状态，但工作流没有修改当前生产容器。
 
 ## 2. 必读顺序
 
@@ -94,7 +95,8 @@ curl --fail http://127.0.0.1:7810/health/ready
 - `de7b82c` 完整 Release Gate 和生产形态空栈/备份恢复演练；
 - 阶段 E0 Subject 显示身份与迁移 Gate；
 - rc.8 source-bound canary、多来源角色、未知来源失败关闭、部署 bundle/镜像冻结和备份新鲜度 Gate；
-- 质量门禁后的 GHCR amd64/arm64 发布、不可变 SHA 标签和生产 pull-only 契约；
+- 质量门禁后的 GHCR amd64/arm64 发布、不可变 SHA 标签、attestation、发布后拉回全量
+  Release Gate 和生产 pull-only 契约（`b9668d1` / run `30152123281`）；
 - 生产 rc.8 更新、`jiuyue` 真实链路、恢复验证和 Vault 往返；
 - 正式关系提升的双 SHA/备份清单/change ID 授权路径；
 - 审计事件确定性排序与可靠撤销（迁移 `0014_audit_event_order`）；
@@ -108,7 +110,6 @@ curl --fail http://127.0.0.1:7810/health/ready
 | P0 | 收敛 rc.8 到主线 | 合并生产边界分支与 CI 修复，更新文档，最终 SHA 的本地/隔离/handoff Gate PASS |
 | P0 | 修复 `jiuyue` 写入/召回缺陷 | 当前回合采集、中文偏好/问句、浏览工具、同文去重及重复指标回归和完整 Gate PASS |
 | P0 | 单独批准生产缺陷更新 | 新 revision 备份、部署、Provider upgrade、写入/浏览/召回复测；不得由源码提交自动触发 |
-| P0 | 推送并验证 GHCR workflow | `source-and-unit` 与 `publish-images` 成功，三个包的 SHA 标签、双架构、SBOM/attestation 可验证；不自动部署生产 |
 | P0 | 完成 `jiuyue` 72 小时观察 | 到 2026-07-25 13:44 UTC 后复核健康、来源、失败任务、召回、追溯、星图与脱敏 |
 | P0 | 创建最新恢复验证备份 | 72 小时门禁满足后单独执行生产备份，覆盖首次验证后新增 events，并验证恢复/Vault |
 | P1 | 真实数据质量校准 | 对 canary 新增事实做证据追溯、重复率、虚假实体和分类人工抽检 |
