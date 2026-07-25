@@ -56,6 +56,20 @@ def test_production_up_preserves_skip_build_control_before_loading_env() -> None
     assert "org.opencontainers.image.revision" in up_script
 
 
+def test_runtime_file_mode_checks_try_gnu_stat_before_bsd_stat() -> None:
+    scripts = (
+        "release-preflight.sh",
+        "predeploy-preflight.sh",
+        "production-configure-model.sh",
+    )
+
+    for name in scripts:
+        script = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+        assert "stat -f '%Lp'" in script
+        assert "stat -c '%a'" in script
+        assert script.index("stat -c '%a'") < script.index("stat -f '%Lp'")
+
+
 def test_source_policy_mutations_have_state_and_policy_rollback() -> None:
     hermes_script = (ROOT / "scripts/predeploy-hermes-env.sh").read_text(encoding="utf-8")
     policy_script = (ROOT / "scripts/production-source-policy.sh").read_text(

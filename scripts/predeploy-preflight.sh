@@ -20,7 +20,7 @@ fail() {
 [[ "$MODE" == "new" || "$MODE" == "bootstrap" || "$MODE" == "existing" ]] \
   || fail "mode must be new, bootstrap, or existing"
 [[ -f "$ENV_FILE" ]] || fail "missing predeploy env: $ENV_FILE"
-env_mode="$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE")"
+env_mode="$(stat -c '%a' "$ENV_FILE" 2>/dev/null || stat -f '%Lp' "$ENV_FILE")"
 [[ "$env_mode" == "600" || "$env_mode" == "400" ]] \
   || fail "predeploy env must have mode 600 or 400"
 
@@ -103,8 +103,8 @@ runtime_root="$(cd "$(dirname "$ENV_FILE")" && pwd)"
   || fail "source policy must be runtime_root/SOURCE-POLICY.json"
 [[ -f "$AGENT_MEMORY_SOURCE_POLICY_FILE" ]] \
   || fail "production source policy file must exist"
-source_policy_mode="$(stat -f '%Lp' "$AGENT_MEMORY_SOURCE_POLICY_FILE" 2>/dev/null \
-  || stat -c '%a' "$AGENT_MEMORY_SOURCE_POLICY_FILE")"
+source_policy_mode="$(stat -c '%a' "$AGENT_MEMORY_SOURCE_POLICY_FILE" 2>/dev/null \
+  || stat -f '%Lp' "$AGENT_MEMORY_SOURCE_POLICY_FILE")"
 [[ "$source_policy_mode" == "600" || "$source_policy_mode" == "400" ]] \
   || fail "production source policy must have mode 600 or 400"
 source_policy_report="$(python3 scripts/production_control.py render-source-inventory \
@@ -114,12 +114,12 @@ source_policy_report="$(python3 scripts/production_control.py render-source-inve
 source_policy_sha256="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["source_policy_sha256"])' \
   "$source_policy_report")"
 
-vault_mode="$(stat -f '%Lp' "$AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE" 2>/dev/null \
-  || stat -c '%a' "$AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE")"
+vault_mode="$(stat -c '%a' "$AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE" 2>/dev/null \
+  || stat -f '%Lp' "$AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE")"
 [[ "$vault_mode" == "600" || "$vault_mode" == "400" ]] \
   || fail "predeploy Vault root key must have mode 600 or 400"
-model_key_mode="$(stat -f '%Lp' "$AGENT_MEMORY_MODEL_API_KEY_HOST_FILE" 2>/dev/null \
-  || stat -c '%a' "$AGENT_MEMORY_MODEL_API_KEY_HOST_FILE")"
+model_key_mode="$(stat -c '%a' "$AGENT_MEMORY_MODEL_API_KEY_HOST_FILE" 2>/dev/null \
+  || stat -f '%Lp' "$AGENT_MEMORY_MODEL_API_KEY_HOST_FILE")"
 [[ "$model_key_mode" == "600" || "$model_key_mode" == "400" ]] \
   || fail "production model API key file must have mode 600 or 400"
 
@@ -131,8 +131,8 @@ if [[ "$MODE" == "new" ]]; then
 elif [[ "$MODE" == "existing" ]]; then
   [[ -f "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" ]] \
     || fail "existing deployment requires DEPLOYMENT-STATE.json"
-  state_mode="$(stat -f '%Lp' "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" 2>/dev/null \
-    || stat -c '%a' "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE")"
+  state_mode="$(stat -c '%a' "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" 2>/dev/null \
+    || stat -f '%Lp' "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE")"
   [[ "$state_mode" == "600" || "$state_mode" == "400" ]] \
     || fail "predeploy state file must have mode 600 or 400"
   IFS=$'\t' read -r deployment_manifest_path deployment_manifest_sha256 \

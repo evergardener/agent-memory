@@ -26,7 +26,7 @@ fi
 if [[ -n "$KEY_INPUT_FILE" ]]; then
   [[ -f "$KEY_INPUT_FILE" && ! -L "$KEY_INPUT_FILE" ]] \
     || { echo "model key input must be a regular non-symlink file" >&2; exit 1; }
-  key_input_mode="$(stat -f '%Lp' "$KEY_INPUT_FILE" 2>/dev/null || stat -c '%a' "$KEY_INPUT_FILE")"
+  key_input_mode="$(stat -c '%a' "$KEY_INPUT_FILE" 2>/dev/null || stat -f '%Lp' "$KEY_INPUT_FILE")"
   [[ "$key_input_mode" == "600" || "$key_input_mode" == "400" ]] \
     || { echo "model key input file must have mode 600 or 400" >&2; exit 1; }
 fi

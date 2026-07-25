@@ -11,7 +11,7 @@ fail() {
 }
 
 [[ -f "$ENV_FILE" ]] || fail "missing isolated release env: $ENV_FILE"
-env_mode="$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE")"
+env_mode="$(stat -c '%a' "$ENV_FILE" 2>/dev/null || stat -f '%Lp' "$ENV_FILE")"
 [[ "$env_mode" == "600" || "$env_mode" == "400" ]] \
   || fail "release env must have mode 600 or 400"
 
@@ -94,8 +94,8 @@ PY
   || fail "release backup root must already exist"
 [[ -f "$AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE" ]] \
   || fail "release Vault root key file must already exist"
-vault_mode="$(stat -f '%Lp' "$AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE" 2>/dev/null \
-  || stat -c '%a' "$AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE")"
+vault_mode="$(stat -c '%a' "$AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE" 2>/dev/null \
+  || stat -f '%Lp' "$AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE")"
 [[ "$vault_mode" == "600" || "$vault_mode" == "400" ]] \
   || fail "release Vault root key must have mode 600 or 400"
 
