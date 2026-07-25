@@ -211,6 +211,34 @@ jobs:
           ) 2>&1 | tee "$log_file"; then
             exit 0
           fi
+          if [[ -f "$runtime_root/release.env" ]]; then
+            (
+              set -a
+              source "$runtime_root/release.env"
+              set +a
+              echo "==> failed release stack status"
+              docker compose \
+                -f compose.yaml \
+                -f compose.release.yaml \
+                --env-file "$runtime_root/release.env" \
+                ps --all
+              echo "==> failed release stack logs"
+              docker compose \
+                -f compose.yaml \
+                -f compose.release.yaml \
+                --env-file "$runtime_root/release.env" \
+                logs --no-color --tail=120 \
+                  postgres migrate api worker model-worker
+              for container in \
+                "${AGENT_MEMORY_COMPOSE_PROJECT}-automated-test-api" \
+                "${AGENT_MEMORY_COMPOSE_PROJECT}-automated-test-worker"; do
+                if docker container inspect "$container" >/dev/null 2>&1; then
+                  echo "==> $container logs"
+                  docker logs --tail=120 "$container"
+                fi
+              done
+            ) 2>&1 | tee -a "$log_file" || true
+          fi
           {
             echo "### Published-image release gate failure"
             echo '```text'
