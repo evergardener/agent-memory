@@ -14,7 +14,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           version: "0.11.14"
           enable-cache: true
@@ -147,7 +147,7 @@ jobs:
           repository: NousResearch/hermes-agent
           ref: ${{ env.HERMES_AGENT_REVISION }}
           path: hermes-agent-runtime
-      - uses: astral-sh/setup-uv@v9
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           version: "0.11.14"
           enable-cache: true

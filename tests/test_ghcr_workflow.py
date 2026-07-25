@@ -59,7 +59,7 @@ def test_quality_workflow_uses_node24_action_runtimes() -> None:
     assert workflow.count("uses: actions/checkout@v7") == 4
     assert workflow.count("uses: actions/setup-python@v7") == 2
     assert workflow.count("uses: actions/setup-node@v7") == 2
-    assert workflow.count("uses: astral-sh/setup-uv@v9") == 2
+    assert workflow.count("uses: astral-sh/setup-uv@v9.0.0") == 2
 
 
 def test_compose_decouples_application_version_from_image_tag() -> None:
