@@ -31,6 +31,37 @@ def test_ghcr_publish_is_multi_platform_immutable_and_attested() -> None:
         assert f"subject-name: ${{{{ env.IMAGE_PREFIX }}}}-{service}" in workflow
 
 
+def test_published_images_are_independently_verified_by_the_complete_gate() -> None:
+    workflow = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
+
+    verify = workflow[workflow.index("  verify-published-images:") :]
+    assert "needs: publish-images" in verify
+    assert "packages: read" in verify
+    assert "attestations: read" in verify
+    assert "ca3566301373d871f05c1841dafe11cbd8e37a4d" in verify
+    assert 'gh attestation verify "oci://$image"' in verify
+    assert 'docker pull --platform linux/amd64 "$image"' in verify
+    assert 'grep -F "linux/amd64"' in verify
+    assert 'grep -F "linux/arm64"' in verify
+    assert "AGENT_MEMORY_SKIP_BUILD=1" in verify
+    assert 'bash scripts/release-check.sh "$runtime_root/release.env"' in verify
+    assert "if: always()" in verify
+    assert "down --volumes --remove-orphans" in verify
+
+
+def test_quality_workflow_uses_node24_action_runtimes() -> None:
+    workflow = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
+
+    assert "actions/checkout@v4" not in workflow
+    assert "actions/setup-python@v5" not in workflow
+    assert "actions/setup-node@v4" not in workflow
+    assert "astral-sh/setup-uv@v6" not in workflow
+    assert workflow.count("uses: actions/checkout@v7") == 4
+    assert workflow.count("uses: actions/setup-python@v7") == 2
+    assert workflow.count("uses: actions/setup-node@v7") == 2
+    assert workflow.count("uses: astral-sh/setup-uv@v9") == 2
+
+
 def test_compose_decouples_application_version_from_image_tag() -> None:
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
 

@@ -13,15 +13,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9
         with:
           version: "0.11.14"
           enable-cache: true
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -67,7 +67,7 @@ jobs:
       REGISTRY: ghcr.io
       IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/agent-memory
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Read application version
         id: version
         shell: bash
@@ -122,3 +122,97 @@ jobs:
           subject-name: ${{ env.IMAGE_PREFIX }}-migrate
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+  verify-published-images:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: publish-images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    env:
+      IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/agent-memory
+      HERMES_AGENT_REVISION: ca3566301373d871f05c1841dafe11cbd8e37a4d
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Exclude the pinned Hermes checkout from release cleanliness checks
+        shell: bash
+        run: echo "/hermes-agent-runtime/" >> "$GITHUB_WORKSPACE/.git/info/exclude"
+      - name: Checkout the validated Hermes runtime
+        uses: actions/checkout@v7
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ env.HERMES_AGENT_REVISION }}
+          path: hermes-agent-runtime
+      - uses: astral-sh/setup-uv@v9
+        with:
+          version: "0.11.14"
+          enable-cache: true
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install release and Hermes test runtimes
+        shell: bash
+        run: |
+          uv sync --frozen --extra dev --extra migrations
+          UV_PROJECT_ENVIRONMENT=venv uv sync \
+            --directory hermes-agent-runtime \
+            --frozen
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v4
+      - name: Verify and pull the exact published images
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          project="agent-memory-release-ghcr-${GITHUB_RUN_ID}"
+          for service in api worker migrate; do
+            image="${IMAGE_PREFIX}-${service}:sha-${GITHUB_SHA}"
+            manifest="$(docker buildx imagetools inspect "$image")"
+            grep -F "linux/amd64" <<<"$manifest"
+            grep -F "linux/arm64" <<<"$manifest"
+            gh attestation verify "oci://$image" --repo "$GITHUB_REPOSITORY"
+            docker pull --platform linux/amd64 "$image"
+            test "$(docker image inspect "$image" --format '{{.Architecture}}')" = amd64
+            test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "$version"
+            test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$GITHUB_SHA"
+            docker tag "$image" "${project}-${service}:${version}"
+          done
+      - name: Run the complete gate against published images
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_root="$RUNNER_TEMP/agent-memory-release-gate"
+          project="agent-memory-release-ghcr-${GITHUB_RUN_ID}"
+          AGENT_MEMORY_RELEASE_PROJECT="$project" \
+            bash scripts/init-release-env.sh \
+              "$runtime_root" \
+              "$runtime_root/release.env"
+          AGENT_MEMORY_SKIP_BUILD=1 \
+          AGENT_MEMORY_REVISION="$GITHUB_SHA" \
+          HERMES_AGENT_ROOT="$GITHUB_WORKSPACE/hermes-agent-runtime" \
+            bash scripts/release-check.sh "$runtime_root/release.env"
+      - name: Clean up the isolated release stack
+        if: always()
+        shell: bash
+        run: |
+          env_file="$RUNNER_TEMP/agent-memory-release-gate/release.env"
+          if [[ -f "$env_file" ]]; then
+            docker compose \
+              -f compose.yaml \
+              -f compose.release.yaml \
+              --env-file "$env_file" \
+              down --volumes --remove-orphans
+          fi
