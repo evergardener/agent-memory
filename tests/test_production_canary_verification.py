@@ -70,6 +70,15 @@ def test_runtime_file_mode_checks_try_gnu_stat_before_bsd_stat() -> None:
         assert script.index("stat -c '%a'") < script.index("stat -f '%Lp'")
 
 
+def test_release_gate_surfaces_compose_startup_diagnostics() -> None:
+    script = (ROOT / "scripts/release-check.sh").read_text(encoding="utf-8")
+
+    assert 'if ! "${COMPOSE[@]}" up -d --no-build; then' in script
+    assert '"${COMPOSE[@]}" ps --all || true' in script
+    assert '"${COMPOSE[@]}" logs --no-color --tail=120' in script
+    assert "postgres migrate api worker model-worker || true" in script
+
+
 def test_source_policy_mutations_have_state_and_policy_rollback() -> None:
     hermes_script = (ROOT / "scripts/predeploy-hermes-env.sh").read_text(encoding="utf-8")
     policy_script = (ROOT / "scripts/production-source-policy.sh").read_text(

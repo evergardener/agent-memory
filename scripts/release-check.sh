@@ -59,7 +59,12 @@ if [[ "${AGENT_MEMORY_SKIP_BUILD:-0}" == "1" ]]; then
 else
   "${COMPOSE[@]}" build
 fi
-"${COMPOSE[@]}" up -d --no-build
+if ! "${COMPOSE[@]}" up -d --no-build; then
+  "${COMPOSE[@]}" ps --all || true
+  "${COMPOSE[@]}" logs --no-color --tail=120 \
+    postgres migrate api worker model-worker || true
+  exit 1
+fi
 
 for _ in {1..60}; do
   if curl --fail --silent "http://127.0.0.1:${AGENT_MEMORY_API_PORT:-7788}/health/ready" \
