@@ -19,7 +19,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
-RUN pip install --no-cache-dir uv==0.11.14
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir uv==0.11.14
 
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --extra migrations --no-install-project
@@ -31,8 +34,10 @@ COPY migrations ./migrations
 RUN uv sync --frozen --no-dev --extra migrations --no-editable
 
 RUN useradd --create-home --uid 10001 agent-memory
-USER agent-memory
+COPY scripts/docker-entrypoint.sh /usr/local/bin/agent-memory-entrypoint
+RUN chmod 0755 /usr/local/bin/agent-memory-entrypoint
 
 ENV PATH="/app/.venv/bin:${PATH}"
 
+ENTRYPOINT ["agent-memory-entrypoint"]
 CMD ["agent-memory-api"]
