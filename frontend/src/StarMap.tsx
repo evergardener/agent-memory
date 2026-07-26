@@ -47,23 +47,42 @@ function safeCelestialColor(color: string, fallback: string) {
 
 function celestialSprite(inputColor: string, subject: boolean) {
   const color = safeCelestialColor(inputColor, subject ? "#91cfb2" : PLANET_COLORS.other);
-  const size = subject ? 112 : 36;
+  const size = subject ? 136 : 36;
   const center = size / 2;
   const core = subject ? 4 : 2;
-  const glow = subject ? 23 : 8;
+  const glow = subject ? 32 : 8;
   const rays = subject
-    ? `<path d="M16 ${center}H${size - 16}" stroke="${color}" stroke-opacity=".28" stroke-width=".7"/>
-    <path d="M${center} 4V${size - 4}" stroke="${color}" stroke-opacity=".28" stroke-width=".7"/>`
+    ? `<path d="M29 ${center}H${size - 29}" stroke="url(#rh)" stroke-width=".7"/>
+    <path d="M${center} 21V${size - 21}" stroke="url(#rv)" stroke-width=".7"/>`
     : "";
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
     <defs>
       <radialGradient id="g">
-        <stop offset="0" stop-color="${color}" stop-opacity=".62"/>
-        <stop offset=".34" stop-color="${color}" stop-opacity=".25"/>
+        <stop offset="0" stop-color="${color}" stop-opacity=".68"/>
+        <stop offset=".28" stop-color="${color}" stop-opacity=".3"/>
+        <stop offset=".58" stop-color="${color}" stop-opacity=".11"/>
         <stop offset="1" stop-color="${color}" stop-opacity="0"/>
       </radialGradient>
+      <linearGradient id="rh" gradientUnits="userSpaceOnUse" x1="29" y1="${center}" x2="${size - 29}" y2="${center}">
+        <stop offset="0" stop-color="${color}" stop-opacity="0"/>
+        <stop offset=".3" stop-color="${color}" stop-opacity=".1"/>
+        <stop offset=".42" stop-color="${color}" stop-opacity=".2"/>
+        <stop offset=".5" stop-color="${color}" stop-opacity=".36"/>
+        <stop offset=".58" stop-color="${color}" stop-opacity=".2"/>
+        <stop offset=".7" stop-color="${color}" stop-opacity=".1"/>
+        <stop offset="1" stop-color="${color}" stop-opacity="0"/>
+      </linearGradient>
+      <linearGradient id="rv" gradientUnits="userSpaceOnUse" x1="${center}" y1="21" x2="${center}" y2="${size - 21}">
+        <stop offset="0" stop-color="${color}" stop-opacity="0"/>
+        <stop offset=".3" stop-color="${color}" stop-opacity=".1"/>
+        <stop offset=".42" stop-color="${color}" stop-opacity=".2"/>
+        <stop offset=".5" stop-color="${color}" stop-opacity=".36"/>
+        <stop offset=".58" stop-color="${color}" stop-opacity=".2"/>
+        <stop offset=".7" stop-color="${color}" stop-opacity=".1"/>
+        <stop offset="1" stop-color="${color}" stop-opacity="0"/>
+      </linearGradient>
       <filter id="b" x="-60%" y="-60%" width="220%" height="220%">
-        <feGaussianBlur stdDeviation="${subject ? 5.8 : 3.5}"/>
+        <feGaussianBlur stdDeviation="${subject ? 8.4 : 3.5}"/>
       </filter>
     </defs>
     <circle cx="${center}" cy="${center}" r="${glow}" fill="url(#g)" filter="url(#b)"/>
@@ -439,8 +458,8 @@ export function StarMap({
           width: 7, height: 7, shape: "ellipse", label: "data(label)", opacity: 1,
           "background-color": "transparent", "background-opacity": 0, "border-width": 0,
           "background-image": "data(celestial_image)", "background-fit": "none",
-          "background-width": 112, "background-height": 112, "background-clip": "none",
-          "background-image-containment": "over", "bounds-expansion": 58,
+          "background-width": 136, "background-height": 136, "background-clip": "none",
+          "background-image-containment": "over", "bounds-expansion": 70,
           "underlay-opacity": 0,
           color: "data(color)", "font-family": "Georgia, Noto Serif SC, serif",
           "font-size": 14, "font-weight": 600, "text-valign": "bottom", "text-margin-y": 31,
