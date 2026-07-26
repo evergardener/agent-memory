@@ -9,8 +9,9 @@ V1 基础证据/事实/召回、阶段 C 关系星系、阶段 E0 展示身份�
 的 GHCR 精确 SHA 镜像，状态为 `canary_active`；`jiuyue:production-jiuyue` 正在持续写入，
 模型关闭，尚未生成晋级记录。2026-07-26 已在 `codex/unified-memory-f1-f7` 完成统一经历
 与程序性记忆 F1–F6 隔离实现；migration、API/数据库、Provider、前端构建、浏览器及 F7
-故障恢复/泄漏/备份客观 Gate 已通过。用户主观星图验收、最终 Release 记录和 F8 生产更新
-仍未完成；生产能力仍以 rc.8 为准。
+故障恢复/泄漏/备份客观 Gate 已通过，revision
+`09a225681e875542e664d22390b6a39d843693fe` 的完整 Release Gate 亦已 PASS。用户主观
+星图验收和 F8 生产更新仍未完成；生产能力仍以 rc.8 为准。
 
 源码包含当前回合切分、中文偏好/问句判定、最近记忆浏览、同文召回去重和重复工具事件质量指标。后续又修复 profile 级 Provider 升级文档、可重定位 Alembic 调用及 production `--upgrade` 绑定流程；这些后续运维改动仍需按新 Git SHA 经过 CI/GHCR Gate 后才能更新生产。
 
@@ -114,6 +115,8 @@ curl --fail http://127.0.0.1:7810/health/ready
   多边形主体布局和跨类型治理；
 - F7 客观故障恢复：worker 停机积压、过期租约、API fail-soft、情节幂等、统一表空库恢复、
   evidence hash、Vault 解密、泄漏扫描和性能基线。
+- `09a225681e875542e664d22390b6a39d843693fe` 的 F1–F7 完整隔离 Release Gate：
+  22 个集成用例、10 个 Hermes Provider 用例、镜像修订、恢复与 Vault Gate 全部 PASS。
 
 ## 8. 下一任务队列
 
