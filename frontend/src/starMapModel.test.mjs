@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { presentRelation, presentRelations, subjectOrbitLayout } from "./starMapModel.ts";
+import {
+  presentRelation,
+  presentRelations,
+  relationMatchesOverlay,
+  subjectOrbitLayout
+} from "./starMapModel.ts";
 
 function subject(id, label, kind) {
   return { data: { id, record_id: id, label, kind: "subject", subject_kind: kind } };
@@ -112,4 +117,53 @@ test("duplicate durable relations render as one edge with combined support", () 
   assert.equal(presented[0].data.id, "relationship:one");
   assert.equal(presented[0].data.record_ids, "one|two");
   assert.equal(presented[0].data.evidence_count, "2");
+});
+
+test("overlay animation can follow episode support or participant relations", () => {
+  assert.equal(
+    relationMatchesOverlay(
+      {
+        source: "user",
+        target: "chengdu",
+        episode_ids: "episode:trip"
+      },
+      {
+        id: "episode:trip",
+        kind: "episode",
+        entity_ids: "chengdu",
+        subject_ids: "user"
+      }
+    ),
+    true
+  );
+  assert.equal(
+    relationMatchesOverlay(
+      {
+        source: "user",
+        target: "chengdu"
+      },
+      {
+        id: "fact:trip",
+        kind: "fact",
+        entity_ids: "chengdu",
+        subject_ids: "user"
+      }
+    ),
+    true
+  );
+  assert.equal(
+    relationMatchesOverlay(
+      {
+        source: "qishuo",
+        target: "n8n"
+      },
+      {
+        id: "episode:trip",
+        kind: "episode",
+        entity_ids: "chengdu",
+        subject_ids: "user"
+      }
+    ),
+    false
+  );
 });

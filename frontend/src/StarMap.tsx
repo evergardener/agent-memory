@@ -1,7 +1,7 @@
 import cytoscape, { Core, EdgeSingular, EventObjectNode, NodeSingular } from "cytoscape";
 import { CSSProperties, useEffect, useMemo, useRef } from "react";
 import type { Galaxy, GraphData, GraphElement, LayoutPreference } from "./api";
-import { presentRelations, subjectOrbitLayout } from "./starMapModel";
+import { presentRelations, relationMatchesOverlay, subjectOrbitLayout } from "./starMapModel";
 
 type Props = {
   graph: GraphData;
@@ -47,11 +47,14 @@ function safeCelestialColor(color: string, fallback: string) {
 
 function celestialSprite(inputColor: string, subject: boolean) {
   const color = safeCelestialColor(inputColor, subject ? "#91cfb2" : PLANET_COLORS.other);
-  const size = subject ? 96 : 52;
+  const size = subject ? 112 : 36;
   const center = size / 2;
-  const core = subject ? 3.8 : 3;
-  const glow = subject ? 20 : 12;
-  const rayInset = subject ? 7 : 10;
+  const core = subject ? 4 : 2;
+  const glow = subject ? 23 : 8;
+  const rays = subject
+    ? `<path d="M16 ${center}H${size - 16}" stroke="${color}" stroke-opacity=".28" stroke-width=".7"/>
+    <path d="M${center} 4V${size - 4}" stroke="${color}" stroke-opacity=".28" stroke-width=".7"/>`
+    : "";
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
     <defs>
       <radialGradient id="g">
@@ -64,8 +67,7 @@ function celestialSprite(inputColor: string, subject: boolean) {
       </filter>
     </defs>
     <circle cx="${center}" cy="${center}" r="${glow}" fill="url(#g)" filter="url(#b)"/>
-    <path d="M${rayInset} ${center}H${size - rayInset}" stroke="${color}" stroke-opacity="${subject ? .24 : .13}" stroke-width=".7"/>
-    <path d="M${center} ${rayInset}V${size - rayInset}" stroke="${color}" stroke-opacity="${subject ? .24 : .13}" stroke-width=".7"/>
+    ${rays}
     <circle cx="${center}" cy="${center}" r="${core + 2.4}" fill="${color}" fill-opacity=".22"/>
     <circle cx="${center}" cy="${center}" r="${core}" fill="#f8fff9"/>
   </svg>`;
@@ -187,6 +189,28 @@ export function StarMap({
   const instance = useRef<Core | null>(null);
   const focusedGalaxy = useRef<Galaxy | null>(null);
   const transitionArmed = useRef(true);
+  const handlers = useRef({
+    onSelect,
+    onEnterGalaxy,
+    onExitGalaxy,
+    onSaveEntityLayout,
+    onSaveSubjectLayout
+  });
+  useEffect(() => {
+    handlers.current = {
+      onSelect,
+      onEnterGalaxy,
+      onExitGalaxy,
+      onSaveEntityLayout,
+      onSaveSubjectLayout
+    };
+  }, [
+    onEnterGalaxy,
+    onExitGalaxy,
+    onSaveEntityLayout,
+    onSaveSubjectLayout,
+    onSelect
+  ]);
   const planetNodes = useMemo(
     () => graph.nodes.filter((node) => node.data.kind === "entity"),
     [graph.nodes]
@@ -319,11 +343,10 @@ export function StarMap({
     onSelect(data);
     const cy = instance.current;
     if (!cy || cy.destroyed()) return;
-    const factIds = data.kind === "fact" ? new Set([data.id]) : new Set(splitIds(data.fact_ids));
     const entityIds = new Set(splitIds(data.entity_ids));
-    const relatedEdges = cy.edges().filter((edge) =>
-      splitIds(String(edge.data("fact_ids") || "")).some((id) => factIds.has(id))
-    ).slice(0, 8);
+    const relatedEdges = cy.edges()
+      .filter((edge) => relationMatchesOverlay(edge.data(), data))
+      .slice(0, 8);
     if (relatedEdges.length === 0) {
       entityIds.forEach((id) => cy.getElementById(id).addClass("overlay-member"));
       return;
@@ -331,7 +354,11 @@ export function StarMap({
     relatedEdges.forEach((edge, index) => {
       const particle = cy.add({
         group: "nodes",
-        data: { id: `particle:${data.id}:${index}:${Date.now()}`, kind: "particle" },
+        data: {
+          id: `particle:${data.id}:${index}:${Date.now()}`,
+          kind: "particle",
+          celestial_image: celestialSprite("#fff0ba", false)
+        },
         position: edge.source().position(),
         selectable: false,
         grabbable: false
@@ -402,23 +429,24 @@ export function StarMap({
           label: "", width: "mapData(relation_count, 0, 12, 5, 8)", height: "mapData(relation_count, 0, 12, 5, 8)",
           shape: "ellipse", "background-color": "transparent", "background-opacity": 0, "border-width": 0,
           "background-image": "data(celestial_image)", "background-fit": "none",
-          "background-width": 52, "background-height": 52, "background-clip": "none",
-          "background-image-containment": "over", "bounds-expansion": 27,
-          "underlay-opacity": 0, "transition-property": "opacity, background-image-opacity, text-opacity",
+          "background-width": 36, "background-height": 36, "background-clip": "none",
+          "background-image-containment": "over", "background-image-opacity": 0.76,
+          "bounds-expansion": 20, "underlay-opacity": 0,
+          "transition-property": "opacity, background-image-opacity, text-opacity", "z-index": 6,
           "transition-duration": 220
         } },
         { selector: 'node[kind = "subject"]', style: {
           width: 7, height: 7, shape: "ellipse", label: "data(label)", opacity: 1,
           "background-color": "transparent", "background-opacity": 0, "border-width": 0,
           "background-image": "data(celestial_image)", "background-fit": "none",
-          "background-width": 96, "background-height": 96, "background-clip": "none",
-          "background-image-containment": "over", "bounds-expansion": 50,
+          "background-width": 112, "background-height": 112, "background-clip": "none",
+          "background-image-containment": "over", "bounds-expansion": 58,
           "underlay-opacity": 0,
           color: "data(color)", "font-family": "Georgia, Noto Serif SC, serif",
-          "font-size": 13, "font-weight": 600, "text-valign": "bottom", "text-margin-y": 25,
+          "font-size": 14, "font-weight": 600, "text-valign": "bottom", "text-margin-y": 31,
           "text-outline-color": "#020410", "text-outline-width": 3,
           "transition-property": "opacity, background-image-opacity, text-opacity",
-          "transition-duration": 220
+          "transition-duration": 220, "z-index": 12
         } },
         { selector: 'node[kind = "subject"][subject_kind = "user"]', style: {
           width: 8, height: 8
@@ -430,8 +458,12 @@ export function StarMap({
         { selector: 'node[lens = "stage"]', style: { "border-width": 1.2, "border-color": "#82c9ad" } },
         { selector: 'node[lens = "current"], node[lens = "observed"]', style: { "background-image-opacity": 1 } },
         { selector: 'node[kind = "particle"]', style: {
-          width: 5, height: 5, label: "", "background-color": "#fff0ba", "border-width": 0,
-          "underlay-padding": 9, "underlay-color": "#ffd98c", "underlay-opacity": 0.66, "events": "no", "z-index": 40
+          width: 4, height: 4, label: "", "background-color": "transparent",
+          "background-opacity": 0, "border-width": 0,
+          "background-image": "data(celestial_image)", "background-fit": "none",
+          "background-width": 36, "background-height": 36, "background-clip": "none",
+          "background-image-containment": "over", "bounds-expansion": 20,
+          "underlay-opacity": 0, "events": "no", "z-index": 40
         } },
         { selector: 'edge[kind = "relation"], edge[kind = "typed_relation"], edge[kind = "relationship"]', style: {
           width: "mapData(strength, 0, 1, 0.3, 2)", "line-color": "#7188b0",
@@ -501,13 +533,13 @@ export function StarMap({
     cy.on("tap select", 'node[kind = "entity"], node[kind = "subject"]', (event: EventObjectNode) => {
       clearFocus();
       focusNeighborhood(event.target);
-      onSelect(event.target.data());
+      handlers.current.onSelect(event.target.data());
     });
     cy.on("tap select", 'edge[kind = "relation"], edge[kind = "typed_relation"], edge[kind = "episode_relation"], edge[kind = "relationship"]', (event) => {
       clearFocus();
       event.target.addClass("is-neighbor");
       event.target.connectedNodes().addClass("is-neighbor");
-      onSelect(event.target.data());
+      handlers.current.onSelect(event.target.data());
     });
     cy.on("mouseover", 'edge[kind = "episode_relation"]', (event) => {
       event.target.addClass("is-hovered");
@@ -518,18 +550,18 @@ export function StarMap({
     cy.on("tap", (event) => {
       if (event.target !== cy) return;
       clearFocus();
-      onSelect(null);
+      handlers.current.onSelect(null);
     });
     cy.on("dragfree", 'node[kind = "entity"]', (event: EventObjectNode) => {
       const position = event.target.position();
-      onSaveEntityLayout(String(event.target.data("record_id")), {
+      handlers.current.onSaveEntityLayout(String(event.target.data("record_id")), {
         x: Math.round(position.x * 100) / 100,
         y: Math.round(position.y * 100) / 100
       });
     });
     cy.on("dragfree", 'node[kind = "subject"]', (event: EventObjectNode) => {
       const position = event.target.position();
-      onSaveSubjectLayout(String(event.target.data("record_id")), {
+      handlers.current.onSaveSubjectLayout(String(event.target.data("record_id")), {
         x: Math.round((position.x - 600) * 100) / 100,
         y: Math.round((position.y - 360) * 100) / 100
       });
@@ -539,10 +571,10 @@ export function StarMap({
       if (!transitionArmed.current || window.performance.now() < transitionReadyAt) return;
       if (view === "universe" && cy.zoom() >= 2.6 && focusedGalaxy.current) {
         transitionArmed.current = false;
-        onEnterGalaxy(focusedGalaxy.current);
+        handlers.current.onEnterGalaxy(focusedGalaxy.current);
       } else if (view === "galaxy" && cy.zoom() <= 0.14) {
         transitionArmed.current = false;
-        onExitGalaxy();
+        handlers.current.onExitGalaxy();
       }
     });
 
@@ -587,11 +619,6 @@ export function StarMap({
   }, [
     activeLens,
     motionEnabled,
-    onEnterGalaxy,
-    onExitGalaxy,
-    onSaveEntityLayout,
-    onSaveSubjectLayout,
-    onSelect,
     planetNodes,
     positions,
     protectedIds,

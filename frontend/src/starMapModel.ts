@@ -8,6 +8,36 @@ function mergeIds(...values: string[]) {
   return [...new Set(values.flatMap(splitIds))].sort().join("|");
 }
 
+function overlaps(left: string[], right: Set<string>) {
+  return left.some((value) => right.has(value));
+}
+
+export function relationMatchesOverlay(
+  edge: Record<string, string>,
+  overlay: Record<string, string>
+) {
+  const overlayFactIds = new Set(
+    overlay.kind === "fact" ? [overlay.id] : splitIds(overlay.fact_ids)
+  );
+  const overlayEpisodeIds = new Set(
+    overlay.kind === "episode" ? [overlay.id] : splitIds(overlay.episode_ids)
+  );
+  if (
+    overlaps(splitIds(edge.fact_ids), overlayFactIds) ||
+    overlaps(splitIds(edge.episode_ids), overlayEpisodeIds)
+  ) {
+    return true;
+  }
+  const participants = new Set([
+    ...splitIds(overlay.entity_ids),
+    ...splitIds(overlay.subject_ids),
+    ...splitIds(overlay.target_ids)
+  ]);
+  return participants.size >= 2 &&
+    participants.has(edge.source) &&
+    participants.has(edge.target);
+}
+
 export function subjectOrbitLayout(nodes: GraphElement[]) {
   const ordered = [...nodes].sort((left, right) => {
     const leftRank = left.data.subject_kind === "user" ? 0 : 1;
