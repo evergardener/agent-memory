@@ -41,6 +41,37 @@ const GALAXY_COLORS: Record<string, string> = {
   other: "#9cafe6"
 };
 
+function safeCelestialColor(color: string, fallback: string) {
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
+}
+
+function celestialSprite(inputColor: string, subject: boolean) {
+  const color = safeCelestialColor(inputColor, subject ? "#91cfb2" : PLANET_COLORS.other);
+  const size = subject ? 96 : 52;
+  const center = size / 2;
+  const core = subject ? 3.8 : 3;
+  const glow = subject ? 20 : 12;
+  const rayInset = subject ? 7 : 10;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+    <defs>
+      <radialGradient id="g">
+        <stop offset="0" stop-color="${color}" stop-opacity=".62"/>
+        <stop offset=".34" stop-color="${color}" stop-opacity=".25"/>
+        <stop offset="1" stop-color="${color}" stop-opacity="0"/>
+      </radialGradient>
+      <filter id="b" x="-60%" y="-60%" width="220%" height="220%">
+        <feGaussianBlur stdDeviation="${subject ? 5.8 : 3.5}"/>
+      </filter>
+    </defs>
+    <circle cx="${center}" cy="${center}" r="${glow}" fill="url(#g)" filter="url(#b)"/>
+    <path d="M${rayInset} ${center}H${size - rayInset}" stroke="${color}" stroke-opacity="${subject ? .24 : .13}" stroke-width=".7"/>
+    <path d="M${center} ${rayInset}V${size - rayInset}" stroke="${color}" stroke-opacity="${subject ? .24 : .13}" stroke-width=".7"/>
+    <circle cx="${center}" cy="${center}" r="${core + 2.4}" fill="${color}" fill-opacity=".22"/>
+    <circle cx="${center}" cy="${center}" r="${core}" fill="#f8fff9"/>
+  </svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
 const RELATION_LABELS: Record<string, string> = {
   uses_database: "使用数据库",
   pushes_logs_to: "推送日志",
@@ -335,6 +366,10 @@ export function StarMap({
           ...element.data,
           relation_count: relationCounts.get(element.data.id) || 0,
           planet_color: PLANET_COLORS[element.data.entity_type] || PLANET_COLORS.other,
+          celestial_image: celestialSprite(
+            PLANET_COLORS[element.data.entity_type] || PLANET_COLORS.other,
+            false
+          ),
           protected: protectedIds.has(element.data.id) ? "true" : "false",
           lens: activeLens
         }
@@ -342,7 +377,11 @@ export function StarMap({
       ...(view === "universe" ? subjectLayout.map(({ node, x, y }) => ({
         ...node,
         position: { x: 600 + x, y: 360 + y },
-        data: { ...node.data, relation_count: 0 }
+        data: {
+          ...node.data,
+          relation_count: 0,
+          celestial_image: celestialSprite(node.data.color || "#91cfb2", true)
+        }
       })) : []),
       ...visibleRelationItems.map((element) => ({
         ...element,
@@ -360,33 +399,36 @@ export function StarMap({
       pixelRatio: "auto",
       style: [
         { selector: 'node[kind = "entity"]', style: {
-          label: "", width: "mapData(relation_count, 0, 12, 11, 20)", height: "mapData(relation_count, 0, 12, 11, 20)",
-          shape: "ellipse", "background-color": "data(planet_color)", "border-width": 0.8, "border-color": "#ffffff",
-          "underlay-padding": 8, "underlay-color": "data(planet_color)", "underlay-opacity": 0.18,
-          "underlay-shape": "ellipse", "transition-property": "opacity, border-width, underlay-opacity, text-opacity",
+          label: "", width: "mapData(relation_count, 0, 12, 5, 8)", height: "mapData(relation_count, 0, 12, 5, 8)",
+          shape: "ellipse", "background-color": "transparent", "background-opacity": 0, "border-width": 0,
+          "background-image": "data(celestial_image)", "background-fit": "none",
+          "background-width": 52, "background-height": 52, "background-clip": "none",
+          "background-image-containment": "over", "bounds-expansion": 27,
+          "underlay-opacity": 0, "transition-property": "opacity, background-image-opacity, text-opacity",
           "transition-duration": 220
         } },
         { selector: 'node[kind = "subject"]', style: {
-          width: 8, height: 8, shape: "ellipse", label: "data(label)", opacity: 1,
-          "background-color": "#effff5", "border-width": 1.2, "border-color": "data(color)",
-          "underlay-padding": 18, "underlay-color": "data(color)", "underlay-opacity": 0.26,
-          "underlay-shape": "ellipse",
+          width: 7, height: 7, shape: "ellipse", label: "data(label)", opacity: 1,
+          "background-color": "transparent", "background-opacity": 0, "border-width": 0,
+          "background-image": "data(celestial_image)", "background-fit": "none",
+          "background-width": 96, "background-height": 96, "background-clip": "none",
+          "background-image-containment": "over", "bounds-expansion": 50,
+          "underlay-opacity": 0,
           color: "data(color)", "font-family": "Georgia, Noto Serif SC, serif",
-          "font-size": 13, "font-weight": 600, "text-valign": "bottom", "text-margin-y": 18,
+          "font-size": 13, "font-weight": 600, "text-valign": "bottom", "text-margin-y": 25,
           "text-outline-color": "#020410", "text-outline-width": 3,
-          "transition-property": "underlay-opacity, underlay-padding, border-width",
+          "transition-property": "opacity, background-image-opacity, text-opacity",
           "transition-duration": 220
         } },
         { selector: 'node[kind = "subject"][subject_kind = "user"]', style: {
-          width: 10, height: 10, "underlay-padding": 22, "underlay-opacity": 0.34
+          width: 8, height: 8
         } },
         { selector: 'node[protected = "true"]', style: {
-          "border-width": 2, "border-color": "#e5a3b7", "border-style": "double",
-          "underlay-color": "#c982a0", "underlay-opacity": 0.35
+          "border-width": 1.4, "border-color": "#e5a3b7", "border-style": "double"
         } },
-        { selector: 'node[lens = "long_term"]', style: { "underlay-opacity": 0.34, "underlay-padding": 10 } },
-        { selector: 'node[lens = "stage"]', style: { "border-width": 2.2, "border-color": "#82c9ad" } },
-        { selector: 'node[lens = "current"], node[lens = "observed"]', style: { "underlay-opacity": 0.55, "underlay-padding": 13 } },
+        { selector: 'node[lens = "long_term"]', style: { "background-image-opacity": 1 } },
+        { selector: 'node[lens = "stage"]', style: { "border-width": 1.2, "border-color": "#82c9ad" } },
+        { selector: 'node[lens = "current"], node[lens = "observed"]', style: { "background-image-opacity": 1 } },
         { selector: 'node[kind = "particle"]', style: {
           width: 5, height: 5, label: "", "background-color": "#fff0ba", "border-width": 0,
           "underlay-padding": 9, "underlay-color": "#ffd98c", "underlay-opacity": 0.66, "events": "no", "z-index": 40
@@ -403,7 +445,7 @@ export function StarMap({
           "transition-property": "opacity, width, line-color", "transition-duration": 220
         } },
         { selector: ".is-dimmed", style: { opacity: 0.05, "text-opacity": 0 } },
-        { selector: "node.is-neighbor", style: { opacity: 1, "border-width": 1.8, "underlay-opacity": 0.48 } },
+        { selector: "node.is-neighbor", style: { opacity: 1, "background-image-opacity": 1 } },
         { selector: "edge.is-neighbor", style: { opacity: 0.95, width: 2.5, "line-color": "#c7d9ff" } },
         { selector: 'edge[kind = "episode_relation"].is-hovered, edge[kind = "episode_relation"].is-neighbor', style: {
           width: 1.8, opacity: 0.92, "line-color": "#d9c6f0", "line-style": "dashed",
@@ -413,13 +455,13 @@ export function StarMap({
           "text-border-color": "#6c5a86", "text-border-width": 1, "text-border-opacity": 0.65,
           "text-rotation": "none", "text-margin-y": -9
         } },
-        { selector: "node.overlay-member", style: { opacity: 1, "border-width": 2.4, "border-color": "#fff0ba", "underlay-color": "#ffd98c", "underlay-opacity": 0.62, "underlay-padding": 14 } },
+        { selector: "node.overlay-member", style: { opacity: 1, "border-width": 1.2, "border-color": "#fff0ba", "background-image-opacity": 1 } },
         { selector: "edge.overlay-member", style: { opacity: 1, width: 2.8, "line-color": "#f2d99d" } },
         { selector: 'node[kind = "entity"].is-hovered, node[kind = "entity"]:selected', style: {
           label: "data(label)", color: "#f2f6ff", "font-size": 8, "font-weight": 600,
           "text-wrap": "ellipsis", "text-max-width": "150px", "text-valign": "bottom", "text-margin-y": 12,
-          "text-outline-color": "#020410", "text-outline-width": 3, "border-width": 2, "border-color": "#ffffff",
-          "underlay-opacity": 0.58, "z-index": 20
+          "text-outline-color": "#020410", "text-outline-width": 3, "border-width": 0,
+          "background-image-opacity": 1, "z-index": 20
         } }
       ],
       layout: { name: "preset", fit: false, animate: false }
