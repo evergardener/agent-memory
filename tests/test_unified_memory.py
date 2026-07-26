@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from agent_memory.repository import _temporal_query_terms
+from agent_memory.repository import _procedure_query_terms, _temporal_query_terms
 from agent_memory.unified_memory import (
     parse_date_range,
     parse_episode,
@@ -132,3 +132,10 @@ def test_temporal_query_terms_keep_subjects_but_drop_question_words() -> None:
 
     assert "成都" in terms
     assert "什么时候" not in terms
+
+
+def test_procedure_query_terms_keep_targets_but_drop_action_words() -> None:
+    terms = _procedure_query_terms("Next Terminal 无法连接 VPS 应该如何排查")
+
+    assert {"next", "terminal", "vps"} <= set(terms)
+    assert all("排查" not in term and "无法连接" not in term for term in terms)

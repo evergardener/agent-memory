@@ -273,6 +273,37 @@ def _temporal_query_terms(query: str) -> list[str]:
     return sorted(terms)
 
 
+def _procedure_query_terms(query: str) -> list[str]:
+    ignored = (
+        "应该如何",
+        "如何",
+        "怎么",
+        "怎样",
+        "再次",
+        "又",
+        "排查",
+        "修复",
+        "处理",
+        "故障",
+        "异常",
+        "无法",
+        "失败",
+        "连接",
+        "部署",
+        "迁移",
+        "恢复",
+    )
+    terms: set[str] = set()
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,}|[\u4e00-\u9fff]{2,}", query):
+        normalized = token
+        for value in ignored:
+            normalized = normalized.replace(value, "")
+        normalized = normalized.strip().casefold()
+        if len(normalized) >= 2:
+            terms.add(normalized)
+    return sorted(terms)
+
+
 def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallItem], bool]:
     namespace_id = stable_uuid("namespace", request.context.shared_namespace)
     query_embedding = vector_literal(deterministic_embedding(request.query))
@@ -292,6 +323,7 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
         )
     )
     temporal_terms = _temporal_query_terms(request.query) if temporal_signal else []
+    procedure_terms = _procedure_query_terms(request.query) if procedure_signal else []
     lexical_states = (
         "('candidate','active','forgotten')" if explicit_recall else "('candidate','active')"
     )
@@ -521,6 +553,12 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                  AND (
                    d.search_vector @@ plainto_tsquery('simple',%s) OR
                    (
+                     %s AND EXISTS (
+                       SELECT 1 FROM unnest(%s::text[]) AS hint(term)
+                       WHERE position(hint.term in lower(d.text_redacted)) > 0
+                     )
+                   ) OR
+                   (
                      %s AND d.embedding_model_version=%s AND d.embedding IS NOT NULL
                      AND (d.embedding <=> %s::vector) < 0.62
                    ) OR
@@ -531,17 +569,25 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                  )
                ORDER BY CASE
                  WHEN d.search_vector @@ plainto_tsquery('simple',%s) THEN 0 ELSE 1
+               END, CASE
+                 WHEN EXISTS (
+                   SELECT 1 FROM unnest(%s::text[]) AS hint(term)
+                   WHERE position(hint.term in lower(d.text_redacted)) > 0
+                 ) THEN 0 ELSE 1
                END, d.embedding <=> %s::vector
                LIMIT 25""",
             (
                 namespace_id,
                 request.query,
                 procedure_signal,
+                procedure_terms,
+                procedure_signal,
                 EMBEDDING_VERSION,
                 query_embedding,
                 EMBEDDING_VERSION,
                 query_embedding,
                 request.query,
+                procedure_terms,
                 query_embedding,
             ),
         )
