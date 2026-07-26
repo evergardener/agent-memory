@@ -205,7 +205,14 @@ def test_f2_to_f5_unified_memory_end_to_end():
         and edge["data"]["record_id"] == classmate["id"]
         for edge in graph["edges"]
     )
-    assert any(edge["data"]["kind"] == "episode_relation" for edge in graph["edges"])
+    episode_relations = [
+        edge["data"] for edge in graph["edges"] if edge["data"]["kind"] == "episode_relation"
+    ]
+    assert episode_relations
+    assert all(
+        int(edge["support_count"]) == len(edge["episode_ids"].split("|")) > 0
+        for edge in episode_relations
+    )
     assert not any(
         node["data"]["kind"] == "entity"
         and node["data"]["label"] in {"7月10日", "7月11日", "2026-07-10", "2026-07-11"}

@@ -1042,7 +1042,7 @@ export default function App() {
             <aside className={`detail-panel ${selected ? "show" : ""}`} aria-hidden={!selected}>
               {selected && <>
                 <button className="detail-close" type="button" aria-label="关闭详情" onClick={() => selectNode(null)}>×</button>
-                <p className="eyebrow">{selected.kind}</p>
+                <p className="eyebrow">{selected.kind === "episode_relation" ? "共同情节桥" : selected.kind}</p>
                 <h2>{selected.label}</h2>
                 {selected.summary && <p className="overlay-summary">{selected.summary}</p>}
                 {selected.hint && <p className="vault-hint">{selected.hint}</p>}
@@ -1060,7 +1060,8 @@ export default function App() {
                   {selected.overlay_kind && <><dt>投影类型</dt><dd>{{ annotation: "事实注释", constellation: "情节星座", stream: "长期星流", protection: "保护标记" }[selected.overlay_kind] || selected.overlay_kind}</dd></>}
                   {selected.fact_type && <><dt>类型</dt><dd>{selected.fact_type}</dd></>}
                   {selected.confidence && <><dt>可信度</dt><dd>{Math.round(Number(selected.confidence) * 100)}%</dd></>}
-                  {selected.evidence_count && <><dt>证据数</dt><dd>{selected.evidence_count}</dd></>}
+                  {selected.kind === "episode_relation" && selected.episode_count && <><dt>共同情节数</dt><dd>{selected.episode_count}</dd></>}
+                  {selected.kind !== "episode_relation" && selected.evidence_count && <><dt>证据数</dt><dd>{selected.evidence_count}</dd></>}
                   {selected.activity && <><dt>活跃度</dt><dd>{{ high: "高", medium: "中", low: "低" }[selected.activity] || selected.activity}</dd></>}
                   {selected.sensitivity && <><dt>敏感性</dt><dd>{{ normal: "普通", redacted: "已脱敏", protected: "受保护" }[selected.sensitivity] || selected.sensitivity}</dd></>}
                   {selected.extraction_method && <><dt>抽取方式</dt><dd>{selected.extraction_method}</dd></>}
@@ -1090,7 +1091,9 @@ export default function App() {
                   <button type="button" onClick={loadTrace}>追溯支撑证据</button>
                 </div>}
                 {isRelationEdge(selected.kind) && <div className="actions">
-                  <button type="button" onClick={loadTrace}>追溯关系证据</button>
+                  <button type="button" onClick={loadTrace}>
+                    {selected.kind === "episode_relation" ? "查看共同情节" : "追溯关系证据"}
+                  </button>
                 </div>}
                 {["episode", "arc"].includes(selected.kind) && selectedOverlayFacts.length > 0 && (
                   <section className="overlay-timeline" aria-label={selected.kind === "arc" ? "星流事实轨迹" : "星座支撑事实"}>

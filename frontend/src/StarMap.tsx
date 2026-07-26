@@ -1,6 +1,7 @@
 import cytoscape, { Core, EdgeSingular, EventObjectNode, NodeSingular } from "cytoscape";
 import { CSSProperties, useEffect, useMemo, useRef } from "react";
 import type { Galaxy, GraphData, GraphElement, LayoutPreference } from "./api";
+import { presentRelations, subjectOrbitLayout } from "./starMapModel";
 
 type Props = {
   graph: GraphData;
@@ -92,43 +93,6 @@ function hash(value: string) {
   return result >>> 0;
 }
 
-export function polygonSubjectLayout(nodes: GraphElement[]) {
-  const ordered = [...nodes].sort((left, right) => {
-    const leftRank = left.data.subject_kind === "user" ? 0 : 1;
-    const rightRank = right.data.subject_kind === "user" ? 0 : 1;
-    return leftRank - rightRank || left.data.label.localeCompare(right.data.label);
-  });
-  if (ordered.length === 1) return [{ node: ordered[0], x: 0, y: 0 }];
-  if (ordered.length === 2) {
-    return [
-      { node: ordered[0], x: -52, y: 0 },
-      { node: ordered[1], x: 52, y: 0 }
-    ];
-  }
-  if (ordered.length > 8) {
-    return ordered.map((node, index) => {
-      const ring = Math.floor(index / 8);
-      const ringStart = ring * 8;
-      const ringCount = Math.min(8, ordered.length - ringStart);
-      const angle = -Math.PI / 2 + ((index - ringStart) * Math.PI * 2) / ringCount;
-      return {
-        node,
-        x: Math.cos(angle) * (112 + ring * 78),
-        y: Math.sin(angle) * (76 + ring * 54)
-      };
-    });
-  }
-  const radius = Math.min(190, 72 + ordered.length * 14);
-  return ordered.map((node, index) => {
-    const angle = -Math.PI / 2 + (index * Math.PI * 2) / ordered.length;
-    return {
-      node,
-      x: Math.cos(angle) * radius,
-      y: Math.sin(angle) * radius
-    };
-  });
-}
-
 function positionPlanets(
   nodes: GraphElement[],
   saved: Map<string, { x: number; y: number }>,
@@ -215,13 +179,21 @@ export function StarMap({
     () => positionPlanets(planetNodes, savedPositions, view === "galaxy"),
     [planetNodes, savedPositions, view]
   );
-  const subjectNodes = graph.nodes.filter((node) => node.data.kind === "subject");
+  const subjectNodes = useMemo(
+    () => graph.nodes.filter((node) => node.data.kind === "subject"),
+    [graph.nodes]
+  );
+  const subjectIds = useMemo(
+    () => new Set(subjectNodes.map((node) => node.data.id)),
+    [subjectNodes]
+  );
   const savedSubjectPositions = useMemo(() => {
     const values = new Map<string, { x: number; y: number }>();
     layoutPreferences
       .filter((item) =>
         item.target_kind === "subject" &&
         item.scope_kind === "universe" &&
+        item.pinned &&
         typeof item.position.x === "number" &&
         typeof item.position.y === "number"
       )
@@ -231,18 +203,13 @@ export function StarMap({
       }));
     return values;
   }, [layoutPreferences]);
-  const subjectLayout = polygonSubjectLayout(subjectNodes).map((item) => ({
-    ...item,
-    ...(savedSubjectPositions.get(item.node.data.record_id) || {})
-  }));
-  const relationCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    graph.edges.filter((edge) => isRelationKind(edge.data.kind)).forEach((edge) => {
-      counts.set(edge.data.source, (counts.get(edge.data.source) || 0) + 1);
-      counts.set(edge.data.target, (counts.get(edge.data.target) || 0) + 1);
-    });
-    return counts;
-  }, [graph.edges]);
+  const subjectLayout = useMemo(
+    () => subjectOrbitLayout(subjectNodes).map((item) => ({
+      ...item,
+      ...(savedSubjectPositions.get(item.node.data.record_id) || {})
+    })),
+    [savedSubjectPositions, subjectNodes]
+  );
   const celestialLabels = useMemo(
     () => new Map(
       [...planetNodes, ...subjectNodes].map((node) => [node.data.id, node.data.label])
@@ -250,22 +217,29 @@ export function StarMap({
     [planetNodes, subjectNodes]
   );
   const relationItems = useMemo<GraphElement[]>(
-    () => graph.edges
-      .filter((edge) => isRelationKind(edge.data.kind))
-      .map((edge) => ({
-        ...edge,
-        data: {
-          ...edge.data,
-          label: `${celestialLabels.get(edge.data.source) || "天体"} — ${
-            edge.data.label ||
-            RELATION_LABELS[edge.data.relation_type] ||
-            (edge.data.kind === "episode_relation" ? "共同情节" : "关联")
-          } → ${celestialLabels.get(edge.data.target) || "天体"}`,
-          evidence_count: String(splitIds(edge.data.evidence_ids).length)
-        }
-      })),
+    () => presentRelations(
+      graph.edges.filter((edge) => isRelationKind(edge.data.kind)),
+      celestialLabels,
+      RELATION_LABELS
+    ),
     [celestialLabels, graph.edges]
   );
+  const visibleRelationItems = useMemo(
+    () => view === "universe"
+      ? relationItems
+      : relationItems.filter((edge) =>
+        !subjectIds.has(edge.data.source) && !subjectIds.has(edge.data.target)
+      ),
+    [relationItems, subjectIds, view]
+  );
+  const relationCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    visibleRelationItems.forEach((edge) => {
+      counts.set(edge.data.source, (counts.get(edge.data.source) || 0) + 1);
+      counts.set(edge.data.target, (counts.get(edge.data.target) || 0) + 1);
+    });
+    return counts;
+  }, [visibleRelationItems]);
   const galaxies = useMemo(
     () => view === "universe"
       ? graph.galaxies.filter((galaxy) =>
@@ -352,6 +326,7 @@ export function StarMap({
   useEffect(() => {
     if (!host.current) return;
     instance.current?.destroy();
+    const hostElement = host.current;
     const elements = [
       ...planetNodes.map((element) => ({
         ...element,
@@ -364,12 +339,12 @@ export function StarMap({
           lens: activeLens
         }
       })),
-      ...subjectLayout.map(({ node, x, y }) => ({
+      ...(view === "universe" ? subjectLayout.map(({ node, x, y }) => ({
         ...node,
         position: { x: 600 + x, y: 360 + y },
         data: { ...node.data, relation_count: 0 }
-      })),
-      ...relationItems.map((element) => ({
+      })) : []),
+      ...visibleRelationItems.map((element) => ({
         ...element,
         data: {
           ...element.data,
@@ -392,7 +367,18 @@ export function StarMap({
           "transition-duration": 220
         } },
         { selector: 'node[kind = "subject"]', style: {
-          width: 2, height: 2, label: "", opacity: 0, "events": "no"
+          width: 8, height: 8, shape: "ellipse", label: "data(label)", opacity: 1,
+          "background-color": "#effff5", "border-width": 1.2, "border-color": "data(color)",
+          "underlay-padding": 18, "underlay-color": "data(color)", "underlay-opacity": 0.26,
+          "underlay-shape": "ellipse",
+          color: "data(color)", "font-family": "Georgia, Noto Serif SC, serif",
+          "font-size": 13, "font-weight": 600, "text-valign": "bottom", "text-margin-y": 18,
+          "text-outline-color": "#020410", "text-outline-width": 3,
+          "transition-property": "underlay-opacity, underlay-padding, border-width",
+          "transition-duration": 220
+        } },
+        { selector: 'node[kind = "subject"][subject_kind = "user"]', style: {
+          width: 10, height: 10, "underlay-padding": 22, "underlay-opacity": 0.34
         } },
         { selector: 'node[protected = "true"]', style: {
           "border-width": 2, "border-color": "#e5a3b7", "border-style": "double",
@@ -405,14 +391,28 @@ export function StarMap({
           width: 5, height: 5, label: "", "background-color": "#fff0ba", "border-width": 0,
           "underlay-padding": 9, "underlay-color": "#ffd98c", "underlay-opacity": 0.66, "events": "no", "z-index": 40
         } },
-        { selector: 'edge[kind = "relation"], edge[kind = "typed_relation"], edge[kind = "episode_relation"], edge[kind = "relationship"]', style: {
+        { selector: 'edge[kind = "relation"], edge[kind = "typed_relation"], edge[kind = "relationship"]', style: {
           width: "mapData(strength, 0, 1, 0.3, 2)", "line-color": "#7188b0",
           opacity: (edge: EdgeSingular) => 0.04 + Number(edge.data("strength") || 0.4) * 0.3,
           "curve-style": "bezier", "transition-property": "opacity, width, line-color", "transition-duration": 220
         } },
+        { selector: 'edge[kind = "episode_relation"]', style: {
+          width: 1, "line-color": "#9a87bd", opacity: 0.08, "line-style": "dashed",
+          "line-dash-pattern": [3, 8], "curve-style": "unbundled-bezier",
+          "control-point-distances": 34, "control-point-weights": 0.5,
+          "transition-property": "opacity, width, line-color", "transition-duration": 220
+        } },
         { selector: ".is-dimmed", style: { opacity: 0.05, "text-opacity": 0 } },
         { selector: "node.is-neighbor", style: { opacity: 1, "border-width": 1.8, "underlay-opacity": 0.48 } },
         { selector: "edge.is-neighbor", style: { opacity: 0.95, width: 2.5, "line-color": "#c7d9ff" } },
+        { selector: 'edge[kind = "episode_relation"].is-hovered, edge[kind = "episode_relation"].is-neighbor', style: {
+          width: 1.8, opacity: 0.92, "line-color": "#d9c6f0", "line-style": "dashed",
+          label: "data(bridge_label)", color: "#eadff7", "font-size": 8,
+          "text-background-color": "#080a18", "text-background-opacity": 0.88,
+          "text-background-padding": "5px", "text-background-shape": "roundrectangle",
+          "text-border-color": "#6c5a86", "text-border-width": 1, "text-border-opacity": 0.65,
+          "text-rotation": "none", "text-margin-y": -9
+        } },
         { selector: "node.overlay-member", style: { opacity: 1, "border-width": 2.4, "border-color": "#fff0ba", "underlay-color": "#ffd98c", "underlay-opacity": 0.62, "underlay-padding": 14 } },
         { selector: "edge.overlay-member", style: { opacity: 1, width: 2.8, "line-color": "#f2d99d" } },
         { selector: 'node[kind = "entity"].is-hovered, node[kind = "entity"]:selected', style: {
@@ -425,14 +425,23 @@ export function StarMap({
       layout: { name: "preset", fit: false, animate: false }
     });
 
-    const fitPlanets = () => {
-      const planets = cy.nodes('[kind = "entity"]');
-      if (planets.length === 0) return;
-      cy.fit(planets, view === "galaxy" ? 150 : 74);
+    const fitCelestial = () => {
+      const celestial = view === "galaxy"
+        ? cy.nodes('[kind = "entity"]')
+        : cy.nodes('[kind = "entity"], [kind = "subject"]');
+      if (celestial.length === 0) return;
+      cy.fit(celestial, view === "galaxy" ? 150 : 74);
     };
-    fitPlanets();
-    const fitFrame = window.requestAnimationFrame(fitPlanets);
-    const fitTimer = window.setTimeout(() => { cy.resize(); fitPlanets(); }, 120);
+    fitCelestial();
+    const fitFrame = window.requestAnimationFrame(fitCelestial);
+    const fitTimer = window.setTimeout(() => {
+      cy.resize();
+      fitCelestial();
+    }, 120);
+    const resizeObserver = new ResizeObserver(() => {
+      cy.resize();
+    });
+    resizeObserver.observe(hostElement);
     const clearFocus = () => cy.elements().removeClass("is-neighbor is-dimmed");
     const focusNeighborhood = (node: NodeSingular) => {
       const neighborhood = node.closedNeighborhood();
@@ -447,7 +456,7 @@ export function StarMap({
       event.target.removeClass("is-hovered");
       clearFocus();
     });
-    cy.on("tap select", 'node[kind = "entity"]', (event: EventObjectNode) => {
+    cy.on("tap select", 'node[kind = "entity"], node[kind = "subject"]', (event: EventObjectNode) => {
       clearFocus();
       focusNeighborhood(event.target);
       onSelect(event.target.data());
@@ -457,6 +466,12 @@ export function StarMap({
       event.target.addClass("is-neighbor");
       event.target.connectedNodes().addClass("is-neighbor");
       onSelect(event.target.data());
+    });
+    cy.on("mouseover", 'edge[kind = "episode_relation"]', (event) => {
+      event.target.addClass("is-hovered");
+    });
+    cy.on("mouseout", 'edge[kind = "episode_relation"]', (event) => {
+      event.target.removeClass("is-hovered");
     });
     cy.on("tap", (event) => {
       if (event.target !== cy) return;
@@ -468,6 +483,13 @@ export function StarMap({
       onSaveEntityLayout(String(event.target.data("record_id")), {
         x: Math.round(position.x * 100) / 100,
         y: Math.round(position.y * 100) / 100
+      });
+    });
+    cy.on("dragfree", 'node[kind = "subject"]', (event: EventObjectNode) => {
+      const position = event.target.position();
+      onSaveSubjectLayout(String(event.target.data("record_id")), {
+        x: Math.round((position.x - 600) * 100) / 100,
+        y: Math.round((position.y - 360) * 100) / 100
       });
     });
     const transitionReadyAt = window.performance.now() + 700;
@@ -517,6 +539,7 @@ export function StarMap({
       window.clearTimeout(fitTimer);
       window.cancelAnimationFrame(fitFrame);
       window.cancelAnimationFrame(motionFrame);
+      resizeObserver.disconnect();
       cy.destroy();
     };
   }, [
@@ -525,25 +548,37 @@ export function StarMap({
     onEnterGalaxy,
     onExitGalaxy,
     onSaveEntityLayout,
+    onSaveSubjectLayout,
     onSelect,
     planetNodes,
-    relationItems,
     positions,
     protectedIds,
     relationCounts,
+    subjectLayout,
+    visibleRelationItems,
     view
   ]);
 
   useEffect(() => {
     const cy = instance.current;
     if (!cy || cy.destroyed()) return;
-    cy.elements().removeClass("overlay-member");
+    cy.elements().removeClass("overlay-member is-neighbor is-dimmed");
     const entityIds = overlayEntityIds(selected);
     const factIds = overlayFactIds(selected);
     entityIds.forEach((id) => cy.getElementById(id).addClass("overlay-member"));
     cy.edges().filter((edge) =>
       splitIds(String(edge.data("fact_ids") || "")).some((id) => factIds.has(id))
     ).addClass("overlay-member");
+    if (selected && isRelationKind(selected.kind)) {
+      const edge = cy.getElementById(selected.id);
+      edge.addClass("is-neighbor");
+      edge.connectedNodes().addClass("is-neighbor");
+    } else if (selected && ["entity", "subject"].includes(selected.kind)) {
+      const node = cy.getElementById(selected.id);
+      const neighborhood = node.closedNeighborhood();
+      cy.elements().not(neighborhood).addClass("is-dimmed");
+      neighborhood.addClass("is-neighbor");
+    }
   }, [selected]);
 
   return <div className={`star-map-shell ${view === "galaxy" ? "galaxy-view" : "universe-view"} planetary-view`} data-motion={motionEnabled ? "floating-5px" : "static"}>
@@ -586,8 +621,17 @@ export function StarMap({
         onClick={(event) => { event.stopPropagation(); onSelect(node.data); }}
       >{node.data.label}</button>)}
     </nav>
+    {view === "universe" && <nav className="sr-only" aria-label="可访问主体恒星列表">
+      {subjectNodes.map((node) => <button
+        key={node.data.id}
+        type="button"
+        aria-label={`主体恒星 ${node.data.label}`}
+        onFocus={() => onSelect(node.data)}
+        onClick={(event) => { event.stopPropagation(); onSelect(node.data); }}
+      >{node.data.label}</button>)}
+    </nav>}
     <nav className="sr-only" aria-label="可访问关系列表">
-      {relationItems.map((edge) => <button
+      {visibleRelationItems.map((edge) => <button
           key={edge.data.id}
           type="button"
           aria-label={`关系 ${edge.data.label}`}
@@ -595,35 +639,15 @@ export function StarMap({
           onClick={(event) => { event.stopPropagation(); onSelect(edge.data); }}
         >{edge.data.label}</button>)}
     </nav>
-    {view === "galaxy" && relationItems.length > 0 && <section className="relation-index" aria-label="关系证据">
+    {view === "galaxy" && visibleRelationItems.length > 0 && <section className="relation-index" aria-label="关系证据">
       <p>关系证据<small>事实是解释层，不是星体</small></p>
-      {relationItems.map((edge) => <button key={`visible:${edge.data.id}`} type="button" onClick={() => onSelect(edge.data)}>
+      {visibleRelationItems.map((edge) => <button key={`visible:${edge.data.id}`} type="button" onClick={() => onSelect(edge.data)}>
         <strong>{edge.data.label}</strong>
-        <span>{edge.data.evidence_count} 条证据 · {edge.data.transport}</span>
+        <span>{edge.data.kind === "episode_relation"
+          ? `${edge.data.episode_count} 个共同情节 · 临时关系桥`
+          : `${edge.data.evidence_count} 条证据 · ${edge.data.transport}`}</span>
       </button>)}
     </section>}
-
-    {view === "universe" && <div className="subject-cores" aria-label="主体恒星群">
-      {subjectLayout.map(({ node, x, y }) => <button
-        key={node.data.id}
-        type="button"
-        className={`stellar-core ${node.data.subject_kind === "user" ? "stellar-user" : "stellar-profile"}`}
-        style={{ left: `calc(50% + ${x}px)`, top: `calc(50% + ${y}px)`, color: node.data.color } as CSSProperties}
-        onClick={() => onSelect(node.data)}
-        onDragEnd={(event) => {
-          const bounds = host.current?.getBoundingClientRect();
-          if (!bounds || event.clientX === 0 || event.clientY === 0) return;
-          onSaveSubjectLayout(node.data.record_id, {
-            x: Math.round((event.clientX - bounds.left - bounds.width / 2) * 100) / 100,
-            y: Math.round((event.clientY - bounds.top - bounds.height / 2) * 100) / 100
-          });
-        }}
-        title={`${node.data.label} · ${node.data.subject_kind === "user" ? "用户恒星" : "Hermes Profile 恒星"}`}
-        aria-label={`${node.data.label} · ${node.data.subject_kind === "user" ? "用户恒星" : "Hermes Profile 恒星"}`}
-      >
-        <i className="stellar-glow" /><i className="stellar-ray ray-horizontal" /><i className="stellar-ray ray-vertical" /><b /><span>{node.data.label}</span>
-      </button>)}
-    </div>}
 
     {overlayItems.length > 0 && <section className="overlay-index" aria-label={`${overlayTitle}列表`}>
       <p>{overlayTitle}<small>{activeLens === "vault" ? "只显示脱敏引用，不加载敏感明文" : "临时投影，不改变行星位置"}</small></p>
