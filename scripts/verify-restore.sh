@@ -29,7 +29,17 @@ live_counts="$("${COMPOSE[@]}" exec -T postgres psql -U agent_memory -d agent_me
   "SELECT (SELECT count(*) FROM evidence.events)||':'||
           (SELECT count(*) FROM memory.facts)||':'||
           (SELECT count(*) FROM memory.episodes)||':'||
+          (SELECT count(*) FROM memory.episode_entities)||':'||
+          (SELECT count(*) FROM memory.episode_steps)||':'||
           (SELECT count(*) FROM memory.arcs)||':'||
+          (SELECT count(*) FROM memory.temporal_rules)||':'||
+          (SELECT count(*) FROM memory.preference_assertions)||':'||
+          (SELECT count(*) FROM memory.relationship_assertions)||':'||
+          (SELECT count(*) FROM memory.artifacts)||':'||
+          (SELECT count(*) FROM memory.episode_artifacts)||':'||
+          (SELECT count(*) FROM memory.procedures)||':'||
+          (SELECT count(*) FROM memory.procedure_steps)||':'||
+          (SELECT count(*) FROM memory.procedure_support)||':'||
           (SELECT count(*) FROM memory.entity_aliases)||':'||
           (SELECT count(*) FROM memory.entity_relations)||':'||
           (SELECT count(*) FROM memory.relation_facts)||':'||
@@ -47,7 +57,17 @@ restored_counts="$("${COMPOSE[@]}" exec -T postgres psql -U agent_memory -d "$VE
   "SELECT (SELECT count(*) FROM evidence.events)||':'||
           (SELECT count(*) FROM memory.facts)||':'||
           (SELECT count(*) FROM memory.episodes)||':'||
+          (SELECT count(*) FROM memory.episode_entities)||':'||
+          (SELECT count(*) FROM memory.episode_steps)||':'||
           (SELECT count(*) FROM memory.arcs)||':'||
+          (SELECT count(*) FROM memory.temporal_rules)||':'||
+          (SELECT count(*) FROM memory.preference_assertions)||':'||
+          (SELECT count(*) FROM memory.relationship_assertions)||':'||
+          (SELECT count(*) FROM memory.artifacts)||':'||
+          (SELECT count(*) FROM memory.episode_artifacts)||':'||
+          (SELECT count(*) FROM memory.procedures)||':'||
+          (SELECT count(*) FROM memory.procedure_steps)||':'||
+          (SELECT count(*) FROM memory.procedure_support)||':'||
           (SELECT count(*) FROM memory.entity_aliases)||':'||
           (SELECT count(*) FROM memory.entity_relations)||':'||
           (SELECT count(*) FROM memory.relation_facts)||':'||
@@ -67,8 +87,19 @@ if [[ "$live_counts" != "$restored_counts" ]]; then
   exit 1
 fi
 
+live_evidence_hash="$("${COMPOSE[@]}" exec -T postgres psql \
+  -U agent_memory -d agent_memory -qAtc \
+  "SELECT md5(coalesce(string_agg(id::text||':'||payload_hash,',' ORDER BY id),'')) FROM evidence.events;")"
+restored_evidence_hash="$("${COMPOSE[@]}" exec -T postgres psql \
+  -U agent_memory -d "$VERIFY_DB" -qAtc \
+  "SELECT md5(coalesce(string_agg(id::text||':'||payload_hash,',' ORDER BY id),'')) FROM evidence.events;")"
+if [[ "$live_evidence_hash" != "$restored_evidence_hash" ]]; then
+  echo "Restore evidence hash mismatch: live=$live_evidence_hash restored=$restored_evidence_hash" >&2
+  exit 1
+fi
+
 "${COMPOSE[@]}" run --rm --no-deps \
   -e "AGENT_MEMORY_DATABASE_URL=postgresql://agent_memory:$AGENT_MEMORY_DB_PASSWORD@postgres:5432/$VERIFY_DB" \
   api agent-memory-verify-vault
 
-echo "{\"status\":\"PASS\",\"check\":\"pg_dump_restore\",\"counts\":\"$restored_counts\"}"
+echo "{\"status\":\"PASS\",\"check\":\"pg_dump_restore\",\"counts\":\"$restored_counts\",\"evidence_hash\":\"$restored_evidence_hash\"}"

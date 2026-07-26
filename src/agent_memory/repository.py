@@ -29,6 +29,7 @@ from .schemas import (
     ReviewQueueResponse,
 )
 from .subjects import ensure_source_subject_mapping
+from .unified_memory import invalidate_unified_dependents, procedure_applicability
 
 ENTITY_TYPES = {
     "person",
@@ -80,9 +81,7 @@ def ingest_turn(
            VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
         (source_id, namespace_id, context.source_profile, context.source_instance),
     )
-    ensure_source_subject_mapping(
-        connection, namespace_id, source_id, context.source_profile
-    )
+    ensure_source_subject_mapping(connection, namespace_id, source_id, context.source_profile)
     connection.execute(
         """INSERT INTO core.sessions(id,namespace_id,source_id,external_session_id,started_at)
            VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
@@ -152,6 +151,19 @@ def ingest_turn(
                ) VALUES (%s,%s,'provider',%s,'evidence.ingest','evidence_event',%s,%s)""",
             (new_uuid(), namespace_id, context.source_profile, event_id, context.correlation_id),
         )
+    if inserted_any:
+        unified_job_id = stable_uuid("job", f"build_unified_turn:{turn_id}")
+        connection.execute(
+            """INSERT INTO ops.jobs(id,namespace_id,kind,idempotency_key,input_ref)
+               VALUES (%s,%s,'build_unified_turn',%s,%s) ON CONFLICT DO NOTHING""",
+            (
+                unified_job_id,
+                namespace_id,
+                f"build_unified_turn:{turn_id}",
+                turn_id,
+            ),
+        )
+        job_ids.append(unified_job_id)
     return event_ids, job_ids, not inserted_any
 
 
@@ -196,9 +208,7 @@ def _overlapping_deterministic_fact_ids(records: dict[UUID, dict]) -> set[UUID]:
     return suppressed
 
 
-def _duplicate_fact_ids(
-    records: dict[UUID, dict], scores: dict[UUID, float]
-) -> set[UUID]:
+def _duplicate_fact_ids(records: dict[UUID, dict], scores: dict[UUID, float]) -> set[UUID]:
     """Collapse exact repeated facts while retaining every supporting evidence ID."""
     canonical_by_text: dict[tuple[str, str], UUID] = {}
     suppressed: set[UUID] = set()
@@ -229,10 +239,59 @@ def _duplicate_fact_ids(
     return suppressed
 
 
+def _temporal_query_terms(query: str) -> list[str]:
+    ignored = (
+        "什么时候",
+        "哪一天",
+        "哪天",
+        "去年",
+        "前年",
+        "今年",
+        "今天",
+        "昨天",
+        "前天",
+        "做了什么",
+        "发生了什么",
+        "去了",
+        "去过",
+        "月",
+        "日",
+        "年",
+        "我的",
+    )
+    terms: set[str] = set()
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,}|[\u4e00-\u9fff]{2,}", query):
+        normalized = token
+        for value in ignored:
+            normalized = normalized.replace(value, "")
+        if len(normalized) < 2:
+            continue
+        terms.add(normalized.casefold())
+        if len(normalized) > 3:
+            terms.add(normalized[:2].casefold())
+            terms.add(normalized[-2:].casefold())
+    return sorted(terms)
+
+
 def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallItem], bool]:
     namespace_id = stable_uuid("namespace", request.context.shared_namespace)
     query_embedding = vector_literal(deterministic_embedding(request.query))
     explicit_recall = request.intent == "explicit"
+    temporal_signal = bool(
+        re.search(
+            r"(?:\d{1,4}\s*年|\d{1,2}\s*月|\d{1,2}\s*日|"
+            r"今天|昨天|前天|去年|前年|什么时候|哪天|生日|纪念日)",
+            request.query,
+        )
+    )
+    procedure_signal = bool(
+        re.search(
+            r"(?:如何|怎么|怎样|再次|又|排查|修复|处理|故障|异常|"
+            r"无法|失败|连接|部署|迁移|恢复)",
+            request.query,
+        )
+    )
+    temporal_terms = _temporal_query_terms(request.query) if temporal_signal else []
     lexical_states = (
         "('candidate','active','forgotten')" if explicit_recall else "('candidate','active')"
     )
@@ -329,13 +388,36 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                          'derived'::text AS source_profile,'derived'::text AS extraction_method,
                          COALESCE(el.source_ids,'{}'::uuid[]) AS source_ids
                     FROM retrieval.documents d JOIN derived ON derived.id=d.source_id
-                    JOIN memory.entities e ON e.id=derived.entity_id
+                    LEFT JOIN memory.entities e ON e.id=derived.entity_id
                     LEFT JOIN memory.entities canonical ON canonical.id=e.canonical_entity_id
                     LEFT JOIN evidence_links el ON el.derived_id=derived.id
                    WHERE d.namespace_id=%s AND d.lifecycle_state='active'
                      AND (position(e.normalized_name in lower(%s)) > 0 OR
-                          position(canonical.normalized_name in lower(%s)) > 0) LIMIT 25""",
-            (namespace_id, namespace_id, namespace_id, request.query, request.query),
+                          position(canonical.normalized_name in lower(%s)) > 0 OR
+                          EXISTS (
+                            SELECT 1 FROM memory.episode_entities link
+                            JOIN memory.entities participant ON participant.id=link.entity_id
+                            LEFT JOIN memory.entities participant_canonical
+                              ON participant_canonical.id=participant.canonical_entity_id
+                            WHERE derived.kind='episode'
+                              AND link.episode_id=derived.id
+                              AND (
+                                position(participant.normalized_name in lower(%s)) > 0 OR
+                                position(
+                                  participant_canonical.normalized_name in lower(%s)
+                                ) > 0
+                              )
+                          )
+                     ) LIMIT 25""",
+            (
+                namespace_id,
+                namespace_id,
+                namespace_id,
+                request.query,
+                request.query,
+                request.query,
+                request.query,
+            ),
         )
         derived_entity = cursor.fetchall()
         cursor.execute(
@@ -359,21 +441,171 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
             ),
         )
         derived_semantic = cursor.fetchall()
+        cursor.execute(
+            """SELECT d.source_id AS memory_id,d.source_kind AS kind,d.text_redacted,
+                      'derived'::text AS source_profile,
+                      'unified-memory-v1'::text AS extraction_method,
+                      CASE
+                        WHEN d.source_kind='episode' THEN ARRAY(
+                          SELECT DISTINCT step.evidence_event_id
+                          FROM memory.episode_steps step
+                          WHERE step.episode_id=d.source_id
+                            AND step.evidence_event_id IS NOT NULL
+                        )
+                        ELSE ARRAY(
+                          SELECT DISTINCT evidence.event_id
+                          FROM memory.temporal_rules temporal
+                          JOIN memory.fact_evidence evidence
+                            ON evidence.fact_id=temporal.fact_id
+                          WHERE temporal.id=d.source_id
+                        )
+                      END AS source_ids,
+                      NULL::jsonb AS environment_fingerprint
+               FROM retrieval.documents d
+               WHERE d.namespace_id=%s
+                 AND d.source_kind IN ('episode','temporal_rule')
+                 AND d.lifecycle_state='active'
+                 AND (
+                   d.search_vector @@ plainto_tsquery('simple',%s) OR
+                   (
+                     %s AND EXISTS (
+                       SELECT 1 FROM unnest(%s::text[]) AS hint(term)
+                       WHERE position(hint.term in lower(d.text_redacted)) > 0
+                     )
+                   ) OR
+                   (
+                     d.embedding_model_version=%s AND d.embedding IS NOT NULL
+                     AND (d.embedding <=> %s::vector) < 0.5
+                   )
+                 )
+               ORDER BY CASE
+                 WHEN d.search_vector @@ plainto_tsquery('simple',%s) THEN 0 ELSE 1
+               END, d.embedding <=> %s::vector
+               LIMIT 25""",
+            (
+                namespace_id,
+                request.query,
+                temporal_signal,
+                temporal_terms,
+                EMBEDDING_VERSION,
+                query_embedding,
+                request.query,
+                query_embedding,
+            ),
+        )
+        temporal = cursor.fetchall()
+        cursor.execute(
+            """SELECT d.source_id AS memory_id,'procedure'::text AS kind,d.text_redacted,
+                      'derived'::text AS source_profile,
+                      'unified-memory-v1'::text AS extraction_method,
+                      ARRAY(
+                        SELECT DISTINCT evidence.event_id
+                        FROM memory.procedure_support support
+                        LEFT JOIN memory.episode_steps step
+                          ON step.episode_id=support.episode_id
+                        LEFT JOIN memory.fact_evidence evidence
+                          ON evidence.fact_id=support.fact_id
+                             OR evidence.event_id=step.evidence_event_id
+                        WHERE support.procedure_id=d.source_id
+                          AND evidence.event_id IS NOT NULL
+                      ) AS source_ids,
+                      procedure.environment_fingerprint,
+                      procedure.valid_from,procedure.valid_to
+               FROM retrieval.documents d
+               JOIN memory.procedures procedure ON procedure.id=d.source_id
+               WHERE d.namespace_id=%s AND d.source_kind='procedure'
+                 AND d.lifecycle_state='active'
+                 AND procedure.state='active' AND procedure.review_state='accepted'
+                 AND (procedure.valid_from IS NULL OR procedure.valid_from <= now())
+                 AND (procedure.valid_to IS NULL OR procedure.valid_to > now())
+                 AND (
+                   d.search_vector @@ plainto_tsquery('simple',%s) OR
+                   (
+                     %s AND d.embedding_model_version=%s AND d.embedding IS NOT NULL
+                     AND (d.embedding <=> %s::vector) < 0.62
+                   ) OR
+                   (
+                     d.embedding_model_version=%s AND d.embedding IS NOT NULL
+                     AND (d.embedding <=> %s::vector) < 0.5
+                   )
+                 )
+               ORDER BY CASE
+                 WHEN d.search_vector @@ plainto_tsquery('simple',%s) THEN 0 ELSE 1
+               END, d.embedding <=> %s::vector
+               LIMIT 25""",
+            (
+                namespace_id,
+                request.query,
+                procedure_signal,
+                EMBEDDING_VERSION,
+                query_embedding,
+                EMBEDDING_VERSION,
+                query_embedding,
+                request.query,
+                query_embedding,
+            ),
+        )
+        procedures = cursor.fetchall()
+        cursor.execute(
+            """SELECT d.source_id AS memory_id,'relationship'::text AS kind,
+                      d.text_redacted,'derived'::text AS source_profile,
+                      'unified-memory-v1'::text AS extraction_method,
+                      array_remove(array_agg(DISTINCT evidence.event_id),NULL) AS source_ids,
+                      NULL::jsonb AS environment_fingerprint
+               FROM retrieval.documents d
+               JOIN memory.relationship_assertions relationship
+                 ON relationship.id=d.source_id
+               JOIN memory.entities entity
+                 ON entity.id=relationship.related_entity_id
+               LEFT JOIN memory.fact_evidence evidence
+                 ON evidence.fact_id=relationship.fact_id
+               WHERE d.namespace_id=%s AND d.source_kind='relationship'
+                 AND d.lifecycle_state='active' AND relationship.state='active'
+                 AND (
+                   position(entity.normalized_name in lower(%s)) > 0 OR
+                   d.search_vector @@ plainto_tsquery('simple',%s) OR
+                   (
+                     d.embedding_model_version=%s AND d.embedding IS NOT NULL
+                     AND (d.embedding <=> %s::vector) < 0.5
+                   )
+                 )
+               GROUP BY d.source_id,d.text_redacted,entity.normalized_name,
+                        d.search_vector,d.embedding,d.embedding_model_version
+               ORDER BY CASE
+                 WHEN position(entity.normalized_name in lower(%s)) > 0 THEN 0 ELSE 1
+               END, d.embedding <=> %s::vector
+               LIMIT 25""",
+            (
+                namespace_id,
+                request.query,
+                request.query,
+                EMBEDDING_VERSION,
+                query_embedding,
+                request.query,
+                query_embedding,
+            ),
+        )
+        relationship_rows = cursor.fetchall()
 
     lexical.extend(derived_lexical)
     entity.extend(derived_entity)
+    entity.extend(relationship_rows)
     semantic.extend(derived_semantic)
 
     scores: dict[UUID, float] = defaultdict(float)
     records: dict[UUID, dict] = {}
     channels: dict[UUID, list[str]] = defaultdict(list)
-    for channel, rows in (("lexical", lexical), ("semantic", semantic), ("entity", entity)):
+    for channel, rows in (
+        ("lexical", lexical),
+        ("semantic", semantic),
+        ("relation", entity),
+        ("temporal", temporal),
+        ("procedure", procedures),
+    ):
         seen_in_channel: set[UUID] = set()
         unique_rank = 0
         for row in rows:
-            if row["kind"] == "fact" and not is_recallable_memory_content(
-                row["text_redacted"]
-            ):
+            if row["kind"] == "fact" and not is_recallable_memory_content(row["text_redacted"]):
                 continue
             memory_id = row["memory_id"]
             if memory_id in seen_in_channel:
@@ -394,7 +626,10 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                 records[memory_id]["source_ids"] = sorted(merged_sources, key=str)
             else:
                 records[memory_id] = dict(row)
-            channels[memory_id].append(channel)
+            if channel == "relation":
+                channels[memory_id].extend(("entity", "relation"))
+            else:
+                channels[memory_id].append(channel)
 
     items: list[RecallItem] = []
     used_chars = 0
@@ -422,6 +657,16 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                 channels=channels[memory_id],
                 rrf_score=round(score, 8),
                 why_recalled="+".join(channels[memory_id]),
+                applicability=(
+                    procedure_applicability(
+                        row.get("environment_fingerprint") or {},
+                        request.environment_fingerprint,
+                        valid_from=row.get("valid_from"),
+                        valid_to=row.get("valid_to"),
+                    )
+                    if row["kind"] == "procedure"
+                    else None
+                ),
             )
         )
         used_chars += len(text)
@@ -467,7 +712,7 @@ def browse_memories(
                       array_remove(array_agg(DISTINCT fe.event_id),NULL) AS source_ids
                  FROM memory.facts f
                  LEFT JOIN memory.fact_evidence fe ON fe.fact_id=f.id
-                WHERE {' AND '.join(filters)}
+                WHERE {" AND ".join(filters)}
                 GROUP BY f.id
                 ORDER BY f.updated_at DESC,f.id DESC
                 LIMIT %s""",
@@ -624,7 +869,7 @@ def list_review_queue(
     base_query = f"""
         WITH review_facts AS (
           SELECT f.id,f.statement,f.fact_type,f.memory_state,f.source_profile,
-                 f.confidence,f.updated_at,f.extraction_method,
+                 f.confidence,f.updated_at,f.extraction_method,f.version,
                  count(DISTINCT fe.event_id) AS evidence_count,
                  array_remove(array_agg(DISTINCT CASE
                    WHEN e.event_type='tool_result'
@@ -642,7 +887,7 @@ def list_review_queue(
           FROM memory.facts f
           LEFT JOIN memory.fact_evidence fe ON fe.fact_id=f.id
           LEFT JOIN evidence.events e ON e.id=fe.event_id
-          WHERE {' AND '.join(filters)}
+          WHERE {" AND ".join(filters)}
           GROUP BY f.id
         )
     """
@@ -654,30 +899,127 @@ def list_review_queue(
         review_condition = "memory_state='candidate'"
     elif reason == "untrusted_tool":
         review_condition = "has_untrusted_tool AND NOT has_trusted_support"
-    total = connection.execute(
-        base_query + f"SELECT count(*) FROM review_facts WHERE {review_condition}",
-        parameters,
-    ).fetchone()[0]
     with connection.cursor(row_factory=dict_row) as cursor:
         cursor.execute(
             base_query
             + f"""SELECT * FROM review_facts WHERE {review_condition}
                    ORDER BY (has_untrusted_tool AND NOT has_trusted_support) DESC,
-                            updated_at DESC,id DESC
-                   LIMIT %s OFFSET %s""",
-            [*parameters, limit, offset],
+                            updated_at DESC,id DESC""",
+            parameters,
         )
-        rows = cursor.fetchall()
-    items: list[ReviewQueueItem] = []
-    for row in rows:
+        fact_rows = cursor.fetchall()
+        unified_rows: list[dict] = []
+        if reason != "untrusted_tool":
+            cursor.execute(
+                """
+                WITH episode_sources AS (
+                  SELECT episode.id AS episode_id,
+                         COALESCE(min(source.source_profile),'derived') AS source_profile,
+                         count(DISTINCT step.evidence_event_id)
+                           FILTER (WHERE step.evidence_event_id IS NOT NULL) AS evidence_count
+                  FROM memory.episodes episode
+                  LEFT JOIN memory.episode_steps step ON step.episode_id=episode.id
+                  LEFT JOIN evidence.events event ON event.id=step.evidence_event_id
+                  LEFT JOIN core.turns turn_record ON turn_record.id=event.turn_id
+                  LEFT JOIN core.sessions session_record
+                    ON session_record.id=turn_record.session_id
+                  LEFT JOIN core.sources source ON source.id=session_record.source_id
+                  WHERE episode.namespace_id=%s
+                  GROUP BY episode.id
+                ), fact_sources AS (
+                  SELECT fact.id AS fact_id,fact.source_profile,
+                         count(DISTINCT evidence.event_id) AS evidence_count
+                  FROM memory.facts fact
+                  LEFT JOIN memory.fact_evidence evidence ON evidence.fact_id=fact.id
+                  WHERE fact.namespace_id=%s
+                  GROUP BY fact.id
+                )
+                SELECT episode.id,'episode'::text AS memory_kind,
+                       episode.title || ' · ' || episode.summary AS statement,
+                       'episode:' || episode.episode_type AS fact_type,
+                       episode.state,source.source_profile,episode.confidence,
+                       source.evidence_count,episode.updated_at,
+                       COALESCE(episode.extractor_version,'unified-memory-v1')
+                         AS extraction_method,
+                       episode.version
+                FROM memory.episodes episode
+                JOIN episode_sources source ON source.episode_id=episode.id
+                WHERE episode.namespace_id=%s
+                  AND episode.origin<>'legacy_derived'
+                  AND (episode.state='candidate' OR episode.review_state='candidate')
+                UNION ALL
+                SELECT preference.id,'preference',
+                       '偏好 ' || preference.polarity || ' · ' || preference.aspect,
+                       'preference',preference.state,
+                       COALESCE(source.source_profile,'derived'),preference.strength,
+                       COALESCE(source.evidence_count,0),preference.updated_at,
+                       'unified-memory-v1',preference.version
+                FROM memory.preference_assertions preference
+                LEFT JOIN fact_sources source ON source.fact_id=preference.fact_id
+                WHERE preference.namespace_id=%s AND preference.state='candidate'
+                UNION ALL
+                SELECT relationship.id,'relationship',
+                       subject.display_name || ' — ' || relationship.label || ' → '
+                         || entity.canonical_name,
+                       'relationship',relationship.state,
+                       COALESCE(source.source_profile,'derived'),1,
+                       COALESCE(source.evidence_count,0),relationship.updated_at,
+                       'unified-memory-v1',relationship.version
+                FROM memory.relationship_assertions relationship
+                JOIN core.subjects subject ON subject.id=relationship.subject_id
+                JOIN memory.entities entity ON entity.id=relationship.related_entity_id
+                LEFT JOIN fact_sources source ON source.fact_id=relationship.fact_id
+                WHERE relationship.namespace_id=%s AND relationship.state='candidate'
+                UNION ALL
+                SELECT temporal.id,'temporal_rule',
+                       temporal.label || ' · ' || temporal.month || '月' || temporal.day || '日',
+                       'temporal_rule:' || temporal.rule_type,temporal.state,
+                       COALESCE(source.source_profile,'derived'),1,
+                       COALESCE(source.evidence_count,0),temporal.updated_at,
+                       'unified-memory-v1',temporal.version
+                FROM memory.temporal_rules temporal
+                LEFT JOIN fact_sources source ON source.fact_id=temporal.fact_id
+                WHERE temporal.namespace_id=%s AND temporal.review_state='candidate'
+                UNION ALL
+                SELECT procedure.id,'procedure',procedure.title || ' · ' || procedure.goal,
+                       'procedure',procedure.state,
+                       COALESCE(source.source_profile,'derived'),1,
+                       COALESCE(source.evidence_count,0),procedure.updated_at,
+                       'unified-memory-v1',procedure.version
+                FROM memory.procedures procedure
+                LEFT JOIN LATERAL (
+                  SELECT min(episode_source.source_profile) AS source_profile,
+                         sum(episode_source.evidence_count) AS evidence_count
+                  FROM memory.procedure_support support
+                  JOIN episode_sources episode_source
+                    ON episode_source.episode_id=support.episode_id
+                  WHERE support.procedure_id=procedure.id
+                ) source ON true
+                WHERE procedure.namespace_id=%s
+                  AND (procedure.state='candidate' OR procedure.review_state='candidate')
+                """,
+                (
+                    namespace_id,
+                    namespace_id,
+                    namespace_id,
+                    namespace_id,
+                    namespace_id,
+                    namespace_id,
+                    namespace_id,
+                ),
+            )
+            unified_rows = cursor.fetchall()
+    collected: list[ReviewQueueItem] = []
+    for row in fact_rows:
         reasons = []
         if row["has_untrusted_tool"] and not row["has_trusted_support"]:
             reasons.append("untrusted_tool")
         if row["memory_state"] == "candidate":
             reasons.append("candidate")
-        items.append(
+        collected.append(
             ReviewQueueItem(
                 memory_id=row["id"],
+                memory_kind="fact",
                 statement=redact_text(row["statement"]).text,
                 fact_type=row["fact_type"],
                 state=row["memory_state"],
@@ -686,10 +1028,41 @@ def list_review_queue(
                 evidence_count=int(row["evidence_count"]),
                 updated_at=row["updated_at"],
                 extraction_method=row["extraction_method"],
+                version=int(row["version"]),
                 review_reasons=reasons,
                 tool_names=[name for name in row["tool_names"] if name],
             )
         )
+    for row in unified_rows:
+        if source_profile and row["source_profile"] != source_profile:
+            continue
+        collected.append(
+            ReviewQueueItem(
+                memory_id=row["id"],
+                memory_kind=row["memory_kind"],
+                statement=redact_text(row["statement"]).text,
+                fact_type=row["fact_type"],
+                state=row["state"],
+                source_profile=row["source_profile"],
+                confidence=float(row["confidence"]),
+                evidence_count=int(row["evidence_count"] or 0),
+                updated_at=row["updated_at"],
+                extraction_method=row["extraction_method"],
+                version=int(row["version"]),
+                review_reasons=["candidate"],
+                tool_names=[],
+            )
+        )
+    collected.sort(
+        key=lambda item: (
+            "untrusted_tool" in item.review_reasons,
+            item.updated_at,
+            str(item.memory_id),
+        ),
+        reverse=True,
+    )
+    total = len(collected)
+    items = collected[offset : offset + limit]
     profiles = [
         row[0]
         for row in connection.execute(
@@ -705,6 +1078,91 @@ def list_review_queue(
         offset=offset,
         profiles=profiles,
     )
+
+
+def bulk_govern_memories(
+    connection: Connection,
+    *,
+    namespace_key: str,
+    memory_ids: list[UUID],
+    action: str,
+    preview_only: bool,
+    actor_id: str,
+    reason: str,
+    correlation_id: UUID,
+) -> dict:
+    state_map = {"confirm": "active", "forget": "forgotten", "isolate": "isolated"}
+    if action not in state_map:
+        raise ValueError("BULK_ACTION_INVALID")
+    namespace_id = stable_uuid("namespace", namespace_key)
+    with connection.cursor(row_factory=dict_row) as cursor:
+        cursor.execute(
+            """SELECT id,statement,fact_type,memory_state AS state,source_profile,
+                      confidence,updated_at
+               FROM memory.facts
+               WHERE namespace_id=%s AND id=ANY(%s)
+                 AND memory_state <> 'purge_requested'
+               ORDER BY updated_at DESC,id""",
+            (namespace_id, memory_ids),
+        )
+        rows = cursor.fetchall()
+    if len(rows) != len(memory_ids):
+        raise ValueError("BULK_MEMORY_NOT_FOUND")
+    target_state = state_map[action]
+    if preview_only:
+        return {
+            "preview_only": True,
+            "action": action,
+            "target_state": target_state,
+            "count": len(rows),
+            "items": rows,
+            "correlation_id": correlation_id,
+        }
+    connection.execute(
+        """UPDATE memory.facts SET memory_state=%s,updated_at=now()
+           WHERE namespace_id=%s AND id=ANY(%s)
+             AND memory_state <> 'purge_requested'""",
+        (target_state, namespace_id, memory_ids),
+    )
+    connection.execute(
+        """UPDATE retrieval.documents SET lifecycle_state=%s,indexed_at=now()
+           WHERE source_kind='fact' AND source_id=ANY(%s)""",
+        (target_state, memory_ids),
+    )
+    for memory_id in memory_ids:
+        if action in {"forget", "isolate"}:
+            invalidate_unified_dependents(connection, namespace_id, memory_id)
+        connection.execute(
+            """INSERT INTO audit.events(
+                 id,namespace_id,actor_type,actor_id,action,target_type,target_id,
+                 reason,correlation_id,metadata_redacted
+               ) VALUES (
+                 %s,%s,'user',%s,%s,'fact',%s,%s,%s,'{"bulk":true}'::jsonb
+               )""",
+            (
+                new_uuid(),
+                namespace_id,
+                actor_id,
+                f"memory.{action}",
+                memory_id,
+                redact_text(reason).text,
+                correlation_id,
+            ),
+        )
+    enqueue_derived_rebuild(
+        connection,
+        namespace_id,
+        memory_ids[0],
+        f"bulk:{action}:{correlation_id}",
+    )
+    return {
+        "preview_only": False,
+        "action": action,
+        "target_state": target_state,
+        "count": len(rows),
+        "items": [{**row, "state": target_state} for row in rows],
+        "correlation_id": correlation_id,
+    }
 
 
 def _entity_audit(
@@ -1049,6 +1507,7 @@ def correct_memory(
            WHERE source_kind='fact' AND source_id=%s""",
         (memory_id,),
     )
+    invalidate_unified_dependents(connection, namespace_id, memory_id)
     connection.execute(
         """INSERT INTO memory.facts(
              id,namespace_id,statement,fact_type,confidence,memory_state,source_profile,
@@ -1142,6 +1601,8 @@ def set_memory_state(
            WHERE source_kind='fact' AND source_id=%s""",
         (state, memory_id),
     )
+    if state in {"forgotten", "isolated", "superseded"}:
+        invalidate_unified_dependents(connection, namespace_id, memory_id)
     connection.execute(
         """INSERT INTO audit.events(
              id,namespace_id,actor_type,actor_id,action,target_type,target_id,reason,correlation_id
@@ -1185,6 +1646,7 @@ def request_memory_purge(
            WHERE source_kind='fact' AND source_id=%s""",
         (memory_id,),
     )
+    invalidate_unified_dependents(connection, namespace_id, memory_id)
     job_id = stable_uuid("job", f"purge_memory:{memory_id}")
     connection.execute(
         """INSERT INTO ops.jobs(id,namespace_id,kind,idempotency_key,input_ref)

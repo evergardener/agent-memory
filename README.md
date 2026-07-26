@@ -1,6 +1,10 @@
 # Agent Memory for Hermes
 
-Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。当前源码候选和生产 canary 均为 `1.0.0-rc.8`；生产服务已运行 revision `e05a492b7ba5e225e9eadcaca0fc63018f6d6600` 的 GHCR 精确 SHA 镜像，状态为 `canary_active`，尚未晋级。该 revision 包含 `jiuyue` 试运行发现的当前回合采集、中文偏好召回、问句分流和最近记忆浏览修复。系统支持 Hermes 多 profile 共享记忆空间与独立人格恒星、只读原始证据、事实/情节/长期脉络、三路召回、生命周期治理、确定性互动状态、整理报告、关系型星系和独立加密 Vault。生产 canary 对每个 profile/instance 单独验证来源和观察窗口，历史导入数据不能替代 live profile 门禁。
+Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。生产 canary 仍运行
+`1.0.0-rc.8` revision `e05a492b7ba5e225e9eadcaca0fc63018f6d6600` 的 GHCR 精确 SHA
+镜像，状态为 `canary_active`，尚未晋级。当前隔离源码分支在 rc.8 基线上新增统一多实体
+时间情节、长期人物关系、纪念日、偏好演化、知识制品、程序性记忆、融合召回和治理 UI；
+这些能力已完成 F1–F7 客观 Gate，但尚未获得用户主观验收和 F8 生产更新授权。
 
 这是供生产 canary 验证的候选版本，不应成为真实凭据或重要数据的唯一副本。需求与实现边界见 [`docs/V1.0-项目需求文档.md`](docs/V1.0-项目需求文档.md)，逐项验证状态见 [`docs/V1.0-release验收矩阵.md`](docs/V1.0-release验收矩阵.md)。当前仅 `jiuyue:production-jiuyue` 是 live canary，`qishuo:hermes-session-export` 是显式保留的历史导入；模型保持关闭。新增来源、模型启用、容器更新或生产晋级仍须分别批准。
 
@@ -15,6 +19,8 @@ Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。当�
 - 多 profile 来源治理、部署冻结和备份新鲜度：[`docs/V1.0-生产来源治理与部署冻结设计.md`](docs/V1.0-生产来源治理与部署冻结设计.md)
 - 跨主机开发与交接标准：[`docs/跨主机开发与交接标准.md`](docs/跨主机开发与交接标准.md)
 - 后续阶段开发与生产 canary 任务：[`docs/V1.0-后续阶段开发计划.md`](docs/V1.0-后续阶段开发计划.md)
+- 统一经历、纪念日、偏好演化与程序性记忆目标：[`docs/V1.0-统一经历与程序性记忆设计.md`](docs/V1.0-统一经历与程序性记忆设计.md)
+- F1–F7 隔离实现、故障恢复与安全证据：[`docs/V1.0-F1-F7隔离实施验证报告.md`](docs/V1.0-F1-F7隔离实施验证报告.md)
 
 ## 环境要求
 
@@ -155,7 +161,11 @@ backup_dir="$(bash scripts/backup.sh .env)"
 bash scripts/verify-restore.sh "$backup_dir" .env
 ```
 
-备份包含 PostgreSQL 自包含 dump、Compose、运行配置、锁文件、版本和校验和。`secrets/vault_root_key` 必须通过独立安全介质保存，不能只放在数据库备份旁；丢失后 Vault 密文不可恢复。恢复脚本会创建临时空数据库，比较 evidence、fact、episode、arc、job、Vault、状态和报告计数，并实际解密 Vault 后自动清理临时库。
+备份包含 PostgreSQL 自包含 dump、Compose、运行配置、锁文件、版本和校验和。
+`secrets/vault_root_key` 必须通过独立安全介质保存，不能只放在数据库备份旁；丢失后 Vault
+密文不可恢复。恢复脚本会创建临时空数据库，比较 evidence、fact、episode、参与角色、步骤、
+时间规则、偏好、关系、artifact、procedure、图谱治理、job、Vault、状态和报告计数，校验
+evidence hash，并实际解密 Vault 后自动清理临时库。
 
 ## 测试与发布检查
 

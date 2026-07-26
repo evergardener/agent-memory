@@ -131,6 +131,92 @@ def build_quality_report(
             (namespace_id, list(QUALITY_MEMORY_STATES)),
         ).fetchall()
     }
+    (
+        unified_episodes,
+        candidate_episodes,
+        temporal_rules,
+        preferences,
+        relationships,
+        artifacts,
+        procedures,
+    ) = connection.execute(
+        """SELECT
+             (SELECT count(*) FROM memory.episodes
+              WHERE namespace_id=%s AND origin<>'legacy_derived'),
+             (SELECT count(*) FROM memory.episodes
+              WHERE namespace_id=%s AND origin<>'legacy_derived' AND state='candidate'),
+             (SELECT count(*) FROM memory.temporal_rules WHERE namespace_id=%s),
+             (SELECT count(*) FROM memory.preference_assertions WHERE namespace_id=%s),
+             (SELECT count(*) FROM memory.relationship_assertions WHERE namespace_id=%s),
+             (SELECT count(*) FROM memory.artifacts WHERE namespace_id=%s),
+             (SELECT count(*) FROM memory.procedures WHERE namespace_id=%s)""",
+        (namespace_id,) * 7,
+    ).fetchone()
+    untraceable_unified_episodes = connection.execute(
+        """SELECT count(*) FROM memory.episodes episode
+           WHERE episode.namespace_id=%s AND episode.origin='automatic'
+             AND NOT EXISTS (
+               SELECT 1 FROM memory.episode_steps step
+               WHERE step.episode_id=episode.id AND step.evidence_event_id IS NOT NULL
+             )""",
+        (namespace_id,),
+    ).fetchone()[0]
+    date_entities = connection.execute(
+        """SELECT count(*) FROM memory.entities
+           WHERE namespace_id=%s AND (
+             canonical_name ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+             OR canonical_name ~ '^[0-9]{1,2}月[0-9]{1,2}日$'
+           )""",
+        (namespace_id,),
+    ).fetchone()[0]
+    active_inferred_preferences = connection.execute(
+        """SELECT count(*) FROM memory.preference_assertions
+           WHERE namespace_id=%s AND explicitness='inferred' AND state='active'""",
+        (namespace_id,),
+    ).fetchone()[0]
+    active_procedure_gate_violations = connection.execute(
+        """SELECT count(*) FROM memory.procedures procedure
+           WHERE procedure.namespace_id=%s AND procedure.state='active'
+             AND NOT EXISTS (
+               SELECT 1 FROM memory.procedure_support support
+               JOIN memory.episodes episode ON episode.id=support.episode_id
+               JOIN memory.episode_steps step ON step.episode_id=episode.id
+               WHERE support.procedure_id=procedure.id
+                 AND support.support_kind='success'
+                 AND episode.state='active' AND episode.review_state='accepted'
+                 AND step.status='confirmed'
+                 AND step.step_kind IN ('result','resolution','verification')
+             )""",
+        (namespace_id,),
+    ).fetchone()[0]
+    unified_sensitive_rows = connection.execute(
+        """SELECT value FROM (
+             SELECT concat_ws(
+                      ' ',procedure.title,procedure.goal,procedure.scope::text,
+                      procedure.preconditions::text,procedure.environment_fingerprint::text,
+                      (
+                        SELECT string_agg(
+                          concat_ws(
+                            ' ',step.instruction,step.expected_observation,
+                            step.success_condition,step.failure_condition,
+                            step.stop_condition,step.required_permission
+                          ),
+                          ' '
+                        )
+                        FROM memory.procedure_steps step
+                        WHERE step.procedure_id=procedure.id
+                      )
+                    ) AS value
+             FROM memory.procedures procedure WHERE procedure.namespace_id=%s
+             UNION ALL
+             SELECT concat_ws(' ',title,reference_uri,content_hash,summary_redacted)
+             FROM memory.artifacts WHERE namespace_id=%s
+           ) unified_text""",
+        (namespace_id, namespace_id),
+    ).fetchall()
+    unified_sensitive_leaks = sum(
+        bool(redact_text(str(row[0])).findings) for row in unified_sensitive_rows
+    )
 
     def rate(value: int, total: int) -> float | None:
         return round(value / total, 6) if total else None
@@ -147,6 +233,11 @@ def build_quality_report(
         "model_declarative_shape": disallowed_model_facts == 0,
         "automated_prompt_isolation": automated_user_facts == 0,
         "graph_entity_policy": disallowed_entity_mentions == 0,
+        "unified_episode_traceability": untraceable_unified_episodes == 0,
+        "date_entity_policy": date_entities == 0,
+        "inferred_preference_gate": active_inferred_preferences == 0,
+        "procedure_support_integrity": active_procedure_gate_violations == 0,
+        "unified_secret_leakage": unified_sensitive_leaks == 0,
     }
     automatic_ready = all(gates.values())
     return {
@@ -174,6 +265,18 @@ def build_quality_report(
             "disallowed_model_facts": int(disallowed_model_facts),
             "automated_user_facts": int(automated_user_facts),
             "disallowed_entity_mentions": int(disallowed_entity_mentions),
+            "unified_episodes": int(unified_episodes),
+            "candidate_episodes": int(candidate_episodes),
+            "temporal_rules": int(temporal_rules),
+            "preferences": int(preferences),
+            "relationships": int(relationships),
+            "artifacts": int(artifacts),
+            "procedures": int(procedures),
+            "untraceable_unified_episodes": int(untraceable_unified_episodes),
+            "date_entities": int(date_entities),
+            "active_inferred_preferences": int(active_inferred_preferences),
+            "active_procedure_gate_violations": int(active_procedure_gate_violations),
+            "unified_sensitive_leaks": int(unified_sensitive_leaks),
         },
         "classifications": classifications,
         "decision": ("MANUAL_REVIEW_REQUIRED" if automatic_ready else "AUTOMATIC_GATES_FAILED"),

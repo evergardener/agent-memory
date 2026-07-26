@@ -22,10 +22,11 @@ class CapturingClient:
 
     def __init__(self) -> None:
         self.posts: list[tuple[str, dict]] = []
+        self.post_result: dict = {}
 
     def post(self, path: str, payload: dict) -> dict:
         self.posts.append((path, payload))
-        return {}
+        return self.post_result
 
     def get(self, path: str, query: dict) -> dict:
         return {"path": path, "query": query, "items": []}
@@ -175,6 +176,84 @@ class LiveHermesProviderTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "no_match")
         self.assertIn("agent_memory_browse", result["hint"])
+
+    def test_unified_recall_passes_environment_and_renders_applicability(self) -> None:
+        client = CapturingClient()
+        client.post_result = {
+            "items": [
+                {
+                    "memory_id": "00000000-0000-0000-0000-000000000123",
+                    "kind": "procedure",
+                    "text": "Next Terminal 回退流程",
+                    "source_ids": [],
+                    "source_profile": "qishuo",
+                    "channels": ["lexical", "procedure"],
+                    "applicability": {
+                        "status": "incompatible",
+                        "matched": ["network"],
+                        "mismatched": ["transport"],
+                        "missing": [],
+                        "auto_apply": False,
+                    },
+                }
+            ]
+        }
+        provider = AgentMemoryProvider(client=client)
+        provider.initialize("session-1", agent_identity="jiuyue")
+
+        result = json.loads(
+            provider.handle_tool_call(
+                "agent_memory_recall",
+                {
+                    "query": "Next Terminal 无法连接",
+                    "environment_fingerprint": {
+                        "transport": "direct-ssh",
+                        "network": "lan-a",
+                    },
+                },
+            )
+        )
+
+        path, payload = client.posts[0]
+        self.assertEqual(path, "/api/v1/recall")
+        self.assertEqual(
+            payload["environment_fingerprint"],
+            {"transport": "direct-ssh", "network": "lan-a"},
+        )
+        self.assertEqual(result["status"], "matched")
+        self.assertIn("kind: procedure", result["context"])
+        self.assertIn('"status": "incompatible"', result["context"])
+        self.assertIn('"auto_apply": false', result["context"])
+
+    def test_unified_browse_and_trace_route_to_existing_tools(self) -> None:
+        client = CapturingClient()
+        provider = AgentMemoryProvider(client=client)
+        provider.initialize("session-1", agent_identity="jiuyue")
+
+        episode = json.loads(
+            provider.handle_tool_call(
+                "agent_memory_browse",
+                {"memory_kind": "episode", "state": "active", "limit": 7},
+            )
+        )
+        self.assertEqual(episode["path"], "/api/v1/episodes")
+        self.assertEqual(episode["query"]["state"], "active")
+        self.assertEqual(episode["query"]["limit"], "7")
+        self.assertNotIn("source_profile", episode["query"])
+
+        traced = json.loads(
+            provider.handle_tool_call(
+                "agent_memory_trace_source",
+                {
+                    "memory_kind": "procedure",
+                    "memory_id": "00000000-0000-0000-0000-000000000123",
+                },
+            )
+        )
+        self.assertEqual(
+            traced["path"],
+            "/api/v1/procedures/00000000-0000-0000-0000-000000000123",
+        )
 
     @unittest.skipUnless(
         os.getenv("AGENT_MEMORY_LIVE_PROVIDER_TESTS") == "1",

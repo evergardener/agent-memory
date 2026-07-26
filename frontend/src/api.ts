@@ -59,7 +59,7 @@ export type LayoutPreference = {
   id: string;
   scope_kind: "universe" | "galaxy";
   scope_id: string;
-  target_kind: "camera" | "entity" | "galaxy";
+  target_kind: "camera" | "entity" | "galaxy" | "subject";
   target_id: string;
   position: { x?: number; y?: number };
   zoom: number | null;
@@ -174,6 +174,7 @@ export type ConsolidationReport = {
 
 export type ReviewQueueItem = {
   memory_id: string;
+  memory_kind: "fact" | "episode" | "preference" | "relationship" | "temporal_rule" | "procedure";
   statement: string;
   fact_type: string;
   state: string;
@@ -182,6 +183,7 @@ export type ReviewQueueItem = {
   evidence_count: number;
   updated_at: string;
   extraction_method: string;
+  version: number;
   review_reasons: Array<"candidate" | "untrusted_tool">;
   tool_names: string[];
 };
@@ -204,6 +206,54 @@ export type QualityReport = {
   metrics: Record<string, number | null>;
   classifications: Record<string, number>;
   decision: "AUTOMATIC_GATES_FAILED" | "MANUAL_REVIEW_REQUIRED";
+};
+
+export type TemporalRule = {
+  id: string;
+  rule_type: string;
+  label: string;
+  month: number;
+  day: number;
+  year: number | null;
+  timezone: string | null;
+  sensitivity: string;
+  reminder_policy: { enabled?: boolean; lead_days?: number };
+  review_state: string;
+  state: string;
+  version: number;
+};
+
+export type Procedure = {
+  id: string;
+  title: string;
+  goal: string;
+  environment_fingerprint: Record<string, unknown>;
+  risk_level: string;
+  state: string;
+  review_state: string;
+  version: number;
+  valid_from: string | null;
+  valid_to: string | null;
+  success_episodes: number;
+  steps: Array<{
+    id: string;
+    sequence_no: number;
+    branch_key: string | null;
+    instruction: string;
+    expected_observation: string | null;
+    success_condition: string | null;
+    failure_condition: string | null;
+    stop_condition: string;
+    required_permission: string;
+    risk_level: string;
+  }>;
+  applicability: {
+    status: "applicable" | "incompatible" | "unknown" | "expired" | "not_yet_valid";
+    matched: string[];
+    mismatched: string[];
+    missing: string[];
+    auto_apply: false;
+  };
 };
 
 export function context(profile = "star-map") {
@@ -265,7 +315,7 @@ export const api = {
   saveLayout: (payload: {
     scope_kind: "universe" | "galaxy";
     scope_id: string;
-    target_kind: "camera" | "entity" | "galaxy";
+    target_kind: "camera" | "entity" | "galaxy" | "subject";
     target_id: string;
     position: { x?: number; y?: number };
     zoom?: number | null;
@@ -356,11 +406,42 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ context: context(), corrected_statement, reason })
     }),
-  changeState: (memoryId: string, action: "forget" | "isolate", reason: string) =>
+  changeState: (
+    memoryId: string,
+    action: "confirm" | "forget" | "isolate",
+    reason: string
+  ) =>
     request(`/api/v1/memory/${memoryId}/${action}`, {
       method: "POST",
       body: JSON.stringify({ context: context(), reason })
     }),
+  governEpisode: (
+    episodeId: string,
+    action: "confirm" | "forget" | "isolate",
+    expectedVersion: number,
+    reason: string
+  ) => request(`/api/v1/episodes/${episodeId}/${action}`, {
+    method: "POST",
+    body: JSON.stringify({
+      context: context(),
+      expected_version: expectedVersion,
+      reason
+    })
+  }),
+  correctEpisode: (
+    episodeId: string,
+    expectedVersion: number,
+    title: string,
+    reason: string
+  ) => request(`/api/v1/episodes/${episodeId}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      context: context(),
+      expected_version: expectedVersion,
+      title,
+      reason
+    })
+  }),
   purge: (memoryId: string, reason: string) =>
     request(`/api/v1/memory/${memoryId}/purge`, {
       method: "POST",
@@ -473,6 +554,84 @@ export const api = {
     if (options.sourceProfile) parameters.set("source_profile", options.sourceProfile);
     return request<ReviewQueue>(`/api/v1/memories/review?${parameters.toString()}`);
   },
+  temporalRules: () =>
+    request<TemporalRule[]>(
+      `/api/v1/temporal-rules?shared_namespace=${encodeURIComponent(activeNamespace())}`
+    ),
+  procedures: (includeCandidates = true) =>
+    request<Procedure[]>(
+      `/api/v1/procedures?shared_namespace=${encodeURIComponent(activeNamespace())}` +
+      `&include_candidates=${includeCandidates ? "true" : "false"}`
+    ),
+  governTemporalRule: (
+    ruleId: string,
+    action: "confirm" | "disable" | "forget" | "isolate",
+    expectedVersion: number
+  ) => request(`/api/v1/temporal-rules/${ruleId}/${action}`, {
+    method: "POST",
+    body: JSON.stringify({
+      context: context(),
+      expected_version: expectedVersion,
+      reason: `User ${action} temporal rule from the star map`
+    })
+  }),
+  updateReminderPolicy: (
+    ruleId: string,
+    expectedVersion: number,
+    enabled: boolean,
+    leadDays = 0
+  ) => request(`/api/v1/temporal-rules/${ruleId}/reminder-policy`, {
+    method: "PUT",
+    body: JSON.stringify({
+      context: context(),
+      expected_version: expectedVersion,
+      enabled,
+      lead_days: leadDays,
+      reason: `User ${enabled ? "enabled" : "disabled"} reminder policy`
+    })
+  }),
+  governProcedure: (
+    procedureId: string,
+    action: "confirm" | "supersede" | "disable",
+    expectedVersion: number
+  ) => request(`/api/v1/procedures/${procedureId}/${action}`, {
+    method: "POST",
+    body: JSON.stringify({
+      context: context(),
+      expected_version: expectedVersion,
+      reason: `User ${action} procedure from the star map`
+    })
+  }),
+  bulkGovern: (
+    targets: Array<{
+      memory_id: string;
+      memory_kind: ReviewQueueItem["memory_kind"];
+      expected_version: number;
+    }>,
+    action: "confirm" | "forget" | "isolate",
+    previewOnly: boolean
+  ) => request<{
+    preview_only: boolean;
+    action: string;
+    count: number;
+    items: Array<{
+      memory_id: string;
+      memory_kind: ReviewQueueItem["memory_kind"];
+      statement: string;
+      state: string;
+      version: number;
+      target_state: string;
+    }>;
+  }>("/api/v1/memories/bulk-governance", {
+    method: "POST",
+    body: JSON.stringify({
+      context: context(),
+      targets,
+      action,
+      preview_only: previewOnly,
+      reason: `User bulk ${action} from the reviewed queue`
+    })
+  }),
   createVaultEntry: (payload: {
     kind: string;
     display_label: string;

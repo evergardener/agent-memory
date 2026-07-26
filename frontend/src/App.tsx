@@ -6,9 +6,11 @@ import {
   GraphData,
   LayoutPreference,
   QualityReport,
+  Procedure,
   ReviewQueue,
   ReviewQueueItem,
   StateData,
+  TemporalRule,
   VaultEntry,
   VaultGrant
 } from "./api";
@@ -41,14 +43,24 @@ const emptyReviewQueue: ReviewQueue = {
 };
 const REVIEW_PAGE_SIZE = 25;
 const ENTITY_TYPES = ["person", "agent", "project", "service", "location", "organization", "tool", "technology", "device", "concept", "event", "other"];
+const RELATION_EDGE_KINDS = new Set([
+  "relation",
+  "typed_relation",
+  "episode_relation",
+  "relationship"
+]);
 const RELATION_LABELS: Record<string, string> = {
   uses_database: "使用数据库",
   pushes_logs_to: "推送日志",
   sends_alerts_to: "发送告警",
   uses_email_connector: "使用邮件连接器",
-  connects_mailbox: "连接邮箱"
+  connects_mailbox: "连接邮箱",
+  university_classmate: "大学同学",
+  classmate: "同学",
+  friend: "朋友",
+  colleague: "同事"
 };
-type GovernanceAction = "correct" | "forget" | "isolate" | "purge";
+type GovernanceAction = "confirm" | "correct" | "forget" | "isolate" | "purge";
 type EntityGovernanceAction =
   | { kind: "merge" }
   | { kind: "split" }
@@ -60,10 +72,27 @@ function splitIds(value = "") {
   return value.split("|").filter(Boolean);
 }
 
+function isRelationEdge(kind = "") {
+  return RELATION_EDGE_KINDS.has(kind);
+}
+
 function parseStringList(value = "") {
   try {
     const parsed: unknown = JSON.parse(value);
     return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseObjectList(value = "") {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is Record<string, string | number | null> =>
+        Boolean(item) && typeof item === "object"
+      )
+      : [];
   } catch {
     return [];
   }
@@ -119,6 +148,8 @@ export default function App() {
   const [stateData, setStateData] = useState<StateData | null>(null);
   const [reports, setReports] = useState<ConsolidationReport[]>([]);
   const [qualityReport, setQualityReport] = useState<QualityReport | null>(null);
+  const [temporalRules, setTemporalRules] = useState<TemporalRule[]>([]);
+  const [procedures, setProcedures] = useState<Procedure[]>([]);
   const [reviewQueue, setReviewQueue] = useState<ReviewQueue>(emptyReviewQueue);
   const [reviewReason, setReviewReason] = useState<"all" | "candidate" | "untrusted_tool">("all");
   const [reviewProfile, setReviewProfile] = useState("all");
@@ -173,14 +204,26 @@ export default function App() {
   const refresh = useCallback(async () => {
     try {
       await api.configure();
-      const [graphData, layoutData, vaultEntries, activeGrants, status, reportItems, quality] = await Promise.all([
+      const [
+        graphData,
+        layoutData,
+        vaultEntries,
+        activeGrants,
+        status,
+        reportItems,
+        quality,
+        temporalItems,
+        procedureItems
+      ] = await Promise.all([
         api.graph(activeGalaxyId || undefined),
         api.layout(),
         api.vaultEntries(),
         api.vaultGrants(),
         api.state(),
         api.reports(),
-        api.qualityReport()
+        api.qualityReport(),
+        api.temporalRules(),
+        api.procedures()
       ]);
       setGraph(graphData);
       setLayouts(layoutData);
@@ -189,6 +232,8 @@ export default function App() {
       setStateData(status);
       setReports(reportItems);
       setQualityReport(quality);
+      setTemporalRules(temporalItems);
+      setProcedures(procedureItems);
       setAuthenticated(true);
     } catch (error) {
       if ((error as Error & { status?: number }).status === 401) setAuthenticated(false);
@@ -218,6 +263,78 @@ export default function App() {
       setMessage(`治理队列加载失败：${String(error)}`);
     }
   }, [authenticated, reviewOffset, reviewProfile, reviewReason]);
+
+  async function bulkGovernReview(
+    memoryIds: string[],
+    action: "confirm" | "forget" | "isolate"
+  ) {
+    try {
+      const targets = memoryIds.map((memoryId) => {
+        const item = reviewQueue.items.find((candidate) => candidate.memory_id === memoryId);
+        if (!item) throw new Error("所选治理对象已不在当前预览中，请刷新后重试");
+        return {
+          memory_id: item.memory_id,
+          memory_kind: item.memory_kind,
+          expected_version: item.version
+        };
+      });
+      const preview = await api.bulkGovern(targets, action, true);
+      const labels = {
+        confirm: "确认有效",
+        forget: "忘记",
+        isolate: "脱离"
+      };
+      if (!window.confirm(
+        `预览：将对 ${preview.count} 条记忆执行“${labels[action]}”。继续提交吗？`
+      )) return;
+      await api.bulkGovern(targets, action, false);
+      await loadReviewQueue();
+      await refresh();
+      setMessage(`已对 ${preview.count} 条待治理记忆执行“${labels[action]}”。`);
+    } catch (error) {
+      setMessage(`批量治理失败：${String(error)}`);
+    }
+  }
+
+  async function governTemporalRule(
+    rule: TemporalRule,
+    action: "confirm" | "disable" | "forget" | "isolate"
+  ) {
+    try {
+      await api.governTemporalRule(rule.id, action, rule.version);
+      await refresh();
+      setMessage(`时间规则已${action === "confirm" ? "确认" : "更新"}。`);
+    } catch (error) {
+      setMessage(`时间规则治理失败：${String(error)}`);
+    }
+  }
+
+  async function toggleReminderPolicy(rule: TemporalRule) {
+    try {
+      await api.updateReminderPolicy(
+        rule.id,
+        rule.version,
+        !Boolean(rule.reminder_policy.enabled)
+      );
+      await refresh();
+      setMessage("提醒策略已更新；该操作不改变纪念日记忆本身。");
+    } catch (error) {
+      setMessage(`提醒策略更新失败：${String(error)}`);
+    }
+  }
+
+  async function governProcedure(
+    procedure: Procedure,
+    action: "confirm" | "supersede" | "disable"
+  ) {
+    try {
+      await api.governProcedure(procedure.id, action, procedure.version);
+      await refresh();
+      setMessage("程序状态已更新；系统不会自动执行程序步骤。");
+    } catch (error) {
+      setMessage(`程序治理失败：${String(error)}`);
+    }
+  }
 
   useEffect(() => {
     loadReviewQueue();
@@ -368,22 +485,26 @@ export default function App() {
     );
     if (typeFilter === "episode") episodes.forEach((item) => splitIds(item.data.fact_ids).forEach((id) => relevantFactIds.add(id)));
     if (typeFilter === "arc") arcs.forEach((item) => splitIds(item.data.fact_ids).forEach((id) => relevantFactIds.add(id)));
+    const relevantEpisodeIds = new Set(episodes.map((item) => item.data.id));
+    const endpointVisible = (id: string) => id.startsWith("subject:") || visiblePlanetIds.has(id);
     let edges = graph.edges.filter((edge) => {
-      if (!["relation", "typed_relation"].includes(edge.data.kind)) return false;
-      if (!visiblePlanetIds.has(edge.data.source) || !visiblePlanetIds.has(edge.data.target)) return false;
-      return !scoped || splitIds(edge.data.fact_ids).some((id) => relevantFactIds.has(id));
+      if (!isRelationEdge(edge.data.kind)) return false;
+      if (!endpointVisible(edge.data.source) || !endpointVisible(edge.data.target)) return false;
+      return !scoped ||
+        splitIds(edge.data.fact_ids).some((id) => relevantFactIds.has(id)) ||
+        splitIds(edge.data.episode_ids).some((id) => relevantEpisodeIds.has(id));
     });
     if (normalizedSearch && visiblePlanetIds.size > 0 && typeFilter === "all") {
       const seeds = new Set(visiblePlanetIds);
-      graph.edges.filter((edge) => ["relation", "typed_relation"].includes(edge.data.kind) && (seeds.has(edge.data.source) || seeds.has(edge.data.target)))
+      graph.edges.filter((edge) => isRelationEdge(edge.data.kind) && (seeds.has(edge.data.source) || seeds.has(edge.data.target)))
         .forEach((edge) => {
           if (allowedNodeIds.has(edge.data.source)) visiblePlanetIds.add(edge.data.source);
           if (allowedNodeIds.has(edge.data.target)) visiblePlanetIds.add(edge.data.target);
         });
       edges = graph.edges.filter((edge) =>
-        ["relation", "typed_relation"].includes(edge.data.kind) &&
-        visiblePlanetIds.has(edge.data.source) &&
-        visiblePlanetIds.has(edge.data.target)
+        isRelationEdge(edge.data.kind) &&
+        endpointVisible(edge.data.source) &&
+        endpointVisible(edge.data.target)
       );
     }
     const nodes = allowedNodes.filter((node) => node.data.kind === "subject" || visiblePlanetIds.has(node.data.id));
@@ -490,6 +611,34 @@ export default function App() {
     }
   }, [activeGalaxyId, layouts]);
 
+  const saveSubjectLayout = useCallback(async (
+    subjectId: string,
+    position: { x: number; y: number }
+  ) => {
+    const scopeId = api.namespaceId();
+    const existing = layouts.find((item) =>
+      item.scope_kind === "universe" &&
+      item.scope_id === scopeId &&
+      item.target_kind === "subject" &&
+      item.target_id === subjectId
+    );
+    try {
+      const saved = await api.saveLayout({
+        scope_kind: "universe",
+        scope_id: scopeId,
+        target_kind: "subject",
+        target_id: subjectId,
+        position,
+        pinned: true,
+        expected_version: existing?.version
+      });
+      setLayouts((items) => [...items.filter((item) => item.id !== saved.id), saved]);
+      setMessage("主体恒星位置已固定；后续自动重排会保留该位置。");
+    } catch (error) {
+      setMessage(`主体布局保存失败：${String(error)}`);
+    }
+  }, [layouts]);
+
   function openGalaxyEditor() {
     if (!activeGalaxy) return;
     setGalaxyName(activeGalaxy.display_name);
@@ -579,11 +728,11 @@ export default function App() {
   }
 
   async function loadTrace() {
-    if (!selected || !["fact", "episode", "arc", "relation", "typed_relation"].includes(selected.kind)) return;
+    if (!selected || !["fact", "episode", "arc", "relation", "typed_relation", "episode_relation", "relationship"].includes(selected.kind)) return;
     try {
-      const traceId = ["relation", "typed_relation"].includes(selected.kind)
-        ? splitIds(selected.fact_ids)[0]?.replace(/^fact:/, "")
-        : selected.record_id;
+      const relationTraceId = splitIds(selected.fact_ids)[0]?.replace(/^fact:/, "")
+        || splitIds(selected.episode_ids)[0]?.replace(/^episode:/, "");
+      const traceId = isRelationEdge(selected.kind) ? relationTraceId : selected.record_id;
       if (!traceId) throw new Error("该关系没有可追溯的支撑事实");
       setTrace(await api.trace(traceId));
       setMessage("");
@@ -593,7 +742,8 @@ export default function App() {
   }
 
   function openGovernance(action: GovernanceAction) {
-    if (selected?.kind !== "fact") return;
+    if (!selected || !["fact", "episode"].includes(selected.kind)) return;
+    if (selected.kind === "episode" && action === "purge") return;
     setGovernanceAction(action);
     setGovernanceStatement(selected.label || "");
     setGovernanceReason("");
@@ -603,11 +753,20 @@ export default function App() {
 
   async function submitGovernance(event: FormEvent) {
     event.preventDefault();
-    if (!selected || selected.kind !== "fact" || !governanceAction) return;
+    if (!selected || !["fact", "episode"].includes(selected.kind) || !governanceAction) return;
     setGovernanceBusy(true);
     try {
       if (governanceAction === "correct") {
-        await api.correct(selected.record_id, governanceStatement.trim(), governanceReason.trim());
+        if (selected.kind === "episode") {
+          await api.correctEpisode(
+            selected.record_id,
+            Number(selected.version),
+            governanceStatement.trim(),
+            governanceReason.trim()
+          );
+        } else {
+          await api.correct(selected.record_id, governanceStatement.trim(), governanceReason.trim());
+        }
       } else if (governanceAction === "purge") {
         if (purgeConfirmation.trim() !== selected.record_id) {
           setMessage("记忆 ID 不匹配，未执行永久清除。");
@@ -615,7 +774,16 @@ export default function App() {
         }
         await api.purge(selected.record_id, governanceReason.trim());
       } else {
-        await api.changeState(selected.record_id, governanceAction, governanceReason.trim());
+        if (selected.kind === "episode") {
+          await api.governEpisode(
+            selected.record_id,
+            governanceAction,
+            Number(selected.version),
+            governanceReason.trim()
+          );
+        } else {
+          await api.changeState(selected.record_id, governanceAction, governanceReason.trim());
+        }
       }
       const completed = governanceAction;
       setGovernanceAction(null);
@@ -624,7 +792,9 @@ export default function App() {
       await refresh();
       await loadReviewQueue();
       setMessage(
-        completed === "correct"
+        completed === "confirm"
+          ? "候选记忆已确认，可参与普通召回。"
+          : completed === "correct"
           ? "记忆已修正，新版本正在重建。"
           : completed === "forget"
             ? "记忆已忘记，不再参与普通召回。"
@@ -825,6 +995,7 @@ export default function App() {
               onEnterGalaxy={enterGalaxy}
               onExitGalaxy={leaveGalaxy}
               onSaveEntityLayout={saveEntityLayout}
+              onSaveSubjectLayout={saveSubjectLayout}
             />
             <section className={`universe-notebook ${showNotebook ? "open" : ""}`}>
               <button className="panel-heading" type="button" onClick={() => setShowNotebook((value) => !value)}><span>观星手记</span><i>{showNotebook ? "⌄" : "⌃"}</i></button>
@@ -902,15 +1073,23 @@ export default function App() {
                 </div>}
                 {selected.kind === "fact" && <div className="actions">
                     <button type="button" onClick={loadTrace}>追溯证据</button>
+                    {selected.state === "candidate" && <button type="button" onClick={() => openGovernance("confirm")}>确认有效</button>}
                     <button type="button" onClick={() => openGovernance("correct")}>修正</button>
                     <button type="button" onClick={() => openGovernance("forget")}>忘记</button>
                     <button type="button" className="danger" onClick={() => openGovernance("isolate")}>删除关联</button>
                     <button type="button" className="danger purge" onClick={() => openGovernance("purge")}>永久清除</button>
                   </div>}
-                {["episode", "arc"].includes(selected.kind) && <div className="actions">
+                {selected.kind === "episode" && <div className="actions">
+                  <button type="button" onClick={loadTrace}>追溯支撑证据</button>
+                  {selected.state === "candidate" && <button type="button" onClick={() => openGovernance("confirm")}>确认有效</button>}
+                  <button type="button" onClick={() => openGovernance("correct")}>修正标题</button>
+                  <button type="button" onClick={() => openGovernance("forget")}>忘记</button>
+                  <button type="button" className="danger" onClick={() => openGovernance("isolate")}>脱离</button>
+                </div>}
+                {selected.kind === "arc" && <div className="actions">
                   <button type="button" onClick={loadTrace}>追溯支撑证据</button>
                 </div>}
-                {["relation", "typed_relation"].includes(selected.kind) && <div className="actions">
+                {isRelationEdge(selected.kind) && <div className="actions">
                   <button type="button" onClick={loadTrace}>追溯关系证据</button>
                 </div>}
                 {["episode", "arc"].includes(selected.kind) && selectedOverlayFacts.length > 0 && (
@@ -922,6 +1101,18 @@ export default function App() {
                         <span>{compactText(fact.label, 120)}</span>
                         <small>{fact.updated_at ? new Date(fact.updated_at).toLocaleString() : "时间未知"}</small>
                       </button>
+                    ))}
+                  </section>
+                )}
+                {selected.kind === "episode" && parseObjectList(selected.steps).length > 0 && (
+                  <section className="overlay-timeline" aria-label="情节步骤时间线">
+                    <h3>经历步骤</h3>
+                    {parseObjectList(selected.steps).map((step, index) => (
+                      <div key={`${String(step.sequence_no ?? index)}:${String(step.summary)}`}>
+                        <i>{index + 1}</i>
+                        <span>{String(step.summary || "")}</span>
+                        <small>{String(step.kind || "observation")} · {String(step.status || "candidate")}</small>
+                      </div>
                     ))}
                   </section>
                 )}
@@ -998,6 +1189,8 @@ export default function App() {
         <ReportsPanel
           reports={reports}
           quality={qualityReport}
+          temporalRules={temporalRules}
+          procedures={procedures}
           queue={reviewQueue}
           reason={reviewReason}
           profile={reviewProfile}
@@ -1010,7 +1203,30 @@ export default function App() {
             setReviewOffset(0);
           }}
           onPageChange={setReviewOffset}
+          onBulkGovern={bulkGovernReview}
+          onGovernTemporalRule={governTemporalRule}
+          onToggleReminderPolicy={toggleReminderPolicy}
+          onGovernProcedure={governProcedure}
           onReview={(memory) => {
+            if (memory.memory_kind === "procedure" || memory.memory_kind === "temporal_rule") {
+              const targetId = `review-memory-${memory.memory_kind}-${memory.memory_id}`;
+              window.requestAnimationFrame(() => {
+                document.getElementById(targetId)?.scrollIntoView({
+                  behavior: motionEnabled ? "smooth" : "auto",
+                  block: "center"
+                });
+              });
+              setMessage(
+                memory.memory_kind === "procedure"
+                  ? "已定位到流程详情；步骤、分支、停止条件与权限边界均在本页治理。"
+                  : "已定位到时间规则；日期记忆与提醒授权在本页分别治理。"
+              );
+              return;
+            }
+            if (memory.memory_kind !== "fact") {
+              setMessage("该类型记忆请在当前队列勾选后使用跨类型批量治理。");
+              return;
+            }
             setSelected({
               id: `fact:${memory.memory_id}`,
               record_id: memory.memory_id,
@@ -1035,7 +1251,9 @@ export default function App() {
           <form className="governance-dialog" onSubmit={submitGovernance} role="dialog" aria-modal="true" aria-labelledby="governance-title">
             <p className="eyebrow">MEMORY GOVERNANCE</p>
             <h2 id="governance-title">
-              {governanceAction === "correct"
+              {governanceAction === "confirm"
+                ? "确认候选记忆"
+                : governanceAction === "correct"
                 ? "修正记忆"
                 : governanceAction === "forget"
                   ? "忘记记忆"
@@ -1044,6 +1262,9 @@ export default function App() {
                     : "永久清除"}
             </h2>
             <p className="dialog-memory">{selected.label}</p>
+            {governanceAction === "confirm" && (
+              <p className="dialog-explanation">确认后该事实会进入活跃记忆，并参与普通召回；原始证据和本次确认记录都会保留。</p>
+            )}
             {governanceAction === "correct" && (
               <label>
                 修正后的事实
@@ -1358,24 +1579,50 @@ function StatePanel({ data, onChange }: { data: StateData | null; onChange: () =
 function ReportsPanel({
   reports,
   quality,
+  temporalRules,
+  procedures,
   queue,
   reason,
   profile,
   onReasonChange,
   onProfileChange,
   onPageChange,
+  onBulkGovern,
+  onGovernTemporalRule,
+  onToggleReminderPolicy,
+  onGovernProcedure,
   onReview
 }: {
   reports: ConsolidationReport[];
   quality: QualityReport | null;
+  temporalRules: TemporalRule[];
+  procedures: Procedure[];
   queue: ReviewQueue;
   reason: "all" | "candidate" | "untrusted_tool";
   profile: string;
   onReasonChange: (value: "all" | "candidate" | "untrusted_tool") => void;
   onProfileChange: (value: string) => void;
   onPageChange: (offset: number) => void;
+  onBulkGovern: (
+    memoryIds: string[],
+    action: "confirm" | "forget" | "isolate"
+  ) => Promise<void>;
+  onGovernTemporalRule: (
+    rule: TemporalRule,
+    action: "confirm" | "disable" | "forget" | "isolate"
+  ) => Promise<void>;
+  onToggleReminderPolicy: (rule: TemporalRule) => Promise<void>;
+  onGovernProcedure: (
+    procedure: Procedure,
+    action: "confirm" | "supersede" | "disable"
+  ) => Promise<void>;
   onReview: (memory: ReviewQueueItem) => void;
 }) {
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  useEffect(() => {
+    const currentIds = new Set(queue.items.map((item) => item.memory_id));
+    setSelectedIds((values) => values.filter((id) => currentIds.has(id)));
+  }, [queue.items]);
   const page = Math.floor(queue.offset / queue.limit) + 1;
   const pages = Math.max(1, Math.ceil(queue.total / queue.limit));
   return (
@@ -1409,7 +1656,55 @@ function ReportsPanel({
         <p>该报告只输出统计量，不返回真实对话正文。人工抽检通过前，系统始终保持 promotion_ready=false。</p>
       </section>}
       <section className="review-queue">
-        <div><h3>待治理记忆</h3><p>不可信工具结果不会再自动提升。历史记录保留证据，需由你决定更正、忘记或脱离。</p></div>
+        <div><h3>纪念日与时间规则</h3><p>日期记忆和提醒授权分开治理；未启用提醒时不会通知或调用工具。</p></div>
+        {temporalRules.length === 0 ? <p className="muted">尚无纪念日规则。</p> : (
+          <div className="review-list">
+            {temporalRules.map((rule) => <article
+              id={`review-memory-temporal_rule-${rule.id}`}
+              key={rule.id}
+            >
+              <span>{rule.rule_type} · {rule.state}</span>
+              <strong>{rule.label} · {rule.year ? `${rule.year}年` : "每年"}{rule.month}月{rule.day}日</strong>
+              <small>{rule.timezone || "时区未知"} · {rule.sensitivity} · 提醒{rule.reminder_policy.enabled ? "已启用" : "未启用"}</small>
+              <div className="actions">
+                {rule.review_state === "candidate" && <button type="button" onClick={() => onGovernTemporalRule(rule, "confirm")}>确认有效</button>}
+                <button type="button" onClick={() => onToggleReminderPolicy(rule)}>{rule.reminder_policy.enabled ? "停用提醒" : "单独启用提醒"}</button>
+                <button type="button" onClick={() => onGovernTemporalRule(rule, "disable")}>停用规则</button>
+              </div>
+            </article>)}
+          </div>
+        )}
+      </section>
+      <section className="review-queue">
+        <div><h3>已验证流程</h3><p>程序仅是历史处理建议；适用性比较不会授予执行权限，任何结果的 auto_apply 均为 false。</p></div>
+        {procedures.length === 0 ? <p className="muted">尚无程序性记忆。</p> : (
+          <div className="review-list">
+            {procedures.map((procedure) => <article
+              id={`review-memory-procedure-${procedure.id}`}
+              key={procedure.id}
+            >
+              <span>{procedure.state} · 风险 {procedure.risk_level}</span>
+              <strong>{procedure.title}</strong>
+              <small>{procedure.goal} · 适用性 {procedure.applicability.status} · {procedure.success_episodes} 个支撑情节</small>
+              {procedure.steps.length > 0 && <ol aria-label={`${procedure.title}步骤与分支`}>
+                {procedure.steps.map((step) => <li key={step.id}>
+                  <strong>{step.branch_key ? `[${step.branch_key}] ` : ""}{step.instruction}</strong>
+                  <small>
+                    预期：{step.expected_observation || "未指定"} ·
+                    停止：{step.stop_condition} · 权限：{step.required_permission}
+                  </small>
+                </li>)}
+              </ol>}
+              <div className="actions">
+                {procedure.state === "candidate" && <button type="button" onClick={() => onGovernProcedure(procedure, "confirm")}>确认流程</button>}
+                {procedure.state === "active" && <button type="button" onClick={() => onGovernProcedure(procedure, "disable")}>停用流程</button>}
+              </div>
+            </article>)}
+          </div>
+        )}
+      </section>
+      <section className="review-queue">
+        <div><h3>待治理记忆</h3><p>候选事实可确认有效；不可信工具结果不会自动提升。所有确认、更正、忘记与脱离操作均保留审计记录。</p></div>
         <div className="review-toolbar">
           <label>治理原因<select value={reason} onChange={(event) => onReasonChange(event.target.value as typeof reason)}><option value="all">全部</option><option value="untrusted_tool">不可信工具</option><option value="candidate">待确认</option></select></label>
           <label>来源 profile<select value={profile} onChange={(event) => onProfileChange(event.target.value)}><option value="all">全部 profile</option>{queue.profiles.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
@@ -1418,14 +1713,42 @@ function ReportsPanel({
         {queue.items.length === 0 ? <p className="muted">当前没有待治理记忆。</p> : (
           <div className="review-list">
             {queue.items.map((item) => (
-              <button key={item.memory_id} type="button" onClick={() => onReview(item)}>
-                <span>{item.review_reasons.includes("untrusted_tool") ? "不可信工具" : "待确认"} · {item.fact_type || "事实"}</span>
-                <strong>{item.statement}</strong>
-                <small>{item.source_profile || "未知来源"} · {item.tool_names.join(", ") || "用户证据"} · 点击查看证据与治理</small>
-              </button>
+              <div key={item.memory_id}>
+                <input
+                  type="checkbox"
+                  aria-label={`选择记忆 ${item.statement}`}
+                  checked={selectedIds.includes(item.memory_id)}
+                  onChange={(event) => setSelectedIds((current) =>
+                    event.target.checked
+                      ? [...current, item.memory_id]
+                      : current.filter((id) => id !== item.memory_id)
+                  )}
+                />
+                <button type="button" onClick={() => onReview(item)}>
+                  <span>{item.review_reasons.includes("untrusted_tool") ? "不可信工具" : "待确认"} · {item.memory_kind} · {item.fact_type || "事实"}</span>
+                  <strong>{item.statement}</strong>
+                  <small>
+                    {item.source_profile || "未知来源"} · {item.tool_names.join(", ") || "用户证据"} · {
+                      item.memory_kind === "procedure"
+                        ? "点击定位流程详情"
+                        : item.memory_kind === "temporal_rule"
+                          ? "点击定位时间规则"
+                          : item.memory_kind === "fact"
+                            ? "点击查看证据与治理"
+                            : "勾选后使用批量治理"
+                    }
+                  </small>
+                </button>
+              </div>
             ))}
           </div>
         )}
+        {selectedIds.length > 0 && <div className="review-bulk-actions">
+          <span>已选择 {selectedIds.length} 条，提交前会显示影响预览。</span>
+          <button type="button" onClick={() => onBulkGovern(selectedIds, "confirm")}>批量确认有效</button>
+          <button type="button" onClick={() => onBulkGovern(selectedIds, "forget")}>批量忘记</button>
+          <button type="button" className="danger" onClick={() => onBulkGovern(selectedIds, "isolate")}>批量脱离</button>
+        </div>}
         <div className="review-pagination">
           <button type="button" disabled={queue.offset === 0} onClick={() => onPageChange(Math.max(0, queue.offset - queue.limit))}>上一页</button>
           <button type="button" disabled={queue.offset + queue.limit >= queue.total} onClick={() => onPageChange(queue.offset + queue.limit)}>下一页</button>

@@ -63,6 +63,7 @@ class RecallRequest(BaseModel):
     intent: str = Field(default="conversation", max_length=128)
     budget: RecallBudget = Field(default_factory=RecallBudget)
     scopes: list[str] = Field(default_factory=lambda: ["global", "project", "phase"])
+    environment_fingerprint: dict[str, Any] = Field(default_factory=dict)
 
 
 class RecallItem(BaseModel):
@@ -75,6 +76,7 @@ class RecallItem(BaseModel):
     rrf_score: float
     why_recalled: str
     permission: str = "recall"
+    applicability: dict[str, Any] | None = None
 
 
 class RecallResponse(BaseModel):
@@ -103,6 +105,121 @@ class MemoryBrowseResponse(BaseModel):
 class MemoryActionRequest(BaseModel):
     context: ProviderContext
     reason: str = Field(min_length=1, max_length=2000)
+
+
+class VersionedMemoryActionRequest(MemoryActionRequest):
+    expected_version: int = Field(ge=1)
+
+
+class EpisodeParticipantInput(BaseModel):
+    entity_id: UUID | None = None
+    subject_id: UUID | None = None
+    role: Literal[
+        "actor",
+        "experiencer",
+        "participant",
+        "subject",
+        "location",
+        "object",
+        "affected",
+        "artifact",
+    ]
+
+    @model_validator(mode="after")
+    def exactly_one_target(self):
+        if (self.entity_id is None) == (self.subject_id is None):
+            raise ValueError("participant requires exactly one entity_id or subject_id")
+        return self
+
+
+class EpisodeUpdateRequest(VersionedMemoryActionRequest):
+    title: str | None = Field(default=None, min_length=1, max_length=256)
+    summary: str | None = Field(default=None, min_length=1, max_length=10000)
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    time_precision: Literal["instant", "day", "range", "month", "year", "unknown"] | None = None
+    timezone: str | None = Field(default=None, min_length=1, max_length=128)
+    participants: list[EpisodeParticipantInput] | None = Field(
+        default=None, min_length=1, max_length=100
+    )
+
+    @model_validator(mode="after")
+    def has_episode_change(self):
+        fields = self.model_fields_set - {"context", "reason", "expected_version"}
+        if not fields:
+            raise ValueError("at least one episode field must change")
+        if self.started_at and self.ended_at and self.ended_at < self.started_at:
+            raise ValueError("episode ended_at must not precede started_at")
+        return self
+
+
+class TemporalRuleUpdateRequest(VersionedMemoryActionRequest):
+    label: str | None = Field(default=None, min_length=1, max_length=256)
+    month: int | None = Field(default=None, ge=1, le=12)
+    day: int | None = Field(default=None, ge=1, le=31)
+    year: int | None = Field(default=None, ge=1, le=9999)
+    timezone: str | None = Field(default=None, min_length=1, max_length=128)
+    sensitivity: Literal["normal", "personal", "protected"] | None = None
+
+    @model_validator(mode="after")
+    def has_temporal_change(self):
+        if not (self.model_fields_set - {"context", "reason", "expected_version"}):
+            raise ValueError("at least one temporal rule field must change")
+        return self
+
+
+class ReminderPolicyRequest(VersionedMemoryActionRequest):
+    enabled: bool
+    lead_days: int = Field(default=0, ge=0, le=365)
+
+
+class ProcedureStepInput(BaseModel):
+    branch_key: str | None = Field(default=None, max_length=128)
+    instruction: str = Field(min_length=1, max_length=4000)
+    expected_observation: str | None = Field(default=None, max_length=4000)
+    success_condition: str | None = Field(default=None, max_length=4000)
+    failure_condition: str | None = Field(default=None, max_length=4000)
+    stop_condition: str = Field(min_length=1, max_length=4000)
+    required_permission: str = Field(default="none", min_length=1, max_length=128)
+    risk_level: Literal["low", "medium", "high", "critical"] = "medium"
+
+
+class ProcedureCreateRequest(MemoryActionRequest):
+    title: str = Field(min_length=1, max_length=256)
+    goal: str = Field(min_length=1, max_length=2000)
+    scope: dict[str, Any] = Field(default_factory=dict)
+    preconditions: list[dict[str, Any] | str] = Field(default_factory=list)
+    environment_fingerprint: dict[str, Any] = Field(default_factory=dict)
+    risk_level: Literal["low", "medium", "high", "critical"] = "medium"
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    episode_id: UUID
+    steps: list[ProcedureStepInput] = Field(min_length=1, max_length=100)
+    supersedes_procedure_id: UUID | None = None
+    expected_superseded_version: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def complete_supersession_reference(self):
+        if (self.supersedes_procedure_id is None) != (
+            self.expected_superseded_version is None
+        ):
+            raise ValueError(
+                "supersedes_procedure_id and expected_superseded_version must be provided together"
+            )
+        if self.valid_from and self.valid_to and self.valid_to <= self.valid_from:
+            raise ValueError("procedure valid_to must be later than valid_from")
+        return self
+
+
+class ArtifactCreateRequest(MemoryActionRequest):
+    artifact_type: Literal["change_report", "knowledge_record", "photo_note", "document", "other"]
+    title: str = Field(min_length=1, max_length=256)
+    reference_uri: str | None = Field(default=None, max_length=2000)
+    content_hash: str | None = Field(default=None, max_length=256)
+    summary: str = Field(default="", max_length=10000)
+    sensitivity: Literal["normal", "personal", "protected"] = "normal"
+    episode_id: UUID
+    role: Literal["documentation", "evidence", "result", "context"] = "documentation"
 
 
 class CorrectionRequest(MemoryActionRequest):
@@ -169,6 +286,14 @@ class MemoryTraceResponse(BaseModel):
 
 class ReviewQueueItem(BaseModel):
     memory_id: UUID
+    memory_kind: Literal[
+        "fact",
+        "episode",
+        "preference",
+        "relationship",
+        "temporal_rule",
+        "procedure",
+    ] = "fact"
     statement: str
     fact_type: str
     state: str
@@ -177,6 +302,7 @@ class ReviewQueueItem(BaseModel):
     evidence_count: int
     updated_at: datetime
     extraction_method: str
+    version: int = Field(ge=1)
     review_reasons: list[Literal["candidate", "untrusted_tool"]]
     tool_names: list[str]
 
@@ -187,6 +313,35 @@ class ReviewQueueResponse(BaseModel):
     limit: int
     offset: int
     profiles: list[str]
+
+
+class BulkMemoryGovernanceTarget(BaseModel):
+    memory_id: UUID
+    memory_kind: Literal[
+        "fact",
+        "episode",
+        "preference",
+        "relationship",
+        "temporal_rule",
+        "procedure",
+    ]
+    expected_version: int = Field(ge=1)
+
+
+class BulkMemoryGovernanceRequest(MemoryActionRequest):
+    memory_ids: list[UUID] = Field(default_factory=list, max_length=200)
+    targets: list[BulkMemoryGovernanceTarget] = Field(default_factory=list, max_length=200)
+    action: Literal["confirm", "forget", "isolate"]
+    preview_only: bool = True
+
+    @model_validator(mode="after")
+    def unique_memory_ids(self):
+        if bool(self.memory_ids) == bool(self.targets):
+            raise ValueError("provide exactly one of memory_ids or targets")
+        ids = self.memory_ids or [target.memory_id for target in self.targets]
+        if len(ids) != len(set(ids)):
+            raise ValueError("bulk governance memory ids must be unique")
+        return self
 
 
 class EntityMergeRequest(BaseModel):
@@ -288,11 +443,7 @@ class GalaxyUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def has_change(self):
-        if (
-            self.display_name is None
-            and self.visibility is None
-            and self.manual_locked is None
-        ):
+        if self.display_name is None and self.visibility is None and self.manual_locked is None:
             raise ValueError("at least one galaxy field must change")
         return self
 
@@ -321,7 +472,7 @@ class LayoutPreferenceRequest(BaseModel):
     context: ProviderContext
     scope_kind: Literal["universe", "galaxy"]
     scope_id: UUID
-    target_kind: Literal["camera", "entity", "galaxy"]
+    target_kind: Literal["camera", "entity", "galaxy", "subject"]
     target_id: UUID
     position: dict[str, float] = Field(default_factory=dict)
     zoom: float | None = Field(default=None, ge=0.05, le=20)

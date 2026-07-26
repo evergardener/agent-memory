@@ -30,6 +30,7 @@ from .ids import stable_uuid
 from .quality import build_quality_report
 from .repository import (
     browse_memories,
+    bulk_govern_memories,
     change_entity_fact_relation,
     correct_memory,
     ingest_turn,
@@ -43,6 +44,8 @@ from .repository import (
     unmerge_entity,
 )
 from .schemas import (
+    ArtifactCreateRequest,
+    BulkMemoryGovernanceRequest,
     CorrectionRequest,
     CurrentStateRequest,
     EntityGovernanceRequest,
@@ -50,6 +53,7 @@ from .schemas import (
     EntityMergeRequest,
     EntityRelationResponse,
     EntitySplitRequest,
+    EpisodeUpdateRequest,
     GalaxyCreateRequest,
     GalaxyMembershipRequest,
     GalaxyRebuildRequest,
@@ -62,11 +66,13 @@ from .schemas import (
     MemoryActionResponse,
     MemoryBrowseResponse,
     MemoryTraceResponse,
+    ProcedureCreateRequest,
     PurgeRequest,
     PurgeResponse,
     QualityReportResponse,
     RecallRequest,
     RecallResponse,
+    ReminderPolicyRequest,
     ReviewQueueResponse,
     StateConfigRequest,
     StateResetRequest,
@@ -74,6 +80,7 @@ from .schemas import (
     SubjectSourceMappingRequest,
     SubjectSummary,
     SubjectUpdateRequest,
+    TemporalRuleUpdateRequest,
     UiConfigResponse,
     UiLoginRequest,
     UiLoginResponse,
@@ -92,6 +99,7 @@ from .schemas import (
     VaultGrantCreate,
     VaultGrantResponse,
     VaultGrantSummary,
+    VersionedMemoryActionRequest,
 )
 from .state_views import (
     active_continuity,
@@ -118,6 +126,28 @@ from .ui_auth import (
     require_service_access,
     require_ui_session,
     verify_password,
+)
+from .unified_memory import (
+    bulk_govern_unified_targets,
+    correct_temporal_rule,
+    create_artifact,
+    create_procedure,
+    get_artifact,
+    get_episode,
+    get_procedure,
+    list_artifacts,
+    list_episodes,
+    list_preferences,
+    list_procedures,
+    list_relationships,
+    list_temporal_rules,
+    set_episode_review,
+    set_preference_state,
+    set_procedure_state,
+    set_relationship_state,
+    set_temporal_rule_state,
+    update_episode,
+    update_reminder_policy,
 )
 from .vault import (
     VaultCrypto,
@@ -328,15 +358,495 @@ def review_queue_endpoint(
         )
 
 
+@app.post(
+    "/api/v1/memories/bulk-governance",
+    dependencies=[Depends(require_api_access)],
+)
+def bulk_memory_governance_endpoint(
+    request_body: BulkMemoryGovernanceRequest,
+    request: Request,
+):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            if request_body.targets:
+                return bulk_govern_unified_targets(
+                    connection,
+                    namespace_key=request_body.context.shared_namespace,
+                    targets=[target.model_dump() for target in request_body.targets],
+                    action=request_body.action,
+                    preview_only=request_body.preview_only,
+                    actor_id=request_body.context.source_profile,
+                    reason=request_body.reason,
+                    correlation_id=request_body.context.correlation_id,
+                )
+            return bulk_govern_memories(
+                connection,
+                namespace_key=request_body.context.shared_namespace,
+                memory_ids=request_body.memory_ids,
+                action=request_body.action,
+                preview_only=request_body.preview_only,
+                actor_id=request_body.context.source_profile,
+                reason=request_body.reason,
+                correlation_id=request_body.context.correlation_id,
+            )
+    except ValueError as error:
+        raise _unified_action_error(error) from error
+
+
+@app.get(
+    "/api/v1/episodes",
+    dependencies=[Depends(require_api_access)],
+)
+def list_episodes_endpoint(
+    request: Request,
+    shared_namespace: str,
+    episode_type: str | None = Query(default=None, max_length=64),
+    state: str | None = Query(default=None, max_length=64),
+    entity_id: UUID | None = None,
+    subject_id: UUID | None = None,
+    started_after: datetime | None = None,
+    ended_before: datetime | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    _check_namespace(shared_namespace)
+    with request.app.state.database.connection() as connection:
+        return list_episodes(
+            connection,
+            namespace_key=shared_namespace,
+            episode_type=episode_type,
+            state=state,
+            entity_id=entity_id,
+            subject_id=subject_id,
+            started_after=started_after,
+            ended_before=ended_before,
+            limit=limit,
+        )
+
+
+@app.get(
+    "/api/v1/episodes/{episode_id}",
+    dependencies=[Depends(require_api_access)],
+)
+def get_episode_endpoint(episode_id: UUID, shared_namespace: str, request: Request):
+    _check_namespace(shared_namespace)
+    with request.app.state.database.connection() as connection:
+        result = get_episode(connection, namespace_key=shared_namespace, episode_id=episode_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    return result
+
+
+@app.patch(
+    "/api/v1/episodes/{episode_id}",
+    dependencies=[Depends(require_api_access)],
+)
+def update_episode_endpoint(
+    episode_id: UUID,
+    request_body: EpisodeUpdateRequest,
+    request: Request,
+):
+    _check_namespace(request_body.context.shared_namespace)
+    changes = request_body.model_dump(
+        exclude={"context", "reason", "expected_version"},
+        exclude_unset=True,
+    )
+    try:
+        with request.app.state.database.connection() as connection:
+            result = update_episode(
+                connection,
+                namespace_key=request_body.context.shared_namespace,
+                episode_id=episode_id,
+                expected_version=request_body.expected_version,
+                changes=changes,
+                actor_id=request_body.context.source_profile,
+                reason=request_body.reason,
+                correlation_id=request_body.context.correlation_id,
+            )
+    except ValueError as error:
+        raise _unified_action_error(error) from error
+    if result is None:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    return result
+
+
+def _unified_action_error(error: ValueError) -> HTTPException:
+    detail = str(error)
+    status = 409 if detail == "VERSION_CONFLICT" else 422
+    return HTTPException(status_code=status, detail=detail)
+
+
+@app.post(
+    "/api/v1/episodes/{episode_id}/{action}",
+    dependencies=[Depends(require_api_access)],
+)
+def episode_action_endpoint(
+    episode_id: UUID,
+    action: Literal["confirm", "forget", "isolate"],
+    request_body: VersionedMemoryActionRequest,
+    request: Request,
+):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            result = set_episode_review(
+                connection,
+                namespace_key=request_body.context.shared_namespace,
+                episode_id=episode_id,
+                expected_version=request_body.expected_version,
+                action=action,
+                actor_id=request_body.context.source_profile,
+                reason=request_body.reason,
+                correlation_id=request_body.context.correlation_id,
+            )
+    except ValueError as error:
+        raise _unified_action_error(error) from error
+    if result is None:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    return result
+
+
+@app.get(
+    "/api/v1/temporal-rules",
+    dependencies=[Depends(require_api_access)],
+)
+def temporal_rules_endpoint(shared_namespace: str, request: Request):
+    _check_namespace(shared_namespace)
+    with request.app.state.database.connection() as connection:
+        return list_temporal_rules(connection, shared_namespace)
+
+
+@app.patch(
+    "/api/v1/temporal-rules/{rule_id}",
+    dependencies=[Depends(require_api_access)],
+)
+def correct_temporal_rule_endpoint(
+    rule_id: UUID,
+    request_body: TemporalRuleUpdateRequest,
+    request: Request,
+):
+    _check_namespace(request_body.context.shared_namespace)
+    changes = request_body.model_dump(
+        exclude={"context", "reason", "expected_version"},
+        exclude_unset=True,
+    )
+    try:
+        with request.app.state.database.connection() as connection:
+            result = correct_temporal_rule(
+                connection,
+                namespace_key=request_body.context.shared_namespace,
+                rule_id=rule_id,
+                expected_version=request_body.expected_version,
+                changes=changes,
+                actor_id=request_body.context.source_profile,
+                reason=request_body.reason,
+                correlation_id=request_body.context.correlation_id,
+            )
+    except ValueError as error:
+        raise _unified_action_error(error) from error
+    if result is None:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    return result
+
+
+@app.put(
+    "/api/v1/temporal-rules/{rule_id}/reminder-policy",
+    dependencies=[Depends(require_api_access)],
+)
+def reminder_policy_endpoint(
+    rule_id: UUID,
+    request_body: ReminderPolicyRequest,
+    request: Request,
+):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            result = update_reminder_policy(
+                connection,
+                namespace_key=request_body.context.shared_namespace,
+                rule_id=rule_id,
+                expected_version=request_body.expected_version,
+                enabled=request_body.enabled,
+                lead_days=request_body.lead_days,
+                actor_id=request_body.context.source_profile,
+                reason=request_body.reason,
+                correlation_id=request_body.context.correlation_id,
+            )
+    except ValueError as error:
+        raise _unified_action_error(error) from error
+    if result is None:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    return result
+
+
+@app.post(
+    "/api/v1/temporal-rules/{rule_id}/{action}",
+    dependencies=[Depends(require_api_access)],
+)
+def temporal_rule_action_endpoint(
+    rule_id: UUID,
+    action: Literal["confirm", "disable", "forget", "isolate"],
+    request_body: VersionedMemoryActionRequest,
+    request: Request,
+):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            result = set_temporal_rule_state(
+                connection,
+                namespace_key=request_body.context.shared_namespace,
+                rule_id=rule_id,
+                expected_version=request_body.expected_version,
+                action=action,
+                actor_id=request_body.context.source_profile,
+                reason=request_body.reason,
+                correlation_id=request_body.context.correlation_id,
+            )
+    except ValueError as error:
+        raise _unified_action_error(error) from error
+    if result is None:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    return result
+
+
+@app.get(
+    "/api/v1/preferences",
+    dependencies=[Depends(require_api_access)],
+)
+def preferences_endpoint(shared_namespace: str, request: Request):
+    _check_namespace(shared_namespace)
+    with request.app.state.database.connection() as connection:
+        return list_preferences(connection, shared_namespace)
+
+
+@app.get(
+    "/api/v1/relationships",
+    dependencies=[Depends(require_api_access)],
+)
+def relationships_endpoint(shared_namespace: str, request: Request):
+    _check_namespace(shared_namespace)
+    with request.app.state.database.connection() as connection:
+        return list_relationships(connection, shared_namespace)
+
+
+@app.post(
+    "/api/v1/relationships/{relationship_id}/{action}",
+    dependencies=[Depends(require_api_access)],
+)
+def relationship_action_endpoint(
+    relationship_id: UUID,
+    action: Literal["confirm", "dormant", "forget", "isolate"],
+    request_body: VersionedMemoryActionRequest,
+    request: Request,
+):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            result = set_relationship_state(
+                connection,
+                namespace_key=request_body.context.shared_namespace,
+                relationship_id=relationship_id,
+                expected_version=request_body.expected_version,
+                action=action,
+                actor_id=request_body.context.source_profile,
+                reason=request_body.reason,
+                correlation_id=request_body.context.correlation_id,
+            )
+    except ValueError as error:
+        raise _unified_action_error(error) from error
+    if result is None:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    return result
+
+
+@app.post(
+    "/api/v1/preferences/{preference_id}/{action}",
+    dependencies=[Depends(require_api_access)],
+)
+def preference_action_endpoint(
+    preference_id: UUID,
+    action: Literal["confirm", "dormant", "forget", "isolate"],
+    request_body: VersionedMemoryActionRequest,
+    request: Request,
+):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            result = set_preference_state(
+                connection,
+                namespace_key=request_body.context.shared_namespace,
+                preference_id=preference_id,
+                expected_version=request_body.expected_version,
+                action=action,
+                actor_id=request_body.context.source_profile,
+                reason=request_body.reason,
+                correlation_id=request_body.context.correlation_id,
+            )
+    except ValueError as error:
+        raise _unified_action_error(error) from error
+    if result is None:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    return result
+
+
+@app.get(
+    "/api/v1/procedures",
+    dependencies=[Depends(require_api_access)],
+)
+def procedures_endpoint(
+    shared_namespace: str,
+    request: Request,
+    include_candidates: bool = False,
+):
+    _check_namespace(shared_namespace)
+    with request.app.state.database.connection() as connection:
+        return list_procedures(
+            connection,
+            shared_namespace,
+            include_candidates=include_candidates,
+        )
+
+
+@app.get(
+    "/api/v1/procedures/{procedure_id}",
+    dependencies=[Depends(require_api_access)],
+)
+def get_procedure_endpoint(procedure_id: UUID, shared_namespace: str, request: Request):
+    _check_namespace(shared_namespace)
+    with request.app.state.database.connection() as connection:
+        result = get_procedure(connection, shared_namespace, procedure_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    return result
+
+
+@app.post(
+    "/api/v1/procedures",
+    status_code=201,
+    dependencies=[Depends(require_api_access)],
+)
+def create_procedure_endpoint(request_body: ProcedureCreateRequest, request: Request):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            return create_procedure(
+                connection,
+                namespace_key=request_body.context.shared_namespace,
+                title=request_body.title,
+                goal=request_body.goal,
+                scope=request_body.scope,
+                preconditions=request_body.preconditions,
+                environment_fingerprint=request_body.environment_fingerprint,
+                risk_level=request_body.risk_level,
+                valid_from=request_body.valid_from,
+                valid_to=request_body.valid_to,
+                episode_id=request_body.episode_id,
+                steps=[step.model_dump() for step in request_body.steps],
+                supersedes_procedure_id=request_body.supersedes_procedure_id,
+                expected_superseded_version=request_body.expected_superseded_version,
+                actor_id=request_body.context.source_profile,
+                reason=request_body.reason,
+                correlation_id=request_body.context.correlation_id,
+            )
+    except ValueError as error:
+        raise _unified_action_error(error) from error
+
+
+@app.post(
+    "/api/v1/procedures/{procedure_id}/{action}",
+    dependencies=[Depends(require_api_access)],
+)
+def procedure_action_endpoint(
+    procedure_id: UUID,
+    action: Literal["confirm", "supersede", "disable"],
+    request_body: VersionedMemoryActionRequest,
+    request: Request,
+):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            result = set_procedure_state(
+                connection,
+                namespace_key=request_body.context.shared_namespace,
+                procedure_id=procedure_id,
+                expected_version=request_body.expected_version,
+                action=action,
+                actor_id=request_body.context.source_profile,
+                reason=request_body.reason,
+                correlation_id=request_body.context.correlation_id,
+            )
+    except ValueError as error:
+        raise _unified_action_error(error) from error
+    if result is None:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    return result
+
+
+@app.get(
+    "/api/v1/artifacts",
+    dependencies=[Depends(require_api_access)],
+)
+def artifacts_endpoint(shared_namespace: str, request: Request):
+    _check_namespace(shared_namespace)
+    with request.app.state.database.connection() as connection:
+        return list_artifacts(connection, shared_namespace)
+
+
+@app.get(
+    "/api/v1/artifacts/{artifact_id}",
+    dependencies=[Depends(require_api_access)],
+)
+def get_artifact_endpoint(artifact_id: UUID, shared_namespace: str, request: Request):
+    _check_namespace(shared_namespace)
+    with request.app.state.database.connection() as connection:
+        result = get_artifact(connection, shared_namespace, artifact_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    return result
+
+
+@app.post(
+    "/api/v1/artifacts",
+    status_code=201,
+    dependencies=[Depends(require_api_access)],
+)
+def create_artifact_endpoint(request_body: ArtifactCreateRequest, request: Request):
+    _check_namespace(request_body.context.shared_namespace)
+    try:
+        with request.app.state.database.connection() as connection:
+            return create_artifact(
+                connection,
+                namespace_key=request_body.context.shared_namespace,
+                artifact_type=request_body.artifact_type,
+                title=request_body.title,
+                reference_uri=request_body.reference_uri,
+                content_hash=request_body.content_hash,
+                summary=request_body.summary,
+                sensitivity=request_body.sensitivity,
+                episode_id=request_body.episode_id,
+                role=request_body.role,
+                actor_id=request_body.context.source_profile,
+                reason=request_body.reason,
+                correlation_id=request_body.context.correlation_id,
+            )
+    except ValueError as error:
+        raise _unified_action_error(error) from error
+
+
 def _entity_governance_error(error: ValueError) -> HTTPException:
     detail = str(error)
-    status = 409 if detail in {
-        "ENTITY_ALREADY_MERGED",
-        "ENTITY_MERGE_CYCLE",
-        "ENTITY_NAME_CONFLICT",
-        "ENTITY_RELATION_ALREADY_ATTACHED",
-        "ENTITY_RELATION_NOT_ATTACHED",
-    } else 422
+    status = (
+        409
+        if detail
+        in {
+            "ENTITY_ALREADY_MERGED",
+            "ENTITY_MERGE_CYCLE",
+            "ENTITY_NAME_CONFLICT",
+            "ENTITY_RELATION_ALREADY_ATTACHED",
+            "ENTITY_RELATION_NOT_ATTACHED",
+        }
+        else 422
+    )
     return HTTPException(status_code=status, detail=detail)
 
 
@@ -482,6 +992,15 @@ def _change_state(
         state=state,
         correlation_id=request_body.context.correlation_id,
     )
+
+
+@app.post(
+    "/api/v1/memory/{memory_id}/confirm",
+    response_model=MemoryActionResponse,
+    dependencies=[Depends(require_api_access)],
+)
+def confirm_endpoint(memory_id: str, request_body: MemoryActionRequest, request: Request):
+    return _change_state(memory_id, request_body, request, "active")
 
 
 @app.post(
@@ -706,9 +1225,7 @@ def change_vault_entry_status(
     response_model=VaultEntryActionResponse,
     dependencies=[Depends(require_ui_session)],
 )
-def delete_vault_entry(
-    entry_id: UUID, request_body: VaultEntryDeleteRequest, request: Request
-):
+def delete_vault_entry(entry_id: UUID, request_body: VaultEntryDeleteRequest, request: Request):
     _check_namespace(request_body.context.shared_namespace)
     if request_body.confirm_entry_id != entry_id:
         raise HTTPException(status_code=409, detail="DELETE_CONFIRMATION_MISMATCH")
@@ -844,9 +1361,7 @@ def graph_subjects(shared_namespace: str, request: Request):
     response_model=SubjectSummary,
     dependencies=[Depends(require_ui_session)],
 )
-def update_graph_subject(
-    subject_id: UUID, request_body: SubjectUpdateRequest, request: Request
-):
+def update_graph_subject(subject_id: UUID, request_body: SubjectUpdateRequest, request: Request):
     _check_namespace(request_body.context.shared_namespace)
     try:
         with request.app.state.database.connection() as connection:
@@ -984,9 +1499,7 @@ def rebuild_graph_galaxies(request_body: GalaxyRebuildRequest, request: Request)
     "/api/v1/graph/galaxies/{galaxy_id}",
     dependencies=[Depends(require_ui_session)],
 )
-def update_graph_galaxy(
-    galaxy_id: UUID, request_body: GalaxyUpdateRequest, request: Request
-):
+def update_graph_galaxy(galaxy_id: UUID, request_body: GalaxyUpdateRequest, request: Request):
     _check_namespace(request_body.context.shared_namespace)
     try:
         with request.app.state.database.connection() as connection:
@@ -1017,9 +1530,7 @@ def govern_graph_galaxy_member(
     "/api/v1/graph/galaxies/{galaxy_id}/undo",
     dependencies=[Depends(require_ui_session)],
 )
-def undo_graph_galaxy(
-    galaxy_id: UUID, request_body: GalaxyUndoRequest, request: Request
-):
+def undo_graph_galaxy(galaxy_id: UUID, request_body: GalaxyUndoRequest, request: Request):
     _check_namespace(request_body.context.shared_namespace)
     try:
         with request.app.state.database.connection() as connection:
@@ -1057,9 +1568,7 @@ def _galaxy_graph_view(graph: dict, galaxy: dict) -> dict:
         for member in galaxy["members"]
         if member["governance_state"] != "excluded"
     }
-    graph["nodes"] = [
-        node for node in graph["nodes"] if node["data"]["id"] in member_node_ids
-    ]
+    graph["nodes"] = [node for node in graph["nodes"] if node["data"]["id"] in member_node_ids]
     graph["edges"] = [
         {
             "data": {
@@ -1112,9 +1621,7 @@ def _universe_graph_view(graph: dict, galaxies: list[dict]) -> dict:
         if galaxy["lifecycle_state"] == "active" and galaxy["visibility"] == "visible"
     ]
     relations = {
-        str(relation["id"]): relation
-        for galaxy in visible
-        for relation in galaxy["relations"]
+        str(relation["id"]): relation for galaxy in visible for relation in galaxy["relations"]
     }
     typed_pairs = {
         frozenset(

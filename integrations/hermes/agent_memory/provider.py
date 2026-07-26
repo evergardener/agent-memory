@@ -88,13 +88,21 @@ class AgentMemoryProvider(MemoryProvider):
             "correlation_id": str(uuid.uuid4()),
         }
 
-    def _recall(self, query: str, *, intent: str, session_id: str = "") -> str:
+    def _recall(
+        self,
+        query: str,
+        *,
+        intent: str,
+        session_id: str = "",
+        environment_fingerprint: dict[str, Any] | None = None,
+    ) -> str:
         payload = {
             "context": self._context(session_id),
             "query": query,
             "intent": intent,
             "budget": {"max_items": 8, "max_chars": 4200},
             "scopes": ["global", "project", "phase"],
+            "environment_fingerprint": environment_fingerprint or {},
         }
         try:
             result = self.client.post("/api/v1/recall", payload)
@@ -109,8 +117,10 @@ class AgentMemoryProvider(MemoryProvider):
             sources = ",".join(item.get("source_ids") or [])
             lines.append(
                 f"- {item.get('text', '')} "
-                f"(memory: {item.get('memory_id')}, evidence_ids: {sources}, "
-                f"profile: {item.get('source_profile')})"
+                f"(kind: {item.get('kind', 'fact')}, memory: {item.get('memory_id')}, "
+                f"channels: {','.join(item.get('channels') or [])}, "
+                f"evidence_ids: {sources}, profile: {item.get('source_profile')}, "
+                f"applicability: {json.dumps(item.get('applicability'), ensure_ascii=False)})"
             )
         lines.append(
             "Evidence IDs identify Agent Memory evidence events, not Hermes session IDs. "
@@ -212,7 +222,16 @@ class AgentMemoryProvider(MemoryProvider):
                 "description": "Explicitly search evidence-linked long-term memory.",
                 "parameters": {
                     "type": "object",
-                    "properties": {"query": {"type": "string"}},
+                    "properties": {
+                        "query": {"type": "string"},
+                        "environment_fingerprint": {
+                            "type": "object",
+                            "description": (
+                                "Current host, service, network, and version attributes "
+                                "used to assess procedure applicability."
+                            ),
+                        },
+                    },
                     "required": ["query"],
                 },
             },
@@ -226,6 +245,18 @@ class AgentMemoryProvider(MemoryProvider):
                     "type": "object",
                     "properties": {
                         "source_profile": {"type": "string"},
+                        "memory_kind": {
+                            "type": "string",
+                            "enum": [
+                                "fact",
+                                "episode",
+                                "temporal_rule",
+                                "preference",
+                                "procedure",
+                                "artifact",
+                            ],
+                            "default": "fact",
+                        },
                         "fact_type": {"type": "string"},
                         "state": {
                             "type": "string",
@@ -252,7 +283,14 @@ class AgentMemoryProvider(MemoryProvider):
                 ),
                 "parameters": {
                     "type": "object",
-                    "properties": {"memory_id": {"type": "string"}},
+                    "properties": {
+                        "memory_id": {"type": "string"},
+                        "memory_kind": {
+                            "type": "string",
+                            "enum": ["fact", "episode", "procedure", "artifact"],
+                            "default": "fact",
+                        },
+                    },
                     "required": ["memory_id"],
                 },
             },
@@ -310,7 +348,11 @@ class AgentMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs: Any) -> str:
         if tool_name == "agent_memory_recall":
-            context = self._recall(str(args["query"]), intent="explicit")
+            context = self._recall(
+                str(args["query"]),
+                intent="explicit",
+                environment_fingerprint=args.get("environment_fingerprint") or {},
+            )
             return json.dumps(
                 {
                     "context": context,
@@ -325,26 +367,50 @@ class AgentMemoryProvider(MemoryProvider):
                 ensure_ascii=False,
             )
         if tool_name == "agent_memory_browse":
+            memory_kind = str(args.get("memory_kind") or "fact")
             query = {
                 "shared_namespace": self.shared_namespace,
-                "source_profile": str(args.get("source_profile") or self.profile),
-                "limit": str(args.get("limit") or 10),
             }
-            for key in ("fact_type", "state", "updated_after"):
-                if args.get(key):
-                    query[key] = str(args[key])
+            path = "/api/v1/memories"
+            if memory_kind == "fact":
+                query["source_profile"] = str(
+                    args.get("source_profile") or self.profile
+                )
+                query["limit"] = str(args.get("limit") or 10)
+                for key in ("fact_type", "state", "updated_after"):
+                    if args.get(key):
+                        query[key] = str(args[key])
+            else:
+                path = {
+                    "episode": "/api/v1/episodes",
+                    "temporal_rule": "/api/v1/temporal-rules",
+                    "preference": "/api/v1/preferences",
+                    "procedure": "/api/v1/procedures",
+                    "artifact": "/api/v1/artifacts",
+                }.get(memory_kind, "")
+                if not path:
+                    return json.dumps({"error": "unsupported_memory_kind"})
+                if memory_kind == "episode":
+                    query["limit"] = str(args.get("limit") or 10)
+                    if args.get("state"):
+                        query["state"] = str(args["state"])
             try:
-                result = self.client.get("/api/v1/memories", query)
+                result = self.client.get(path, query)
             except ApiResponseError as error:
                 return json.dumps({"error": error.code.lower()})
             except ApiUnavailable:
                 return json.dumps({"error": "service_unavailable"})
             return json.dumps(result, ensure_ascii=False)
         if tool_name == "agent_memory_trace_source":
+            memory_kind = str(args.get("memory_kind") or "fact")
+            path = (
+                f"/api/v1/memory/{args['memory_id']}/trace"
+                if memory_kind == "fact"
+                else f"/api/v1/{memory_kind}s/{args['memory_id']}"
+            )
             try:
                 result = self.client.get(
-                    f"/api/v1/memory/{args['memory_id']}/trace",
-                    {"shared_namespace": self.shared_namespace},
+                    path, {"shared_namespace": self.shared_namespace}
                 )
             except ApiUnavailable:
                 return json.dumps({"error": "service_unavailable"})

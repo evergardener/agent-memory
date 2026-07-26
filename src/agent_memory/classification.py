@@ -3,7 +3,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 CURRENT_PATTERN = re.compile(
-    r"(?:天气|气温|下雨|暴雨|今天|明天|当前|临时|告警|health|healthy|unhealthy|weather|today)",
+    r"(?:天气|气温|下雨|暴雨|今天|明天|当前|临时|告警|"
+    r"turned\s+(?:on|off)|已?(?:开启|关闭|打开|关掉)|"
+    r"health|healthy|unhealthy|weather|today)",
     re.IGNORECASE,
 )
 STAGE_PATTERN = re.compile(

@@ -13,6 +13,7 @@ type Props = {
   onEnterGalaxy: (galaxy: Galaxy) => void;
   onExitGalaxy: () => void;
   onSaveEntityLayout: (entityId: string, position: { x: number; y: number }) => void;
+  onSaveSubjectLayout: (subjectId: string, position: { x: number; y: number }) => void;
 };
 
 const PLANET_COLORS: Record<string, string> = {
@@ -44,8 +45,22 @@ const RELATION_LABELS: Record<string, string> = {
   pushes_logs_to: "推送日志",
   sends_alerts_to: "发送告警",
   uses_email_connector: "使用邮件连接器",
-  connects_mailbox: "连接邮箱"
+  connects_mailbox: "连接邮箱",
+  university_classmate: "大学同学",
+  classmate: "同学",
+  friend: "朋友",
+  colleague: "同事"
 };
+const RELATION_KINDS = new Set([
+  "relation",
+  "typed_relation",
+  "episode_relation",
+  "relationship"
+]);
+
+function isRelationKind(kind = "") {
+  return RELATION_KINDS.has(kind);
+}
 
 const LENS_LABELS: Record<string, string> = {
   all: "全部观察",
@@ -75,6 +90,43 @@ function hash(value: string) {
     result = Math.imul(result, 16777619);
   }
   return result >>> 0;
+}
+
+export function polygonSubjectLayout(nodes: GraphElement[]) {
+  const ordered = [...nodes].sort((left, right) => {
+    const leftRank = left.data.subject_kind === "user" ? 0 : 1;
+    const rightRank = right.data.subject_kind === "user" ? 0 : 1;
+    return leftRank - rightRank || left.data.label.localeCompare(right.data.label);
+  });
+  if (ordered.length === 1) return [{ node: ordered[0], x: 0, y: 0 }];
+  if (ordered.length === 2) {
+    return [
+      { node: ordered[0], x: -52, y: 0 },
+      { node: ordered[1], x: 52, y: 0 }
+    ];
+  }
+  if (ordered.length > 8) {
+    return ordered.map((node, index) => {
+      const ring = Math.floor(index / 8);
+      const ringStart = ring * 8;
+      const ringCount = Math.min(8, ordered.length - ringStart);
+      const angle = -Math.PI / 2 + ((index - ringStart) * Math.PI * 2) / ringCount;
+      return {
+        node,
+        x: Math.cos(angle) * (112 + ring * 78),
+        y: Math.sin(angle) * (76 + ring * 54)
+      };
+    });
+  }
+  const radius = Math.min(190, 72 + ordered.length * 14);
+  return ordered.map((node, index) => {
+    const angle = -Math.PI / 2 + (index * Math.PI * 2) / ordered.length;
+    return {
+      node,
+      x: Math.cos(angle) * radius,
+      y: Math.sin(angle) * radius
+    };
+  });
 }
 
 function positionPlanets(
@@ -107,7 +159,7 @@ function positionPlanets(
 function overlayEntityIds(selected: Record<string, string> | null) {
   if (!selected) return new Set<string>();
   if (selected.kind === "entity") return new Set([selected.id]);
-  if (["relation", "typed_relation"].includes(selected.kind)) {
+  if (isRelationKind(selected.kind)) {
     return new Set([selected.source, selected.target].filter(Boolean));
   }
   return new Set([
@@ -133,7 +185,8 @@ export function StarMap({
   onSelect,
   onEnterGalaxy,
   onExitGalaxy,
-  onSaveEntityLayout
+  onSaveEntityLayout,
+  onSaveSubjectLayout
 }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const instance = useRef<Core | null>(null);
@@ -162,30 +215,56 @@ export function StarMap({
     () => positionPlanets(planetNodes, savedPositions, view === "galaxy"),
     [planetNodes, savedPositions, view]
   );
+  const subjectNodes = graph.nodes.filter((node) => node.data.kind === "subject");
+  const savedSubjectPositions = useMemo(() => {
+    const values = new Map<string, { x: number; y: number }>();
+    layoutPreferences
+      .filter((item) =>
+        item.target_kind === "subject" &&
+        item.scope_kind === "universe" &&
+        typeof item.position.x === "number" &&
+        typeof item.position.y === "number"
+      )
+      .forEach((item) => values.set(item.target_id, {
+        x: Number(item.position.x),
+        y: Number(item.position.y)
+      }));
+    return values;
+  }, [layoutPreferences]);
+  const subjectLayout = polygonSubjectLayout(subjectNodes).map((item) => ({
+    ...item,
+    ...(savedSubjectPositions.get(item.node.data.record_id) || {})
+  }));
   const relationCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    graph.edges.filter((edge) => ["relation", "typed_relation"].includes(edge.data.kind)).forEach((edge) => {
+    graph.edges.filter((edge) => isRelationKind(edge.data.kind)).forEach((edge) => {
       counts.set(edge.data.source, (counts.get(edge.data.source) || 0) + 1);
       counts.set(edge.data.target, (counts.get(edge.data.target) || 0) + 1);
     });
     return counts;
   }, [graph.edges]);
-  const planetLabels = useMemo(
-    () => new Map(planetNodes.map((node) => [node.data.id, node.data.label])),
-    [planetNodes]
+  const celestialLabels = useMemo(
+    () => new Map(
+      [...planetNodes, ...subjectNodes].map((node) => [node.data.id, node.data.label])
+    ),
+    [planetNodes, subjectNodes]
   );
   const relationItems = useMemo<GraphElement[]>(
     () => graph.edges
-      .filter((edge) => ["relation", "typed_relation"].includes(edge.data.kind))
+      .filter((edge) => isRelationKind(edge.data.kind))
       .map((edge) => ({
         ...edge,
         data: {
           ...edge.data,
-          label: `${planetLabels.get(edge.data.source) || "行星"} — ${RELATION_LABELS[edge.data.relation_type] || edge.data.relation_type || "关联"} → ${planetLabels.get(edge.data.target) || "行星"}`,
+          label: `${celestialLabels.get(edge.data.source) || "天体"} — ${
+            edge.data.label ||
+            RELATION_LABELS[edge.data.relation_type] ||
+            (edge.data.kind === "episode_relation" ? "共同情节" : "关联")
+          } → ${celestialLabels.get(edge.data.target) || "天体"}`,
           evidence_count: String(splitIds(edge.data.evidence_ids).length)
         }
       })),
-    [graph.edges, planetLabels]
+    [celestialLabels, graph.edges]
   );
   const galaxies = useMemo(
     () => view === "universe"
@@ -214,26 +293,6 @@ export function StarMap({
   const protectedIds = useMemo(() => new Set(
     graph.vault_markers.flatMap((marker) => splitIds(marker.data.target_ids))
   ), [graph.vault_markers]);
-  const subjectNodes = graph.nodes.filter((node) => node.data.kind === "subject");
-  const userSubject = subjectNodes.find((node) => node.data.subject_kind === "user");
-  const profileSubjects = subjectNodes
-    .filter((node) => node.data.subject_kind === "profile_persona")
-    .sort((left, right) => left.data.label.localeCompare(right.data.label));
-  const subjectLayout = [
-    ...(userSubject ? [{ node: userSubject, x: profileSubjects.length === 1 ? 46 : 0, y: 0 }] : []),
-    ...profileSubjects.map((node, index) => {
-      if (profileSubjects.length === 1) return { node, x: -46, y: 0 };
-      const ring = profileSubjects.length > 6 && index >= 6 ? 1 : 0;
-      const ringStart = ring * 6;
-      const ringCount = Math.min(6, profileSubjects.length - ringStart);
-      const angle = -Math.PI / 2 + ((index - ringStart) * Math.PI * 2) / ringCount + ring * 0.28;
-      return {
-        node,
-        x: Math.cos(angle) * (ring ? 190 : 110),
-        y: Math.sin(angle) * (ring ? 128 : 74)
-      };
-    })
-  ];
   const overlayItems = activeLens === "episode"
     ? graph.episodes
     : activeLens === "arc"
@@ -305,6 +364,11 @@ export function StarMap({
           lens: activeLens
         }
       })),
+      ...subjectLayout.map(({ node, x, y }) => ({
+        ...node,
+        position: { x: 600 + x, y: 360 + y },
+        data: { ...node.data, relation_count: 0 }
+      })),
       ...relationItems.map((element) => ({
         ...element,
         data: {
@@ -327,6 +391,9 @@ export function StarMap({
           "underlay-shape": "ellipse", "transition-property": "opacity, border-width, underlay-opacity, text-opacity",
           "transition-duration": 220
         } },
+        { selector: 'node[kind = "subject"]', style: {
+          width: 2, height: 2, label: "", opacity: 0, "events": "no"
+        } },
         { selector: 'node[protected = "true"]', style: {
           "border-width": 2, "border-color": "#e5a3b7", "border-style": "double",
           "underlay-color": "#c982a0", "underlay-opacity": 0.35
@@ -338,7 +405,7 @@ export function StarMap({
           width: 5, height: 5, label: "", "background-color": "#fff0ba", "border-width": 0,
           "underlay-padding": 9, "underlay-color": "#ffd98c", "underlay-opacity": 0.66, "events": "no", "z-index": 40
         } },
-        { selector: 'edge[kind = "relation"], edge[kind = "typed_relation"]', style: {
+        { selector: 'edge[kind = "relation"], edge[kind = "typed_relation"], edge[kind = "episode_relation"], edge[kind = "relationship"]', style: {
           width: "mapData(strength, 0, 1, 0.3, 2)", "line-color": "#7188b0",
           opacity: (edge: EdgeSingular) => 0.04 + Number(edge.data("strength") || 0.4) * 0.3,
           "curve-style": "bezier", "transition-property": "opacity, width, line-color", "transition-duration": 220
@@ -385,7 +452,7 @@ export function StarMap({
       focusNeighborhood(event.target);
       onSelect(event.target.data());
     });
-    cy.on("tap select", 'edge[kind = "relation"], edge[kind = "typed_relation"]', (event) => {
+    cy.on("tap select", 'edge[kind = "relation"], edge[kind = "typed_relation"], edge[kind = "episode_relation"], edge[kind = "relationship"]', (event) => {
       clearFocus();
       event.target.addClass("is-neighbor");
       event.target.connectedNodes().addClass("is-neighbor");
@@ -513,6 +580,7 @@ export function StarMap({
       {planetNodes.map((node) => <button
         key={node.data.id}
         type="button"
+        draggable
         aria-label={`行星 ${node.data.label}`}
         onFocus={() => onSelect(node.data)}
         onClick={(event) => { event.stopPropagation(); onSelect(node.data); }}
@@ -542,6 +610,14 @@ export function StarMap({
         className={`stellar-core ${node.data.subject_kind === "user" ? "stellar-user" : "stellar-profile"}`}
         style={{ left: `calc(50% + ${x}px)`, top: `calc(50% + ${y}px)`, color: node.data.color } as CSSProperties}
         onClick={() => onSelect(node.data)}
+        onDragEnd={(event) => {
+          const bounds = host.current?.getBoundingClientRect();
+          if (!bounds || event.clientX === 0 || event.clientY === 0) return;
+          onSaveSubjectLayout(node.data.record_id, {
+            x: Math.round((event.clientX - bounds.left - bounds.width / 2) * 100) / 100,
+            y: Math.round((event.clientY - bounds.top - bounds.height / 2) * 100) / 100
+          });
+        }}
         title={`${node.data.label} · ${node.data.subject_kind === "user" ? "用户恒星" : "Hermes Profile 恒星"}`}
         aria-label={`${node.data.label} · ${node.data.subject_kind === "user" ? "用户恒星" : "Hermes Profile 恒星"}`}
       >

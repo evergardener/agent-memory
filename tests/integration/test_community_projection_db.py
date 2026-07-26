@@ -82,7 +82,13 @@ def seed_relation_fixture(connection, namespace_key: str | None = None):
         turn_id = stable_uuid("turn", f"{suffix}:{index}")
         event_id = stable_uuid("event", f"{suffix}:{index}")
         fact_id = stable_uuid("fact", f"{suffix}:{index}")
-        relation_id = stable_uuid("entity-relation", f"{suffix}:{index}")
+        relation_id = stable_uuid(
+            "entity-relation",
+            (
+                f"{namespace_id}:{source_name.casefold()}:{target_name.casefold()}:"
+                f"{relation_type}:lan_direct"
+            ),
+        )
         payload_hash = f"fixture-hash-{suffix}-{index}"
         event_hashes.append((event_id, payload_hash))
         connection.execute(
@@ -122,11 +128,15 @@ def seed_relation_fixture(connection, namespace_key: str | None = None):
             "INSERT INTO memory.fact_evidence(fact_id,event_id) VALUES (%s,%s)",
             (fact_id, event_id),
         )
-        connection.execute(
+        relation_id = connection.execute(
             """INSERT INTO memory.entity_relations(
                  id,namespace_id,source_entity_id,target_entity_id,relation_type,
                  transport,confidence,lifecycle_state,origin,extractor_version
-               ) VALUES (%s,%s,%s,%s,%s,'lan_direct',1,'active','manual','fixture-v1')""",
+               ) VALUES (%s,%s,%s,%s,%s,'lan_direct',1,'active','manual','fixture-v1')
+               ON CONFLICT(
+                 namespace_id,source_entity_id,target_entity_id,relation_type,transport
+               ) DO UPDATE SET confidence=excluded.confidence
+               RETURNING id""",
             (
                 relation_id,
                 namespace_id,
@@ -134,7 +144,7 @@ def seed_relation_fixture(connection, namespace_key: str | None = None):
                 entities[target_name],
                 relation_type,
             ),
-        )
+        ).fetchone()[0]
         connection.execute(
             "INSERT INTO memory.relation_facts(relation_id,fact_id) VALUES (%s,%s)",
             (relation_id, fact_id),

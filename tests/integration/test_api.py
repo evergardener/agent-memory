@@ -149,6 +149,13 @@ def test_ingest_is_idempotent_redacted_and_cross_profile_recallable():
 
 
 def test_profile_subjects_group_instances_and_support_audited_mapping_governance():
+    shared_profile = f"phase-a-shared-{RUN_ID}"
+    separate_profile = f"phase-a-separate-{RUN_ID}"
+    shared_instance_1 = f"phase-a-instance-1-{RUN_ID}"
+    shared_instance_2 = f"phase-a-instance-2-{RUN_ID}"
+    separate_instance_1 = f"phase-a-instance-3-{RUN_ID}"
+    separate_instance_2 = f"phase-a-instance-4-{RUN_ID}"
+
     def ingest_source(profile: str, instance: str, suffix: str) -> None:
         payload_context = context(profile, f"subject-{suffix}-{RUN_ID}")
         payload_context["source_instance"] = instance
@@ -169,9 +176,9 @@ def test_profile_subjects_group_instances_and_support_audited_mapping_governance
         )
         response.raise_for_status()
 
-    ingest_source("phase-a-shared", "phase-a-instance-1", "shared-1")
-    ingest_source("phase-a-shared", "phase-a-instance-2", "shared-2")
-    ingest_source("phase-a-separate", "phase-a-instance-3", "separate")
+    ingest_source(shared_profile, shared_instance_1, "shared-1")
+    ingest_source(shared_profile, shared_instance_2, "shared-2")
+    ingest_source(separate_profile, separate_instance_1, "separate")
 
     response = get(
         "/api/v1/graph/subjects", {"shared_namespace": TEST_NAMESPACE}
@@ -182,21 +189,23 @@ def test_profile_subjects_group_instances_and_support_audited_mapping_governance
     user_subject = next(item for item in subjects if item["kind"] == "user")
     assert user_subject["display_name"] == "User"
     assert user_subject["display_name_origin"] == "default"
-    shared = next(item for item in subjects if item["stable_key"] == "profile:phase-a-shared")
-    separate = next(
-        item for item in subjects if item["stable_key"] == "profile:phase-a-separate"
+    shared = next(
+        item for item in subjects if item["stable_key"] == f"profile:{shared_profile}"
     )
-    assert shared["display_name"] == "phase-a-shared"
+    separate = next(
+        item for item in subjects if item["stable_key"] == f"profile:{separate_profile}"
+    )
+    assert shared["display_name"] == shared_profile
     assert shared["display_name_origin"] == "source"
-    assert separate["display_name"] == "phase-a-separate"
+    assert separate["display_name"] == separate_profile
     assert separate["display_name_origin"] == "source"
     assert {source["source_instance"] for source in shared["sources"]} >= {
-        "phase-a-instance-1",
-        "phase-a-instance-2",
+        shared_instance_1,
+        shared_instance_2,
     }
     shared_source = next(
         source for source in shared["sources"]
-        if source["source_instance"] == "phase-a-instance-1"
+        if source["source_instance"] == shared_instance_1
     )
 
     graph = get(
@@ -212,7 +221,7 @@ def test_profile_subjects_group_instances_and_support_audited_mapping_governance
     ]
     assert any(node["record_id"] == shared["id"] for node in subject_nodes)
     shared_node = next(node for node in subject_nodes if node["record_id"] == shared["id"])
-    assert shared_node["label"] == "phase-a-shared"
+    assert shared_node["label"] == shared_profile
     assert shared_node["display_name_origin"] == "source"
     subject_entity_ids = {item["entity_id"] for item in subjects}
     assert not any(
@@ -237,7 +246,7 @@ def test_profile_subjects_group_instances_and_support_audited_mapping_governance
         assert renamed.json()["display_name_origin"] == "manual"
         assert renamed.json()["color"] == "#8fd1d1"
 
-        ingest_source("phase-a-separate", "phase-a-instance-4", "separate-repeat")
+        ingest_source(separate_profile, separate_instance_2, "separate-repeat")
         refreshed = get(
             "/api/v1/graph/subjects", {"shared_namespace": TEST_NAMESPACE}
         ).json()
@@ -321,7 +330,13 @@ def test_planetary_projection_and_observation_lenses_preserve_entity_identity():
     )
     celestial_ids = {node["data"]["id"] for node in graph["nodes"]}
     assert all(
-        edge["data"]["kind"] in {"subject", "relation"}
+        edge["data"]["kind"] in {
+            "subject",
+            "relation",
+            "typed_relation",
+            "episode_relation",
+            "relationship",
+        }
         and edge["data"]["source"] in celestial_ids
         and edge["data"]["target"] in celestial_ids
         for edge in graph["edges"]
@@ -693,7 +708,7 @@ def wait_for_memory(query: str) -> dict:
         items = recall(query)["items"]
         for item in items:
             text = item["text"].casefold()
-            if all(part in text for part in expected_parts):
+            if item["kind"] == "fact" and all(part in text for part in expected_parts):
                 return item
         time.sleep(0.25)
     pytest.fail(f"memory projection not available for query: {query}")

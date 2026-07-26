@@ -27,6 +27,7 @@ from .model_adapter import (
     validate_verbatim_fact_candidate,
 )
 from .state_views import effective_state_config
+from .unified_memory import process_unified_turn
 
 logger = logging.getLogger(__name__)
 ENTITY_PATTERN = re.compile(
@@ -302,13 +303,14 @@ def claim_job(
              )
              ORDER BY CASE kind
                         WHEN 'extract_facts' THEN 0
-                        WHEN 'purge_memory' THEN 1
-                        WHEN 'rebuild_derived' THEN 2
-                        WHEN 'rebuild_communities' THEN 3
-                        WHEN 'generate_report' THEN 4
-                        WHEN 'extract_atomic_turn' THEN 5
-                        WHEN 'enhance_fact' THEN 6
-                        ELSE 6
+                        WHEN 'build_unified_turn' THEN 1
+                        WHEN 'purge_memory' THEN 2
+                        WHEN 'rebuild_derived' THEN 3
+                        WHEN 'rebuild_communities' THEN 4
+                        WHEN 'generate_report' THEN 5
+                        WHEN 'extract_atomic_turn' THEN 6
+                        WHEN 'enhance_fact' THEN 7
+                        ELSE 7
                       END, created_at
              FOR UPDATE SKIP LOCKED LIMIT 1
            ) RETURNING id,namespace_id,kind,input_ref,input_version""",
@@ -929,10 +931,21 @@ def process_rebuild_derived(connection: Connection, job) -> None:
     _job_id, namespace_id, _kind, _input_ref, _version = job
     connection.execute(
         """DELETE FROM retrieval.documents
-           WHERE namespace_id=%s AND source_kind IN ('episode','arc')""",
+           WHERE namespace_id=%s AND (
+             source_kind='arc' OR (
+               source_kind='episode' AND source_id IN (
+                 SELECT id FROM memory.episodes
+                 WHERE namespace_id=%s AND origin='legacy_derived'
+               )
+             )
+           )""",
+        (namespace_id, namespace_id),
+    )
+    connection.execute(
+        """DELETE FROM memory.episodes
+           WHERE namespace_id=%s AND origin='legacy_derived'""",
         (namespace_id,),
     )
-    connection.execute("DELETE FROM memory.episodes WHERE namespace_id=%s", (namespace_id,))
     connection.execute("DELETE FROM memory.arcs WHERE namespace_id=%s", (namespace_id,))
     with connection.cursor(row_factory=dict_row) as cursor:
         cursor.execute(
@@ -969,22 +982,35 @@ def process_rebuild_derived(connection: Connection, job) -> None:
         for group in groups:
             derived_id = stable_uuid(kind, f"{namespace_id}:{group['entity_id']}")
             summary = " · ".join(group["statements"][:8])
-            table = "episodes" if kind == "episode" else "arcs"
             link_table = "episode_facts" if kind == "episode" else "arc_facts"
             owner_column = "episode_id" if kind == "episode" else "arc_id"
             title_prefix = "阶段情节" if kind == "episode" else "长期脉络"
-            connection.execute(
-                f"""INSERT INTO memory.{table}(
-                       id,namespace_id,entity_id,title,summary
-                     ) VALUES (%s,%s,%s,%s,%s)""",
-                (
-                    derived_id,
-                    namespace_id,
-                    group["entity_id"],
-                    f"{title_prefix} · {group['canonical_name']}",
-                    summary,
-                ),
-            )
+            if kind == "episode":
+                connection.execute(
+                    """INSERT INTO memory.episodes(
+                         id,namespace_id,entity_id,title,summary,episode_type,origin
+                       ) VALUES (%s,%s,%s,%s,%s,'legacy_derived','legacy_derived')""",
+                    (
+                        derived_id,
+                        namespace_id,
+                        group["entity_id"],
+                        f"{title_prefix} · {group['canonical_name']}",
+                        summary,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """INSERT INTO memory.arcs(
+                         id,namespace_id,entity_id,title,summary
+                       ) VALUES (%s,%s,%s,%s,%s)""",
+                    (
+                        derived_id,
+                        namespace_id,
+                        group["entity_id"],
+                        f"{title_prefix} · {group['canonical_name']}",
+                        summary,
+                    ),
+                )
             for fact_id in group["ids"]:
                 connection.execute(
                     f"INSERT INTO memory.{link_table}({owner_column},fact_id) VALUES (%s,%s)",
@@ -1034,6 +1060,29 @@ def run_maintenance(connection: Connection) -> None:
         """UPDATE state.current_items SET status='expired',updated_at=now()
            WHERE status='active' AND expires_at <= now()"""
     )
+    expired_procedures = connection.execute(
+        """UPDATE memory.procedures
+           SET state='dormant',review_state='candidate',version=version+1,updated_at=now()
+           WHERE state='active' AND valid_to IS NOT NULL AND valid_to <= now()
+           RETURNING namespace_id,id"""
+    ).fetchall()
+    for namespace_id, procedure_id in expired_procedures:
+        connection.execute(
+            """UPDATE retrieval.documents
+               SET lifecycle_state='dormant',indexed_at=now()
+               WHERE source_kind='procedure' AND source_id=%s""",
+            (procedure_id,),
+        )
+        connection.execute(
+            """INSERT INTO audit.events(
+                 id,namespace_id,actor_type,actor_id,action,target_type,target_id,
+                 reason,correlation_id,metadata_redacted
+               ) VALUES (
+                 %s,%s,'system','core-worker','procedure.expire','procedure',%s,
+                 'procedure validity window expired',%s,'{"review_required":true}'::jsonb
+               )""",
+            (new_uuid(), namespace_id, procedure_id, new_uuid()),
+        )
     lifecycle_changes = connection.execute(
         """UPDATE memory.facts SET memory_state='dormant',updated_at=now()
            WHERE fact_type='stage' AND memory_state='active'
@@ -1141,6 +1190,8 @@ def process_one(connection: Connection, job) -> None:
         with connection.transaction():
             if job[2] == "extract_facts":
                 process_extract(connection, job)
+            elif job[2] == "build_unified_turn":
+                process_unified_turn(connection, job)
             elif job[2] == "enhance_fact":
                 process_enhance_fact(connection, job, model_enhancement)
             elif job[2] == "extract_atomic_turn":
@@ -1242,3 +1293,7 @@ def main() -> None:
             time.sleep(settings.worker_poll_seconds if not job else 0.05)
     finally:
         database.close()
+
+
+if __name__ == "__main__":
+    main()

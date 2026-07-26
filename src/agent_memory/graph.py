@@ -55,16 +55,13 @@ def subject_visibility(kind: str, sources: list[dict]) -> str:
     if kind == "user":
         return "normal"
     if not sources or all(
-        AUTOMATED_SOURCE_INSTANCE_PATTERN.fullmatch(source["source_instance"])
-        for source in sources
+        AUTOMATED_SOURCE_INSTANCE_PATTERN.fullmatch(source["source_instance"]) for source in sources
     ):
         return "automated"
     return "normal"
 
 
-def entity_projection_allowed(
-    label: str, *, automated_source: bool, namespace_key: str
-) -> bool:
+def entity_projection_allowed(label: str, *, automated_source: bool, namespace_key: str) -> bool:
     if is_internal_entity_label(label):
         return False
     if namespace_key.startswith("hermes:automated-tests"):
@@ -116,22 +113,13 @@ def load_graph(
     vault_markers: list[dict] = []
     subjects = list_subjects(connection, namespace_key)
     active_subjects = [item for item in subjects if item["status"] == "active"]
-    user_subject = next(
-        (item for item in active_subjects if item["kind"] == "user"), None
-    )
+    user_subject = next((item for item in active_subjects if item["kind"] == "user"), None)
     celestial_by_entity_id: dict[UUID, str] = {}
-    subject_nodes_by_profile: dict[str, set[str]] = {}
     for subject in active_subjects:
-        profiles = sorted(
-            {source["source_profile"] for source in subject["sources"]}
-        )
-        instances = sorted(
-            {source["source_instance"] for source in subject["sources"]}
-        )
+        profiles = sorted({source["source_profile"] for source in subject["sources"]})
+        instances = sorted({source["source_instance"] for source in subject["sources"]})
         subject_node_id = f"subject:{subject['id']}"
         celestial_by_entity_id[subject["entity_id"]] = subject_node_id
-        for profile in profiles:
-            subject_nodes_by_profile.setdefault(profile, set()).add(subject_node_id)
         nodes.append(
             {
                 "data": {
@@ -149,9 +137,7 @@ def load_graph(
                     "source_profiles": json.dumps(profiles, ensure_ascii=False),
                     "source_instances": json.dumps(instances, ensure_ascii=False),
                     "source_count": str(len(subject["sources"])),
-                    "visibility": subject_visibility(
-                        subject["kind"], subject["sources"]
-                    ),
+                    "visibility": subject_visibility(subject["kind"], subject["sources"]),
                 }
             }
         )
@@ -242,9 +228,7 @@ def load_graph(
                         "celestial_kind": "planet",
                         "entity_type": entity["entity_type"],
                         "state": entity["merge_state"],
-                        "merged_aliases": json.dumps(
-                            entity["merged_aliases"], ensure_ascii=False
-                        ),
+                        "merged_aliases": json.dumps(entity["merged_aliases"], ensure_ascii=False),
                         "visibility": visibility,
                     }
                 }
@@ -305,7 +289,8 @@ def load_graph(
                 if node_visibility(
                     fact["statement"],
                     automated_source=bool(fact["automated_source"]),
-                ) == "automated"
+                )
+                == "automated"
                 else "interaction"
                 if QUERY_ONLY_PATTERN.search(fact["statement"])
                 else "normal"
@@ -332,21 +317,12 @@ def load_graph(
             if celestial_id is None:
                 continue
             target = (
-                fact_subject_nodes
-                if celestial_id.startswith("subject:")
-                else fact_entity_nodes
+                fact_subject_nodes if celestial_id.startswith("subject:") else fact_entity_nodes
             )
             target.setdefault(relation["fact_id"], set()).add(celestial_id)
 
-        for fact_id, fact in fact_rows.items():
-            fact_subject_nodes.setdefault(fact_id, set()).update(
-                subject_nodes_by_profile.get(fact["source_profile"], set())
-            )
-
         selected_fact_ids = {
-            fact_id
-            for fact_id, fact in fact_rows.items()
-            if fact_matches_lens(fact, lens)
+            fact_id for fact_id, fact in fact_rows.items() if fact_matches_lens(fact, lens)
         }
         for fact_id in sorted(selected_fact_ids, key=str):
             fact = fact_rows[fact_id]
@@ -392,9 +368,7 @@ def load_graph(
                         "fact_ids": set(),
                     },
                 )
-                relation["strength"] = max(
-                    relation["strength"], fact_strengths.get(fact_id, 0.45)
-                )
+                relation["strength"] = max(relation["strength"], fact_strengths.get(fact_id, 0.45))
                 relation["fact_ids"].add(f"fact:{fact_id}")
         ranked_relations = sorted(
             relation_edges.values(),
@@ -425,17 +399,88 @@ def load_graph(
             "episode": {},
             "arc": {},
         }
+        episode_celestial: dict[UUID, dict[str, set[str]]] = {}
+        episode_steps: dict[UUID, list[dict]] = {}
+        episode_artifact_ids: dict[UUID, set[str]] = {}
+        cursor.execute(
+            """SELECT link.episode_id,link.entity_id,link.subject_id,link.role,
+                      COALESCE(entity.canonical_entity_id,entity.id) AS canonical_entity_id
+               FROM memory.episode_entities link
+               JOIN memory.episodes episode ON episode.id=link.episode_id
+               LEFT JOIN memory.entities entity ON entity.id=link.entity_id
+               WHERE episode.namespace_id=%s""",
+            (namespace_id,),
+        )
+        for relation in cursor.fetchall():
+            celestial_id = (
+                f"subject:{relation['subject_id']}"
+                if relation["subject_id"]
+                else celestial_by_entity_id.get(relation["canonical_entity_id"])
+            )
+            if not celestial_id:
+                continue
+            target = episode_celestial.setdefault(
+                relation["episode_id"], {"entity": set(), "subject": set()}
+            )
+            kind = "subject" if celestial_id.startswith("subject:") else "entity"
+            target[kind].add(celestial_id)
+        cursor.execute(
+            """SELECT step.episode_id,step.sequence_no,step.step_kind,step.summary,
+                      step.status,step.occurred_at
+               FROM memory.episode_steps step
+               JOIN memory.episodes episode ON episode.id=step.episode_id
+               WHERE episode.namespace_id=%s ORDER BY step.episode_id,step.sequence_no""",
+            (namespace_id,),
+        )
+        for step in cursor.fetchall():
+            episode_steps.setdefault(step["episode_id"], []).append(
+                {
+                    "sequence_no": step["sequence_no"],
+                    "kind": step["step_kind"],
+                    "summary": redact_text(step["summary"]).text,
+                    "status": step["status"],
+                    "occurred_at": (
+                        step["occurred_at"].isoformat() if step["occurred_at"] else None
+                    ),
+                }
+            )
+        cursor.execute(
+            """SELECT link.episode_id,link.artifact_id
+               FROM memory.episode_artifacts link
+               JOIN memory.episodes episode ON episode.id=link.episode_id
+               WHERE episode.namespace_id=%s""",
+            (namespace_id,),
+        )
+        for link in cursor.fetchall():
+            episode_artifact_ids.setdefault(link["episode_id"], set()).add(str(link["artifact_id"]))
         for kind, table, link_table, owner_column in (
             ("episode", "episodes", "episode_facts", "episode_id"),
             ("arc", "arcs", "arc_facts", "arc_id"),
         ):
-            cursor.execute(
-                f"""SELECT d.id,COALESCE(e.canonical_entity_id,e.id) AS entity_id,
-                            d.title,d.summary,d.state,d.updated_at
-                     FROM memory.{table} d JOIN memory.entities e ON e.id=d.entity_id
-                     WHERE d.namespace_id=%s""",
-                (namespace_id,),
-            )
+            if kind == "episode":
+                cursor.execute(
+                    """SELECT d.id,COALESCE(e.canonical_entity_id,e.id) AS entity_id,
+                              d.title,d.summary,d.state,d.updated_at,d.origin,
+                              d.episode_type,d.started_at,d.ended_at,d.time_precision,
+                              d.review_state,d.confidence,d.version
+                       FROM memory.episodes d
+                       LEFT JOIN memory.entities e ON e.id=d.entity_id
+                       WHERE d.namespace_id=%s""",
+                    (namespace_id,),
+                )
+            else:
+                cursor.execute(
+                    """SELECT d.id,COALESCE(e.canonical_entity_id,e.id) AS entity_id,
+                              d.title,d.summary,d.state,d.updated_at,
+                              'legacy_derived'::text AS origin,
+                              'arc'::text AS episode_type,NULL::timestamptz AS started_at,
+                              NULL::timestamptz AS ended_at,'unknown'::text AS time_precision,
+                              'accepted'::text AS review_state,1::float AS confidence,d.version
+                       FROM memory.arcs d
+                       JOIN memory.entities e ON e.id=d.entity_id
+                       WHERE d.namespace_id=%s""",
+                    (namespace_id,),
+                )
             for derived in cursor.fetchall():
                 derived_by_kind[kind][derived["id"]] = derived
             cursor.execute(
@@ -445,9 +490,7 @@ def load_graph(
                 (namespace_id,),
             )
             for link in cursor.fetchall():
-                derived_fact_ids[kind].setdefault(link["derived_id"], set()).add(
-                    link["fact_id"]
-                )
+                derived_fact_ids[kind].setdefault(link["derived_id"], set()).add(link["fact_id"])
 
         overlay_indexes: dict[str, dict[UUID, dict]] = {"episode": {}, "arc": {}}
         for kind, target in (("episode", episodes), ("arc", arcs)):
@@ -461,22 +504,27 @@ def load_graph(
                 subject_ids: set[str] = set()
                 owner_id = celestial_by_entity_id.get(derived["entity_id"])
                 if owner_id:
-                    (subject_ids if owner_id.startswith("subject:") else entity_ids).add(
-                        owner_id
+                    (subject_ids if owner_id.startswith("subject:") else entity_ids).add(owner_id)
+                if kind == "episode" and derived["origin"] != "legacy_derived":
+                    participants = episode_celestial.get(
+                        derived_id, {"entity": set(), "subject": set()}
                     )
-                for fact_id in linked_fact_ids:
-                    entity_ids.update(fact_entity_nodes.get(fact_id, set()))
-                    subject_ids.update(fact_subject_nodes.get(fact_id, set()))
+                    entity_ids.update(participants["entity"])
+                    subject_ids.update(participants["subject"])
+                else:
+                    for fact_id in linked_fact_ids:
+                        entity_ids.update(fact_entity_nodes.get(fact_id, set()))
+                        subject_ids.update(fact_subject_nodes.get(fact_id, set()))
                 visibility = node_visibility(
                     f"{derived['title']} {derived['summary']}",
                     automated_source=(
                         entity_visibility.get(derived["entity_id"]) == "automated"
+                        if derived["entity_id"]
+                        else False
                     ),
                 )
                 linked_rows = [
-                    fact_rows[fact_id]
-                    for fact_id in linked_fact_ids
-                    if fact_id in fact_rows
+                    fact_rows[fact_id] for fact_id in linked_fact_ids if fact_id in fact_rows
                 ]
                 overlay = {
                     "data": {
@@ -491,13 +539,24 @@ def load_graph(
                         "entity_ids": _pipe(entity_ids),
                         "subject_ids": _pipe(subject_ids),
                         "fact_ids": _pipe({f"fact:{fact_id}" for fact_id in linked_fact_ids}),
-                        "evidence_count": str(
-                            sum(row["evidence_count"] for row in linked_rows)
-                        ),
-                        "started_at": min(
-                            (row["updated_at"] for row in linked_rows),
-                            default=derived["updated_at"],
+                        "evidence_count": str(sum(row["evidence_count"] for row in linked_rows)),
+                        "episode_type": derived["episode_type"],
+                        "review_state": derived["review_state"],
+                        "confidence": f"{float(derived['confidence']):.2f}",
+                        "version": str(derived["version"]),
+                        "time_precision": derived["time_precision"],
+                        "steps": json.dumps(episode_steps.get(derived_id, []), ensure_ascii=False),
+                        "artifact_ids": _pipe(episode_artifact_ids.get(derived_id, set())),
+                        "started_at": (
+                            derived["started_at"]
+                            or min(
+                                (row["updated_at"] for row in linked_rows),
+                                default=derived["updated_at"],
+                            )
                         ).isoformat(),
+                        "ended_at": (
+                            derived["ended_at"].isoformat() if derived["ended_at"] else ""
+                        ),
                         "updated_at": max(
                             (row["updated_at"] for row in linked_rows),
                             default=derived["updated_at"],
@@ -506,6 +565,62 @@ def load_graph(
                 }
                 target.append(overlay)
                 overlay_indexes[kind][derived_id] = overlay
+        episode_relations: dict[tuple[str, str], set[str]] = {}
+        for episode_id, participants in episode_celestial.items():
+            celestial_ids = sorted(participants["subject"] | participants["entity"])
+            for source, target in combinations(celestial_ids, 2):
+                episode_relations.setdefault((source, target), set()).add(f"episode:{episode_id}")
+        edges.extend(
+            {
+                "data": {
+                    "id": f"episode-relation:{source}:{target}",
+                    "source": source,
+                    "target": target,
+                    "kind": "episode_relation",
+                    "strength": "0.70",
+                    "support_count": str(len(episode_ids)),
+                    "episode_ids": _pipe(episode_ids),
+                }
+            }
+            for (source, target), episode_ids in episode_relations.items()
+        )
+        cursor.execute(
+            """SELECT relationship.id,relationship.subject_id,
+                      COALESCE(entity.canonical_entity_id,entity.id) AS entity_id,
+                      relationship.relation_type,relationship.label,
+                      relationship.fact_id,relationship.episode_id
+               FROM memory.relationship_assertions relationship
+               JOIN memory.entities entity ON entity.id=relationship.related_entity_id
+               WHERE relationship.namespace_id=%s AND relationship.state='active'""",
+            (namespace_id,),
+        )
+        for relationship in cursor.fetchall():
+            subject_id = f"subject:{relationship['subject_id']}"
+            entity_id = celestial_by_entity_id.get(relationship["entity_id"])
+            if not entity_id:
+                continue
+            edges.append(
+                {
+                    "data": {
+                        "id": f"relationship:{relationship['id']}",
+                        "record_id": str(relationship["id"]),
+                        "source": subject_id,
+                        "target": entity_id,
+                        "kind": "relationship",
+                        "relation_type": relationship["relation_type"],
+                        "label": redact_text(relationship["label"]).text,
+                        "strength": "0.90",
+                        "fact_ids": (
+                            f"fact:{relationship['fact_id']}" if relationship["fact_id"] else ""
+                        ),
+                        "episode_ids": (
+                            f"episode:{relationship['episode_id']}"
+                            if relationship["episode_id"]
+                            else ""
+                        ),
+                    }
+                }
+            )
         cursor.execute(
             """SELECT e.id,e.display_label,e.redacted_hint,e.status,r.target_type,r.target_id
                FROM vault.entries e LEFT JOIN vault.references r ON r.entry_id=e.id
@@ -547,23 +662,17 @@ def load_graph(
                     overlay = overlay_indexes[item["target_type"]].get(item["target_id"])
                     if overlay:
                         targets.update(
-                            value
-                            for value in overlay["data"]["entity_ids"].split("|")
-                            if value
+                            value for value in overlay["data"]["entity_ids"].split("|") if value
                         )
                 marker = next(
                     marker
                     for marker in vault_markers
                     if marker["data"]["id"] == f"vault:{item['id']}"
                 )
-                existing = {
-                    value for value in marker["data"]["target_ids"].split("|") if value
-                }
+                existing = {value for value in marker["data"]["target_ids"].split("|") if value}
                 marker["data"]["target_ids"] = _pipe(existing | targets)
                 references = {
-                    value
-                    for value in marker["data"]["reference_ids"].split("|")
-                    if value
+                    value for value in marker["data"]["reference_ids"].split("|") if value
                 }
                 references.add(f"{item['target_type']}:{item['target_id']}")
                 marker["data"]["reference_ids"] = _pipe(references)
@@ -571,9 +680,7 @@ def load_graph(
     facets = {
         "profiles": sorted({fact["source_profile"] for fact in fact_rows.values()}),
         "fact_types": sorted({fact["fact_type"] for fact in fact_rows.values()}),
-        "lifecycle_states": sorted(
-            {fact["memory_state"] for fact in fact_rows.values()}
-        ),
+        "lifecycle_states": sorted({fact["memory_state"] for fact in fact_rows.values()}),
         "activities": ["high", "medium", "low"],
         "sensitivities": ["normal", "redacted", "protected"],
     }
@@ -587,9 +694,7 @@ def load_graph(
                 "lifecycle_states": list(lens.lifecycle_states),
                 "activities": list(lens.activities),
                 "sensitivities": list(lens.sensitivities),
-                "updated_after": lens.updated_after.isoformat()
-                if lens.updated_after
-                else None,
+                "updated_after": lens.updated_after.isoformat() if lens.updated_after else None,
             },
         },
         "nodes": nodes,

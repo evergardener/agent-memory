@@ -30,6 +30,19 @@ def test_configured_current_ttls_are_applied():
     assert temporary.valid_to == NOW + timedelta(days=10)
 
 
+def test_home_assistant_instant_state_uses_current_ttl():
+    result = classify_event(
+        "user_message",
+        "[Home Assistant] Xiaomi 智能音箱 Pro 睡眠模式: turned off",
+        NOW,
+        current_days=3,
+    )
+
+    assert result.fact_type == "current"
+    assert result.memory_state == "active"
+    assert result.valid_to == NOW + timedelta(days=3)
+
+
 def test_explicit_no_memory_request_keeps_evidence_only():
     result = classify_event(
         "user_message",
