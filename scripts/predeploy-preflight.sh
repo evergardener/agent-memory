@@ -279,8 +279,62 @@ done
   || fail "predeploy env must not persist a plaintext UI test password"
 
 if [[ "${AGENT_MEMORY_MODEL_ENABLED:-false}" == "true" ]]; then
-  [[ "$MODE" == "existing" || "$MODE" == "upgrade" ]] \
-    || fail "model worker may only be enabled after the initial empty production Gate"
+  if [[ "$MODE" == "bootstrap" ]]; then
+    python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" <<'PY'
+import hashlib
+import json
+import re
+import sys
+from pathlib import Path
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    state = json.load(handle)
+if state.get("status") != "initializing":
+    raise SystemExit(
+        "PREDEPLOY_PREFLIGHT_FAILED: model bootstrap requires initializing state"
+    )
+if state.get("resume_status") not in {
+    "ready_for_canary",
+    "canary_config_prepared",
+    "canary_active",
+    "production_active",
+}:
+    raise SystemExit(
+        "PREDEPLOY_PREFLIGHT_FAILED: model bootstrap requires a prior production Gate"
+    )
+if not re.fullmatch(r"[0-9a-f]{40}", str(state.get("previous_revision", ""))):
+    raise SystemExit(
+        "PREDEPLOY_PREFLIGHT_FAILED: model bootstrap requires a previous revision"
+    )
+manifest_path = Path(str(state.get("deployment_manifest_path", "")))
+if not manifest_path.is_file():
+    raise SystemExit(
+        "PREDEPLOY_PREFLIGHT_FAILED: model bootstrap requires a previous deployment manifest"
+    )
+manifest_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+if manifest_digest != state.get("deployment_manifest_sha256"):
+    raise SystemExit(
+        "PREDEPLOY_PREFLIGHT_FAILED: model bootstrap deployment manifest mismatch"
+    )
+with manifest_path.open(encoding="utf-8") as handle:
+    manifest = json.load(handle)
+if manifest.get("revision") != state["previous_revision"]:
+    raise SystemExit(
+        "PREDEPLOY_PREFLIGHT_FAILED: model bootstrap previous revision mismatch"
+    )
+if (
+    not state.get("last_backup_verified_at")
+    or not state.get("last_backup_manifest_sha256")
+    or not Path(str(state.get("last_backup_path", ""))).is_dir()
+):
+    raise SystemExit(
+        "PREDEPLOY_PREFLIGHT_FAILED: model bootstrap requires a restore-verified backup"
+    )
+PY
+  else
+    [[ "$MODE" == "existing" || "$MODE" == "upgrade" ]] \
+      || fail "model worker may only be enabled after the initial empty production Gate"
+  fi
   [[ -n "${AGENT_MEMORY_MODEL_NAME:-}" && -n "${AGENT_MEMORY_MODEL_API_BASE:-}" ]] \
     || fail "enabled model requires name and API base"
   python3 - "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" "$AGENT_MEMORY_MODEL_NAME" \

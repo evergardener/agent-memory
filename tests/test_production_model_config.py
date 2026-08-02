@@ -151,8 +151,10 @@ def test_production_up_preserves_approved_model_enabled_state() -> None:
 
     assert "\"${AGENT_MEMORY_MODEL_ENABLED:-false}\" <<'PY'" in script
     assert '"model_enabled": model_enabled == "true"' in script
-    assert 'verify_preflight_mode="$MODE"' in script
-    assert '[[ "$MODE" == "new" ]] && verify_preflight_mode="bootstrap"' in script
+    assert 'elif current_status == "initializing":' in script
+    assert 'resume_status = state.get("resume_status")' in script
+    assert 'verify_preflight_mode="bootstrap"' in script
+    assert '[[ "$MODE" == "existing" ]] && verify_preflight_mode="existing"' in script
     assert '"$ENV_FILE" "$verify_data_mode" "$verify_preflight_mode"' in script
     assert '"$ENV_FILE" "$verify_data_mode" bootstrap' not in script
 

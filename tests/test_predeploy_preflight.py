@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shlex
@@ -224,3 +225,45 @@ def test_predeploy_preflight_accepts_bound_restore_verified_upgrade_source(
 
     assert result.returncode == 0, result.stderr
     assert '"mode":"upgrade"' in result.stdout
+
+
+def test_model_bootstrap_requires_prior_gate_and_restore_verified_backup(
+    tmp_path: Path,
+) -> None:
+    env_file = _write_predeploy_env(
+        tmp_path,
+        AGENT_MEMORY_MODEL_ENABLED="true",
+        AGENT_MEMORY_MODEL_NAME="local/test-model",
+        AGENT_MEMORY_MODEL_API_BASE="http://192.168.7.7:11434/v1",
+    )
+    backup_path = tmp_path / "backups" / "verified"
+    backup_path.mkdir()
+    previous_revision = "a" * 40
+    manifest_path = tmp_path / "previous-deployment-manifest.json"
+    manifest_path.write_text(
+        json.dumps({"revision": previous_revision}), encoding="utf-8"
+    )
+    state_file = tmp_path / "DEPLOYMENT-STATE.json"
+    state = {
+        "status": "initializing",
+        "resume_status": "canary_active",
+        "previous_revision": previous_revision,
+        "deployment_manifest_path": str(manifest_path),
+        "deployment_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "last_backup_path": str(backup_path),
+        "last_backup_manifest_sha256": "b" * 64,
+        "last_backup_verified_at": "2026-08-02T00:00:00+00:00",
+        "model_name": "local/test-model",
+        "model_api_base": "http://192.168.7.7:11434/v1",
+    }
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+    state_file.chmod(0o600)
+
+    accepted = _run(env_file, "bootstrap")
+    assert accepted.returncode == 0, accepted.stderr
+
+    state.pop("resume_status")
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+    rejected = _run(env_file, "bootstrap")
+    assert rejected.returncode != 0
+    assert "prior production Gate" in rejected.stderr

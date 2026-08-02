@@ -58,7 +58,13 @@ try:
 except FileNotFoundError:
     state = {}
 created_at = state.get("created_at") or datetime.now(UTC).isoformat()
-resume_status = state.get("previous_status") if state.get("status") == "stopped" else state.get("status")
+current_status = state.get("status")
+if current_status == "stopped":
+    resume_status = state.get("previous_status")
+elif current_status == "initializing":
+    resume_status = state.get("resume_status")
+else:
+    resume_status = current_status
 previous_revision = state.get("revision")
 state.update({
     "status": "initializing",
@@ -101,8 +107,8 @@ fi
 
 verify_data_mode="empty"
 [[ "$MODE" == "new" ]] || verify_data_mode="runtime"
-verify_preflight_mode="$MODE"
-[[ "$MODE" == "new" ]] && verify_preflight_mode="bootstrap"
+verify_preflight_mode="bootstrap"
+[[ "$MODE" == "existing" ]] && verify_preflight_mode="existing"
 bash scripts/predeploy-verify.sh \
   "$ENV_FILE" "$verify_data_mode" "$verify_preflight_mode"
 
