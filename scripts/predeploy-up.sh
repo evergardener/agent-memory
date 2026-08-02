@@ -101,7 +101,10 @@ fi
 
 verify_data_mode="empty"
 [[ "$MODE" == "new" ]] || verify_data_mode="runtime"
-bash scripts/predeploy-verify.sh "$ENV_FILE" "$verify_data_mode" bootstrap
+verify_preflight_mode="$MODE"
+[[ "$MODE" == "new" ]] && verify_preflight_mode="bootstrap"
+bash scripts/predeploy-verify.sh \
+  "$ENV_FILE" "$verify_data_mode" "$verify_preflight_mode"
 
 api_image_id="$(docker image inspect \
   "$AGENT_MEMORY_IMAGE_PREFIX-api:$AGENT_MEMORY_IMAGE_TAG" --format '{{.Id}}')"

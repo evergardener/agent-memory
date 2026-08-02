@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_FILE="${1:?usage: production-verify.sh ENV_FILE [runtime|empty|canary] [bootstrap|existing] [PROFILE] [--allow-pre-canary-backup-for-observation]}"
+ENV_FILE="${1:?usage: production-verify.sh ENV_FILE [runtime|empty|canary] [bootstrap|existing|upgrade] [PROFILE] [--allow-pre-canary-backup-for-observation]}"
 DATA_MODE="${2:-runtime}"
 PREFLIGHT_MODE="${3:-existing}"
 EXPECTED_PROFILE="${4:-}"

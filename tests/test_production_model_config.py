@@ -151,3 +151,12 @@ def test_production_up_preserves_approved_model_enabled_state() -> None:
 
     assert "\"${AGENT_MEMORY_MODEL_ENABLED:-false}\" <<'PY'" in script
     assert '"model_enabled": model_enabled == "true"' in script
+    assert 'verify_preflight_mode="$MODE"' in script
+    assert '[[ "$MODE" == "new" ]] && verify_preflight_mode="bootstrap"' in script
+    assert '"$ENV_FILE" "$verify_data_mode" "$verify_preflight_mode"' in script
+    assert '"$ENV_FILE" "$verify_data_mode" bootstrap' not in script
+
+    verify_script = (ROOT / "scripts" / "predeploy-verify.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "[bootstrap|existing|upgrade]" in verify_script
