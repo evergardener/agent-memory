@@ -147,11 +147,12 @@ import sys
 
 with open(sys.argv[1], encoding="utf-8") as handle:
     state = json.load(handle)
+mode = sys.argv[6]
 expected = {
     "compose_project": sys.argv[4],
     "namespace": sys.argv[5],
 }
-if sys.argv[6] == "existing":
+if mode == "existing":
     expected["version"] = sys.argv[2]
     expected["revision"] = sys.argv[3]
 for key, value in expected.items():
@@ -166,11 +167,16 @@ if state.get("status") not in {
     "stopped",
 }:
     raise SystemExit("PREDEPLOY_PREFLIGHT_FAILED: invalid predeploy state status")
+state_revision = str(state.get("revision", ""))
+if mode == "upgrade" and state.get("status") == "initializing":
+    if state_revision != sys.argv[3]:
+        raise SystemExit("PREDEPLOY_PREFLIGHT_FAILED: upgrade retry target mismatch")
+    state_revision = str(state.get("previous_revision", ""))
 print("\t".join((
     str(state.get("deployment_manifest_path", "")),
     str(state.get("deployment_manifest_sha256", "")),
     str(state.get("source_policy_sha256", "")),
-    str(state.get("revision", "")),
+    state_revision,
     str(state.get("version", "")),
     str(state.get("last_backup_path", "")),
     str(state.get("last_backup_manifest_sha256", "")),

@@ -226,6 +226,19 @@ def test_predeploy_preflight_accepts_bound_restore_verified_upgrade_source(
     assert result.returncode == 0, result.stderr
     assert '"mode":"upgrade"' in result.stdout
 
+    state["status"] = "initializing"
+    state["previous_revision"] = previous_revision
+    state["revision"] = REVISION
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+    retry = _run(env_file, "upgrade")
+    assert retry.returncode == 0, retry.stderr
+
+    state["revision"] = "c" * 40
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+    mismatched_retry = _run(env_file, "upgrade")
+    assert mismatched_retry.returncode != 0
+    assert "upgrade retry target mismatch" in mismatched_retry.stderr
+
 
 def test_model_bootstrap_requires_prior_gate_and_restore_verified_backup(
     tmp_path: Path,
