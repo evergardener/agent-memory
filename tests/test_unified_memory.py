@@ -71,6 +71,10 @@ def test_travel_episode_keeps_experiences_and_participant_roles() -> None:
     assert classmate.relationship_type == "university_classmate"
 
 
+def test_elapsed_time_is_not_misread_as_travel() -> None:
+    assert parse_episode("现在过去了几个小时再试试呢", REFERENCE_TIME) is None
+
+
 def test_technical_episode_stays_candidate_until_reviewed() -> None:
     episode = parse_episode("排查 n8n 容器异常，怀疑 docker 网络与局域网冲突", REFERENCE_TIME)
 

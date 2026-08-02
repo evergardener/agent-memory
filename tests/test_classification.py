@@ -75,6 +75,28 @@ def test_unpunctuated_chinese_questions_keep_evidence_only():
         assert not result.create_fact
 
 
+def test_short_dialogue_controls_never_create_governance_candidates():
+    for content in ("继续", "允许", "再试一次", "按计划继续", "OK"):
+        result = classify_event("user_message", content, NOW)
+        assert result.fact_type == "evidence_only"
+        assert not result.create_fact
+        assert not is_recallable_memory_content(content)
+
+
+def test_unclassified_user_statement_waits_for_model_as_evidence_only():
+    result = classify_event("user_message", "Orchid 使用 PostgreSQL", NOW)
+
+    assert result.fact_type == "evidence_only"
+    assert not result.create_fact
+
+
+def test_explicit_typed_entity_fact_remains_a_high_precision_fallback():
+    result = classify_event("user_message", "project:Orchid 使用 PostgreSQL", NOW)
+
+    assert (result.fact_type, result.memory_state) == ("stage", "active")
+    assert result.create_fact
+
+
 def test_user_preference_directive_is_long_term_and_recallable():
     content = (
         "不要使用‘如果 xxx 想，xxx’的句式，"

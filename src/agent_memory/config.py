@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = Field(default=30, gt=0, le=300)
     model_max_retries: int = Field(default=2, ge=0, le=10)
     model_backfill_batch_size: int = Field(default=25, ge=1, le=500)
+    model_auto_backfill_enabled: bool = False
     model_max_atomic_facts: int = Field(default=8, ge=1, le=20)
     model_allow_external_data: bool = False
     model_evaluation_mode: bool = False

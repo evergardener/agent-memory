@@ -10,7 +10,15 @@ from .classification import is_recallable_memory_content
 from .config import Settings
 from .redaction import redact_text
 
-ATOMIC_FACT_TYPES = {"long_term", "stage", "current", "candidate", "observed"}
+ATOMIC_FACT_TYPES = {"long_term", "stage", "current", "observed"}
+ATOMIC_ADMISSIONS = {"accept", "review"}
+ATOMIC_REVIEW_REASONS = {
+    "conflict",
+    "identity_ambiguity",
+    "role_ambiguity",
+    "sensitive_boundary",
+    "high_value_low_confidence",
+}
 ENTITY_TYPES = {
     "person",
     "agent",
@@ -165,6 +173,9 @@ class AtomicEntityCandidate:
 class AtomicFactCandidate:
     statement: str
     fact_type: str
+    admission: str
+    confidence: float
+    review_reason: str | None
     evidence_index: int
     span_start: int
     span_end: int
@@ -259,9 +270,34 @@ def validate_atomic_turn_candidates(
             rejected += 1
             continue
         seen.add(identity)
-        fact_type = str(raw.get("fact_type") or "candidate").strip().lower()
+        fact_type = str(raw.get("fact_type") or "").strip().lower()
         if fact_type not in ATOMIC_FACT_TYPES:
-            fact_type = "candidate"
+            rejected += 1
+            continue
+        admission = str(raw.get("admission") or "").strip().lower()
+        if admission not in ATOMIC_ADMISSIONS:
+            rejected += 1
+            continue
+        raw_confidence = raw.get("confidence")
+        if isinstance(raw_confidence, bool) or not isinstance(raw_confidence, (int, float)):
+            rejected += 1
+            continue
+        confidence = float(raw_confidence)
+        if not 0 <= confidence <= 1:
+            rejected += 1
+            continue
+        review_reason_value = raw.get("review_reason")
+        review_reason = (
+            review_reason_value.strip().lower()
+            if isinstance(review_reason_value, str) and review_reason_value.strip()
+            else None
+        )
+        if admission == "accept" and confidence < 0.8:
+            rejected += 1
+            continue
+        if admission == "review" and review_reason not in ATOMIC_REVIEW_REASONS:
+            rejected += 1
+            continue
         entities: list[AtomicEntityCandidate] = []
         entity_seen: set[tuple[str, int]] = set()
         raw_entities = raw.get("entities") or []
@@ -298,6 +334,9 @@ def validate_atomic_turn_candidates(
             AtomicFactCandidate(
                 statement=statement,
                 fact_type=fact_type,
+                admission=admission,
+                confidence=confidence,
+                review_reason=review_reason,
                 evidence_index=evidence_index,
                 span_start=span_start,
                 span_end=span_start + len(statement),

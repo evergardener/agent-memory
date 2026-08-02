@@ -116,10 +116,12 @@ AGENT_MEMORY_MODEL_ENABLED=true
 AGENT_MEMORY_MODEL_NAME=openai/your-model
 AGENT_MEMORY_MODEL_API_BASE=http://your-local-endpoint/v1
 AGENT_MEMORY_MODEL_API_KEY=your-key
+AGENT_MEMORY_MODEL_AUTO_BACKFILL_ENABLED=false
 ```
 
-启用后，核心 worker 先完成不依赖模型的确定性投影，独立 model-worker 再异步验证候选；
-API key 只注入 model-worker，证据先脱敏再进入任何模型请求。
+启用后，核心 worker 先完成不依赖模型的高精度投影，独立 model-worker 对新 turn 执行
+`accept/review` 准入；API key 只注入 model-worker，证据先脱敏再进入任何模型请求。历史
+backfill 默认关闭，启用模型不等于授权发送历史证据；历史回放必须单独限定范围并批准。
 
 ## 升级
 

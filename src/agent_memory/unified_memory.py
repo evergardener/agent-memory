@@ -2,7 +2,7 @@
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -25,7 +25,12 @@ DATE_RANGE_PATTERN = re.compile(
 )
 SINGLE_DATE_PATTERN = re.compile(r"(?:(?P<year>\d{4})年)?(?P<month>\d{1,2})月(?P<day>\d{1,2})日")
 TRAVEL_LOCATION_PATTERN = re.compile(
-    r"(?:去了|去到|前往)(?P<name>[\u4e00-\u9fffA-Za-z0-9·_-]{2,24}?)(?:旅游|旅行|出差|，|,|。|；|;|$)"
+    r"(?:(?<![过失])去了|去到|前往)"
+    r"(?P<name>[\u4e00-\u9fffA-Za-z0-9·_-]{2,24}?)"
+    r"(?:旅游|旅行|出差|，|,|。|；|;|$)"
+)
+INVALID_TRAVEL_LOCATION_PATTERN = re.compile(
+    r"(?:小时|分钟|秒钟|再试|试试|重试|过去|多久|多长时间|时候|现在|然后|以后|之前|之后)"
 )
 ENCOUNTER_PATTERN = re.compile(
     r"(?:遇到|遇见|见到)了?(?:(?P<relation>大学同学|同学|朋友|同事))?"
@@ -284,6 +289,10 @@ def parse_episode(text: str, occurred_at: datetime) -> EpisodeCandidate | None:
     saw_matches = list(SAW_PATTERN.finditer(redacted))
     if location_match:
         location = location_match.group("name").strip()
+        if INVALID_TRAVEL_LOCATION_PATTERN.search(location):
+            location_match = None
+    if location_match:
+        location = location_match.group("name").strip()
         entities = [ParsedEntity(location, "location", "location")]
         steps = [ParsedStep("action", location_match.group(0).rstrip("，,。；;"))]
         for match in encounter_matches:
@@ -457,6 +466,19 @@ def _linked_fact_id(connection: Connection, event_id: UUID) -> UUID | None:
     return row[0] if row else None
 
 
+def _model_admitted_fact_state(
+    connection: Connection, fact_id: UUID | None
+) -> str | None:
+    if fact_id is None:
+        return None
+    row = connection.execute(
+        """SELECT memory_state FROM memory.facts
+           WHERE id=%s AND extraction_version LIKE 'atomic-admission-%%'""",
+        (fact_id,),
+    ).fetchone()
+    return row[0] if row else None
+
+
 def _store_episode(
     connection: Connection,
     *,
@@ -471,6 +493,18 @@ def _store_episode(
     episode_id = stable_uuid(
         "unified-episode", f"{namespace_id}:{turn_id}:{event_id}:{event_index}"
     )
+    existing = connection.execute(
+        """SELECT origin,version,review_state FROM memory.episodes WHERE id=%s""",
+        (episode_id,),
+    ).fetchone()
+    if existing and not (
+        existing[0] == "automatic"
+        and int(existing[1]) == 1
+        and existing[2] == "candidate"
+    ):
+        # Reprocessing may promote an untouched automatic candidate, but it must
+        # never rewrite participants, steps, or state after user governance.
+        return episode_id
     entity_ids: list[tuple[UUID, ParsedEntity]] = [
         (
             _ensure_entity(connection, namespace_id, entity.name, entity.entity_type),
@@ -490,10 +524,14 @@ def _store_episode(
                      'automatic',%s,%s)
            ON CONFLICT(id) DO UPDATE SET
              title=excluded.title,summary=excluded.summary,
+             state=excluded.state,review_state=excluded.review_state,
              started_at=excluded.started_at,ended_at=excluded.ended_at,
              time_precision=excluded.time_precision,timezone=excluded.timezone,
              time_resolution=excluded.time_resolution,
-             confidence=excluded.confidence,updated_at=now()""",
+             confidence=excluded.confidence,updated_at=now()
+           WHERE memory.episodes.origin='automatic'
+             AND memory.episodes.version=1
+             AND memory.episodes.review_state='candidate'""",
         (
             episode_id,
             namespace_id,
@@ -535,6 +573,7 @@ def _store_episode(
             (episode_id, entity_id, entity.role, fact_id, candidate.confidence),
         )
         if entity.relationship_type:
+            relationship_state = "active" if candidate.accepted else "candidate"
             relationship_id = stable_uuid(
                 "relationship",
                 (
@@ -542,14 +581,20 @@ def _store_episode(
                     f"{entity.relationship_type}:{event_id}"
                 ),
             )
-            connection.execute(
+            effective_relationship_state = connection.execute(
                 """INSERT INTO memory.relationship_assertions(
                      id,namespace_id,subject_id,related_entity_id,relation_type,label,
                      valid_from,fact_id,episode_id,state
-                   ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'active')
+                   ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT(id) DO UPDATE SET
                      fact_id=excluded.fact_id,episode_id=excluded.episode_id,
-                     updated_at=now()""",
+                     state=CASE
+                       WHEN memory.relationship_assertions.state='candidate'
+                       THEN excluded.state
+                       ELSE memory.relationship_assertions.state
+                     END,
+                     updated_at=now()
+                   RETURNING state""",
                 (
                     relationship_id,
                     namespace_id,
@@ -560,15 +605,19 @@ def _store_episode(
                     candidate.started_at,
                     fact_id,
                     episode_id,
+                    relationship_state,
                 ),
-            )
+            ).fetchone()[0]
             _upsert_document(
                 connection,
                 namespace_id,
                 "relationship",
                 relationship_id,
-                f"User 与 {entity.name} 的关系：{match_label(entity.relationship_type)}",
-                "active",
+                (
+                    f"User 与 {entity.name} 的关系：{match_label(entity.relationship_type)}"
+                    f" · {candidate.summary}"
+                ),
+                effective_relationship_state,
             )
     for sequence, step in enumerate(candidate.steps):
         step_id = stable_uuid("episode-step", f"{episode_id}:{sequence}")
@@ -581,7 +630,7 @@ def _store_episode(
                  step_kind=excluded.step_kind,summary=excluded.summary,
                  occurred_at=excluded.occurred_at,fact_id=excluded.fact_id,
                  evidence_event_id=excluded.evidence_event_id,
-                 confidence=excluded.confidence,updated_at=now()""",
+                 status=excluded.status,confidence=excluded.confidence,updated_at=now()""",
             (
                 step_id,
                 episode_id,
@@ -922,6 +971,11 @@ def process_unified_turn(connection: Connection, job) -> None:
     created: list[tuple[str, UUID]] = []
     current_technical_episode_id: UUID | None = None
     trusted_tools = get_settings().trusted_observation_tools
+    has_trusted_observation = any(
+        row["event_type"] == "tool_result"
+        and row["tool_name"].casefold() in trusted_tools
+        for row in rows
+    )
     for index, row in enumerate(rows):
         if current_technical_episode_id:
             fact_id = _linked_fact_id(connection, row["id"])
@@ -1005,6 +1059,22 @@ def process_unified_turn(connection: Connection, job) -> None:
             continue
         fact_id = _linked_fact_id(connection, row["id"])
         episode = parse_episode(row["content"], row["occurred_at"])
+        if episode and episode.episode_type == "technical":
+            admission_state = _model_admitted_fact_state(connection, fact_id)
+            if admission_state == "active":
+                episode = replace(
+                    episode,
+                    accepted=True,
+                    confidence=max(episode.confidence, 0.82),
+                )
+            elif (
+                admission_state is None
+                and fact_id is None
+                and not has_trusted_observation
+            ):
+                # Wait for model admission instead of materializing every technical
+                # keyword hit as a manual governance task.
+                episode = None
         if episode:
             episode_id = _store_episode(
                 connection,

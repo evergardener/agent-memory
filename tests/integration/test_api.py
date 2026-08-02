@@ -583,7 +583,7 @@ def test_quality_report_is_aggregate_only_and_never_auto_promotes():
     assert denied.status_code == 403
 
 
-def test_review_queue_is_paginated_filterable_and_namespace_scoped():
+def test_unclassified_dialogue_stays_out_of_review_queue_and_namespace_is_scoped():
     profile = f"review-{RUN_ID}"
     marker = f"ReviewQueue-{RUN_ID}"
     response = post(
@@ -609,25 +609,16 @@ def test_review_queue_is_paginated_filterable_and_namespace_scoped():
         "source_profile": profile,
         "limit": 3,
     }
-    for _ in range(60):
+    totals = []
+    for _ in range(20):
         first_page = get("/api/v1/memories/review", {**parameters, "offset": 0})
         first_page.raise_for_status()
-        if first_page.json()["total"] >= 7:
-            break
-        time.sleep(0.25)
-    else:
-        pytest.fail("review queue did not project candidate facts")
-    second_page = get("/api/v1/memories/review", {**parameters, "offset": 3})
-    second_page.raise_for_status()
+        totals.append(first_page.json()["total"])
+        time.sleep(0.1)
     first = first_page.json()
-    second = second_page.json()
+    assert totals == [0] * 20
+    assert first["items"] == []
     assert first["limit"] == 3 and first["offset"] == 0
-    assert second["offset"] == 3
-    assert profile in first["profiles"]
-    assert all("candidate" in item["review_reasons"] for item in first["items"])
-    assert {item["memory_id"] for item in first["items"]}.isdisjoint(
-        {item["memory_id"] for item in second["items"]}
-    )
     denied = get(
         "/api/v1/memories/review",
         {"shared_namespace": "other", "limit": 3, "offset": 0},
@@ -808,7 +799,13 @@ def test_vault_requires_explicit_scoped_grant_and_supports_revocation():
             "context": context("user", f"vault-linked-ingest-{RUN_ID}"),
             "idempotency_key": f"vault-linked-ingest-{RUN_ID}",
             "occurred_at": datetime.now(UTC).isoformat(),
-            "events": [{"type": "user_message", "sequence": 1, "content": linked_marker}],
+            "events": [
+                {
+                    "type": "user_message",
+                    "sequence": 1,
+                    "content": f"我决定永久保存 project:{linked_marker}",
+                }
+            ],
         },
     )
     linked_ingest.raise_for_status()

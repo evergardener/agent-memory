@@ -17,6 +17,10 @@ LONG_TERM_PATTERN = re.compile(
     r"prefer|decision|always|never|don't|do\s+not)",
     re.IGNORECASE,
 )
+DECLARATIVE_ENTITY_PATTERN = re.compile(
+    r"(?:^|[，,。;；\s])(?:project|service|项目|服务)[:：]\s*[\w-]{2,}",
+    re.IGNORECASE,
+)
 PREFERENCE_DIRECTIVE_PATTERN = re.compile(
     r"^(?:(?:请|以后|之后|回答时|回复时|和我(?:对话|交流)时)\s*)?"
     r"(?:不要|禁止|别|避免|允许|必须).{0,24}"
@@ -64,6 +68,12 @@ NOTIFICATION_ENVELOPE_PATTERN = re.compile(
     r"^(?:收到|接收到|received)\s+.{0,120}(?:告警|通知|alert|notification)(?:事件)?[。.!]?$",
     re.IGNORECASE,
 )
+DIALOGUE_CONTROL_PATTERN = re.compile(
+    r"^(?:好的?|收到|明白|知道了|继续|继续进行|按计划(?:继续|进行|实施)|"
+    r"允许|确认|可以|行|没问题|再试(?:一|几)?次|再试试|重试|开始|执行|"
+    r"ok(?:ay)?|yes|continue|proceed|retry|go\s+ahead)[。.!！\s]*$",
+    re.IGNORECASE,
+)
 EVIDENCE_ONLY_TOOL_PATTERN = re.compile(
     r"^(?:agent_memory_.+|session_search|search_files|read_file|memory)$",
     re.IGNORECASE,
@@ -88,6 +98,7 @@ def is_recallable_memory_content(content: str) -> bool:
         and not COMMAND_ONLY_PATTERN.fullmatch(stripped.strip())
         and not COMMAND_OPTION_PATTERN.search(stripped)
         and not NOTIFICATION_ENVELOPE_PATTERN.fullmatch(stripped.strip())
+        and not DIALOGUE_CONTROL_PATTERN.fullmatch(stripped.strip())
     )
 
 
@@ -119,6 +130,8 @@ def classify_event(
         return Classification("evidence_only", "candidate", 1, create_fact=False)
     if PREFERENCE_DIRECTIVE_PATTERN.search(content):
         return Classification("long_term", "active", 0.85)
+    if DIALOGUE_CONTROL_PATTERN.fullmatch(content.strip()):
+        return Classification("evidence_only", "candidate", 1, create_fact=False)
     if event_type == "tool_result" and (
         EVIDENCE_ONLY_TOOL_PATTERN.match(tool_name)
         or len(content) > 2000
@@ -142,6 +155,10 @@ def classify_event(
         return Classification("long_term", "active", 0.85)
     if STAGE_PATTERN.search(content):
         return Classification("stage", "active", 0.8)
+    if DECLARATIVE_ENTITY_PATTERN.search(content):
+        return Classification("long_term", "active", 0.85)
     if event_type in {"tool_result", "environment_observation"}:
         return Classification("observed", "active", 0.8)
-    return Classification("candidate", "candidate", 0.5)
+    # Unknown content remains traceable evidence. A configured model may admit it
+    # later, but model outage must not turn every utterance into governance debt.
+    return Classification("evidence_only", "candidate", 1, create_fact=False)

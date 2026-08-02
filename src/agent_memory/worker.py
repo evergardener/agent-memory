@@ -34,7 +34,7 @@ ENTITY_PATTERN = re.compile(
     r"(?P<entity_type>project|service|项目|服务)[:： ]+(?P<name>[\w\-]+)",
     re.IGNORECASE,
 )
-ATOMIC_EXTRACTION_VERSION = "atomic-verbatim-v2"
+ATOMIC_EXTRACTION_VERSION = "atomic-admission-v3"
 MODEL_TOOL_SKIP_PATTERN = re.compile(
     r"^(?:agent_memory_.+|session_search|search_files|read_file|memory)$", re.IGNORECASE
 )
@@ -153,6 +153,15 @@ def _enqueue_atomic_extraction(connection: Connection, namespace_id, turn_id) ->
     )
 
 
+def _enqueue_unified_rebuild(connection: Connection, namespace_id, turn_id) -> None:
+    idempotency_key = f"build_unified_turn:{ATOMIC_EXTRACTION_VERSION}:{turn_id}"
+    connection.execute(
+        """INSERT INTO ops.jobs(id,namespace_id,kind,idempotency_key,input_ref)
+           VALUES (%s,%s,'build_unified_turn',%s,%s) ON CONFLICT DO NOTHING""",
+        (stable_uuid("job", idempotency_key), namespace_id, idempotency_key, turn_id),
+    )
+
+
 def prepare_atomic_fact_extraction(connection: Connection, job) -> ExtractAtomicFacts | None:
     settings = get_settings()
     if not settings.model_enabled:
@@ -203,14 +212,21 @@ def prepare_atomic_fact_extraction(connection: Connection, job) -> ExtractAtomic
             "Extract zero to eight atomic memory facts from Evidence. Return exactly "
             '{"facts":[{"evidence_index":0,'
             '"statement":"exact contiguous quote from that Evidence item",'
-            '"fact_type":"long_term|stage|current|candidate|observed",'
+            '"fact_type":"long_term|stage|current|observed",'
+            '"admission":"accept|review","confidence":0.0,'
+            '"review_reason":"conflict|identity_ambiguity|role_ambiguity|'
+            'sensitive_boundary|high_value_low_confidence|null",'
             '"entities":[{"name":"exact substring inside statement",'
             '"type":"person|agent|project|service|location|organization|tool|'
             'technology|device|concept|event|other"}]}]}. '
             "Statements and entity names must be copied verbatim. Use device for named "
             "physical devices; agent is only an AI/software agent. Extract only explicit "
             "user facts, decisions, preferences, project state, or verified observations. "
-            "Do not extract questions, instructions, guesses, secrets, or assistant claims. "
+            "Use accept only for an explicit, unambiguous fact with confidence >= 0.80. "
+            "Use review only for high-value content with a real conflict, identity/role "
+            "ambiguity, sensitive boundary, or low confidence; otherwise omit it. "
+            "Do not extract questions, short control replies, conversational transitions, "
+            "guesses, secrets, or assistant claims. "
             "Do not paraphrase, combine separate claims, resolve pronouns, or add context."
         ),
         evidence_text=evidence_bundle,
@@ -497,21 +513,22 @@ def _atomic_candidate_policy(
         weather_hours=settings.weather_state_hours,
         trusted_observation_tools=settings.trusted_observation_tools,
     )
-    if not classification.create_fact or not is_recallable_memory_content(candidate.statement):
+    if not is_recallable_memory_content(candidate.statement):
         return None
     fact_type = candidate.fact_type
     if fact_type == "observed" and evidence.event_type not in {
         "tool_result",
         "environment_observation",
     }:
-        fact_type = "candidate"
+        return None
     verified_observation = evidence.event_type in {
         "tool_result",
         "environment_observation",
     }
-    rule_agrees = classification.fact_type == fact_type and classification.memory_state == "active"
-    memory_state = "active" if verified_observation or rule_agrees else "candidate"
-    confidence = 0.8 if verified_observation else 0.75 if rule_agrees else 0.65
+    memory_state = "active" if candidate.admission == "accept" else "candidate"
+    confidence = candidate.confidence
+    if verified_observation and candidate.admission == "accept":
+        confidence = max(confidence, 0.85)
     valid_to = classification.valid_to if fact_type == "current" else None
     if fact_type == "current" and valid_to is None:
         valid_to = evidence.occurred_at + timedelta(days=settings.current_state_days)
@@ -529,6 +546,7 @@ def process_atomic_extraction(
     model_name = str(extraction.audit.get("model") or "") or None
     applied = 0
     rejected_by_policy = 0
+    admission_decisions: list[dict[str, object]] = []
     for candidate in extraction.validation.candidates:
         if not 0 <= candidate.evidence_index < len(extraction.evidence):
             rejected_by_policy += 1
@@ -541,7 +559,7 @@ def process_atomic_extraction(
             continue
         fact_type, memory_state, confidence, valid_to = policy
         fact_id = stable_uuid("fact", f"{event_id}:{candidate.statement}")
-        connection.execute(
+        fact_row = connection.execute(
             """INSERT INTO memory.facts(
                  id,namespace_id,statement,fact_type,confidence,memory_state,source_profile,
                  valid_from,valid_to,extraction_method,extraction_version,model_name,
@@ -550,12 +568,20 @@ def process_atomic_extraction(
                ON CONFLICT (id) DO UPDATE SET
                  fact_type=excluded.fact_type,
                  confidence=GREATEST(memory.facts.confidence,excluded.confidence),
+                 memory_state=CASE
+                   WHEN memory.facts.memory_state='candidate'
+                     AND memory.facts.extraction_method IN ('deterministic-v1','model-verbatim')
+                     AND excluded.memory_state='active'
+                   THEN 'active'
+                   ELSE memory.facts.memory_state
+                 END,
                  extraction_method=excluded.extraction_method,
                  extraction_version=excluded.extraction_version,
                  model_name=excluded.model_name,
                  evidence_span_start=excluded.evidence_span_start,
                  evidence_span_end=excluded.evidence_span_end,
-                 updated_at=now()""",
+                 updated_at=now()
+               RETURNING memory_state""",
             (
                 fact_id,
                 namespace_id,
@@ -571,7 +597,8 @@ def process_atomic_extraction(
                 candidate.span_start,
                 candidate.span_end,
             ),
-        )
+        ).fetchone()
+        effective_memory_state = fact_row[0]
         connection.execute(
             """INSERT INTO memory.fact_evidence(fact_id,event_id)
                VALUES (%s,%s) ON CONFLICT DO NOTHING""",
@@ -642,12 +669,16 @@ def process_atomic_extraction(
                 namespace_id,
                 fact_id,
                 candidate.statement,
-                memory_state,
+                effective_memory_state,
                 vector_literal(deterministic_embedding(candidate.statement)),
                 EMBEDDING_VERSION,
             ),
         )
-        if fact_type == "current" and valid_to is not None:
+        if (
+            effective_memory_state == "active"
+            and fact_type == "current"
+            and valid_to is not None
+        ):
             connection.execute(
                 """INSERT INTO state.current_items(
                      id,namespace_id,topic_key,summary,source_fact_id,valid_from,expires_at
@@ -669,7 +700,7 @@ def process_atomic_extraction(
                     valid_to,
                 ),
             )
-        if fact_type in {"stage", "long_term"}:
+        if effective_memory_state == "active" and fact_type in {"stage", "long_term"}:
             rebuild_id = stable_uuid("job", f"rebuild_derived:atomic:{fact_id}")
             connection.execute(
                 """INSERT INTO ops.jobs(id,namespace_id,kind,idempotency_key,input_ref)
@@ -677,10 +708,20 @@ def process_atomic_extraction(
                 (rebuild_id, namespace_id, f"rebuild_derived:atomic:{fact_id}", fact_id),
             )
         applied += 1
+        admission_decisions.append(
+            {
+                "fact_id": str(fact_id),
+                "admission": candidate.admission,
+                "review_reason": candidate.review_reason,
+                "confidence": candidate.confidence,
+                "effective_memory_state": effective_memory_state,
+            }
+        )
     audit = {
         **extraction.audit,
         "applied_count": applied,
         "policy_rejected_count": rejected_by_policy,
+        "admission_decisions": admission_decisions,
     }
     connection.execute(
         """INSERT INTO audit.events(
@@ -699,6 +740,8 @@ def process_atomic_extraction(
             json.dumps(audit),
         ),
     )
+    if applied:
+        _enqueue_unified_rebuild(connection, namespace_id, turn_id)
 
 
 def _update_continuity_and_state(
@@ -1276,7 +1319,11 @@ def main() -> None:
             with database.connection() as connection:
                 if time.monotonic() - last_maintenance >= 60:
                     if settings.worker_role == "model":
-                        enqueue_model_backfill(connection, evaluation_turn_ids)
+                        if (
+                            settings.model_evaluation_mode
+                            or settings.model_auto_backfill_enabled
+                        ):
+                            enqueue_model_backfill(connection, evaluation_turn_ids)
                     else:
                         run_maintenance(connection)
                     last_maintenance = time.monotonic()

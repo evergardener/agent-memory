@@ -1562,11 +1562,34 @@ def save_graph_layout(request_body: LayoutPreferenceRequest, request: Request):
         _raise_galaxy_error(error)
 
 
+def _visible_galaxy(galaxy: dict, visible_node_ids: set[str]) -> dict:
+    members = [
+        member
+        for member in galaxy["members"]
+        if member["governance_state"] != "excluded"
+        and f"entity:{member['entity_id']}" in visible_node_ids
+    ]
+    member_node_ids = {f"entity:{member['entity_id']}" for member in members}
+    relations = [
+        relation
+        for relation in galaxy["relations"]
+        if f"entity:{relation['source_entity_id']}" in member_node_ids
+        and f"entity:{relation['target_entity_id']}" in member_node_ids
+    ]
+    return {
+        **galaxy,
+        "members": members,
+        "relations": relations,
+        "member_count": len(members),
+    }
+
+
 def _galaxy_graph_view(graph: dict, galaxy: dict) -> dict:
+    visible_node_ids = {node["data"]["id"] for node in graph["nodes"]}
+    galaxy = _visible_galaxy(galaxy, visible_node_ids)
     member_node_ids = {
         f"entity:{member['entity_id']}"
         for member in galaxy["members"]
-        if member["governance_state"] != "excluded"
     }
     graph["nodes"] = [node for node in graph["nodes"] if node["data"]["id"] in member_node_ids]
     graph["edges"] = [
@@ -1615,11 +1638,13 @@ def _galaxy_graph_view(graph: dict, galaxy: dict) -> dict:
 
 
 def _universe_graph_view(graph: dict, galaxies: list[dict]) -> dict:
+    visible_node_ids = {node["data"]["id"] for node in graph["nodes"]}
     visible = [
-        galaxy
+        _visible_galaxy(galaxy, visible_node_ids)
         for galaxy in galaxies
         if galaxy["lifecycle_state"] == "active" and galaxy["visibility"] == "visible"
     ]
+    visible = [galaxy for galaxy in visible if galaxy["members"]]
     relations = {
         str(relation["id"]): relation for galaxy in visible for relation in galaxy["relations"]
     }

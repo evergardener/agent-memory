@@ -5,6 +5,7 @@ from agent_memory.graph import (
     GraphLens,
     entity_projection_allowed,
     fact_matches_lens,
+    fact_projection_allowed,
     node_visibility,
     subject_visibility,
 )
@@ -98,4 +99,20 @@ def test_observation_lenses_are_axis_composable_and_read_only() -> None:
     assert not fact_matches_lens(fact, GraphLens(fact_types=("long_term",)))
     assert not fact_matches_lens(
         fact, GraphLens(updated_after=updated_at + timedelta(seconds=1))
+    )
+
+
+def test_default_graph_excludes_candidates_but_explicit_governance_lens_can_select_them():
+    candidate = {
+        "source_profile": "jiuyue",
+        "fact_type": "stage",
+        "memory_state": "candidate",
+        "activity": "medium",
+        "sensitivity": "normal",
+        "updated_at": datetime.now(UTC),
+    }
+
+    assert not fact_projection_allowed(candidate, GraphLens())
+    assert fact_projection_allowed(
+        candidate, GraphLens(lifecycle_states=("candidate",))
     )

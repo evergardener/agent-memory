@@ -107,6 +107,8 @@ def test_atomic_facts_and_entities_must_be_exact_evidence_spans():
                 {
                     "statement": "项目 Orchid 使用 PostgreSQL",
                     "fact_type": "long_term",
+                    "admission": "accept",
+                    "confidence": 0.93,
                     "entities": [
                         {"name": "Orchid", "type": "project"},
                         {"name": "PostgreSQL", "type": "technology"},
@@ -116,6 +118,8 @@ def test_atomic_facts_and_entities_must_be_exact_evidence_spans():
                 {
                     "statement": "服务 api 部署在公网",
                     "fact_type": "long_term",
+                    "admission": "accept",
+                    "confidence": 0.9,
                     "entities": [{"name": "api", "type": "service"}],
                 },
             ]
@@ -138,7 +142,9 @@ def test_atomic_candidate_count_is_bounded_and_deduplicated():
     evidence = "服务 api 健康"
     candidate = {
         "statement": evidence,
-        "fact_type": "not-allowed",
+        "fact_type": "observed",
+        "admission": "accept",
+        "confidence": 0.88,
         "entities": [{"name": "api", "type": "not-allowed"}],
     }
     validated = validate_atomic_fact_candidates(
@@ -148,7 +154,7 @@ def test_atomic_candidate_count_is_bounded_and_deduplicated():
     )
 
     assert len(validated.candidates) == 1
-    assert validated.candidates[0].fact_type == "candidate"
+    assert validated.candidates[0].fact_type == "observed"
     assert validated.candidates[0].entities == ()
     assert validated.rejected_count == 9
 
@@ -167,7 +173,16 @@ def test_atomic_candidate_count_is_bounded_and_deduplicated():
 )
 def test_atomic_validator_rejects_directives_and_structured_fragments(statement):
     validated = validate_atomic_fact_candidates(
-        {"facts": [{"statement": statement, "fact_type": "candidate"}]},
+        {
+            "facts": [
+                {
+                    "statement": statement,
+                    "fact_type": "long_term",
+                    "admission": "accept",
+                    "confidence": 0.9,
+                }
+            ]
+        },
         statement,
     )
 
@@ -183,6 +198,8 @@ def test_graph_entities_exclude_concepts_core_aliases_and_command_fragments():
                 {
                     "statement": evidence,
                     "fact_type": "long_term",
+                    "admission": "accept",
+                    "confidence": 0.9,
                     "entities": [
                         {"name": "Hermes", "type": "project"},
                         {"name": "PostgreSQL", "type": "technology"},
@@ -210,6 +227,8 @@ def test_physical_device_is_not_accepted_as_agent_service_or_tool():
                 {
                     "statement": evidence,
                     "fact_type": "current",
+                    "admission": "accept",
+                    "confidence": 0.91,
                     "entities": [
                         {"name": "Xiaomi 智能音箱 Pro", "type": "agent"},
                         {"name": "Xiaomi 智能音箱 Pro", "type": "device"},
@@ -256,14 +275,23 @@ def test_turn_candidate_must_name_the_exact_source_event():
                     "evidence_index": 1,
                     "statement": "服务 api 健康",
                     "fact_type": "observed",
+                    "admission": "accept",
+                    "confidence": 0.92,
                     "entities": [{"name": "api", "type": "service"}],
                 },
                 {
                     "evidence_index": 0,
                     "statement": "服务 api 健康",
                     "fact_type": "observed",
+                    "admission": "accept",
+                    "confidence": 0.92,
                 },
-                {"statement": "用户偏好先备份", "fact_type": "long_term"},
+                {
+                    "statement": "用户偏好先备份",
+                    "fact_type": "long_term",
+                    "admission": "accept",
+                    "confidence": 0.9,
+                },
             ]
         },
         evidence,
@@ -273,3 +301,26 @@ def test_turn_candidate_must_name_the_exact_source_event():
         (1, "服务 api 健康")
     ]
     assert validated.rejected_count == 2
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        {"fact_type": "long_term", "confidence": 0.9},
+        {"fact_type": "long_term", "admission": "accept", "confidence": 0.79},
+        {
+            "fact_type": "long_term",
+            "admission": "review",
+            "confidence": 0.7,
+            "review_reason": "unclear",
+        },
+    ],
+)
+def test_atomic_admission_requires_explicit_safe_contract(candidate):
+    evidence = "Orchid 使用 PostgreSQL"
+    validated = validate_atomic_fact_candidates(
+        {"facts": [{"statement": evidence, **candidate}]}, evidence
+    )
+
+    assert validated.candidates == ()
+    assert validated.outcome == "unsupported_candidates"

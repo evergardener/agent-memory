@@ -4,7 +4,13 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import httpx
+import psycopg
 import pytest
+
+from agent_memory.ids import new_uuid, stable_uuid
+from agent_memory.model_adapter import AtomicFactCandidate, AtomicFactValidation
+from agent_memory.unified_memory import process_unified_turn
+from agent_memory.worker import AtomicTurnEvidence, ExtractAtomicFacts, process_atomic_extraction
 
 pytestmark = [
     pytest.mark.integration,
@@ -18,6 +24,7 @@ API_URL = os.getenv("AGENT_MEMORY_TEST_API_URL", "http://127.0.0.1:7788")
 TOKEN = os.getenv("AGENT_MEMORY_SERVICE_TOKEN", "replace-with-a-long-random-token")
 NAMESPACE = os.getenv("AGENT_MEMORY_TEST_NAMESPACE", "hermes:automated-tests:unified")
 RUN_ID = uuid4().hex[:10]
+DATABASE_URL = os.getenv("AGENT_MEMORY_DATABASE_URL", "")
 
 if os.getenv("AGENT_MEMORY_INTEGRATION") == "1" and not NAMESPACE.startswith(
     "hermes:automated-tests"
@@ -84,6 +91,29 @@ def wait_for(fetch, predicate, *, timeout: float = 8):
     raise AssertionError(f"timed out waiting for unified memory state: {latest!r}")
 
 
+def turn_derivation_counts(external_turn_ids: list[str]) -> tuple[int, int, int]:
+    with psycopg.connect(DATABASE_URL) as connection:
+        row = connection.execute(
+            """WITH selected_turns AS (
+                 SELECT id FROM core.turns WHERE external_turn_id=ANY(%s)
+               ), selected_events AS (
+                 SELECT id FROM evidence.events WHERE turn_id IN (SELECT id FROM selected_turns)
+               )
+               SELECT
+                 (SELECT count(DISTINCT link.fact_id)
+                    FROM memory.fact_evidence link
+                   WHERE link.event_id IN (SELECT id FROM selected_events)),
+                 (SELECT count(DISTINCT step.episode_id)
+                    FROM memory.episode_steps step
+                   WHERE step.evidence_event_id IN (SELECT id FROM selected_events)),
+                 (SELECT count(*) FROM ops.jobs
+                   WHERE input_ref IN (SELECT id FROM selected_turns)
+                     AND status NOT IN ('done','failed'))""",
+            (external_turn_ids,),
+        ).fetchone()
+    return int(row[0]), int(row[1]), int(row[2])
+
+
 def action_payload(profile: str, turn: str, version: int, reason: str) -> dict:
     return {
         "context": context(profile, turn),
@@ -92,14 +122,20 @@ def action_payload(profile: str, turn: str, version: int, reason: str) -> dict:
     }
 
 
-def recall(query: str, profile: str, environment: dict | None = None) -> dict:
+def recall(
+    query: str,
+    profile: str,
+    environment: dict | None = None,
+    *,
+    intent: str = "explicit",
+) -> dict:
     response = request(
         "POST",
         "/api/v1/recall",
         json={
             "context": context(profile, f"recall-{uuid4()}"),
             "query": query,
-            "intent": "explicit",
+            "intent": intent,
             "budget": {"max_items": 20, "max_chars": 20000},
             "environment_fingerprint": environment or {},
         },
@@ -185,7 +221,7 @@ def test_f2_to_f5_unified_memory_end_to_end():
     preferences = get_json("/api/v1/preferences", shared_namespace=NAMESPACE)
     assert not any(item["aspect"] == "熊猫" for item in preferences)
 
-    cross_profile = recall("7月10日成都第一次看熊猫时小A是谁", "jiuyue")
+    cross_profile = recall(f"{travel_marker} 中遇到的大学同学小A是谁", "jiuyue")
     travel_recall = [item for item in cross_profile["items"] if item["kind"] == "episode"]
     assert any(travel["id"] == item["memory_id"] for item in travel_recall)
     assert any(
@@ -251,6 +287,28 @@ def test_f2_to_f5_unified_memory_end_to_end():
     )
     assert invalid_time.status_code == 422
     assert invalid_time.json()["detail"] == "EPISODE_TIME_ORDER_INVALID"
+
+    with psycopg.connect(DATABASE_URL) as connection:
+        travel_turn_id = connection.execute(
+            "SELECT id FROM core.turns WHERE external_turn_id=%s",
+            (f"travel-{RUN_ID}",),
+        ).fetchone()[0]
+        process_unified_turn(
+            connection,
+            (
+                new_uuid(),
+                stable_uuid("namespace", NAMESPACE),
+                "build_unified_turn",
+                travel_turn_id,
+                1,
+            ),
+        )
+    replayed_travel = get_json(
+        f"/api/v1/episodes/{travel['id']}",
+        shared_namespace=NAMESPACE,
+    )
+    assert replayed_travel["title"] == correction["title"]
+    assert replayed_travel["version"] == corrected.json()["version"]
 
     birthday_label = f"纪念日-{RUN_ID}"
     ingest(
@@ -429,6 +487,16 @@ def test_f2_to_f5_unified_memory_end_to_end():
         lambda rows: any(technical_marker in row["summary"] for row in rows),
     )
     technical = next(row for row in technical_rows if technical_marker in row["summary"])
+    assert technical["state"] == "candidate"
+    candidate_graph = get_json(
+        "/api/v1/graph/subgraph",
+        shared_namespace=NAMESPACE,
+        view="universe",
+    )
+    assert not any(
+        item["data"]["record_id"] == technical["id"]
+        for item in candidate_graph["episodes"]
+    )
     detail = get_json(
         f"/api/v1/episodes/{technical['id']}",
         shared_namespace=NAMESPACE,
@@ -697,3 +765,182 @@ def test_f2_to_f5_unified_memory_end_to_end():
     assert listed_invalidated["state"] == "dormant"
     assert listed_invalidated["steps"]
     assert listed_invalidated["support"]
+
+
+def test_admission_noise_does_not_create_facts_episodes_or_review_debt():
+    turn_ids = [f"admission-noise-{RUN_ID}-{index}" for index in range(5)]
+    for turn_id, content in zip(
+        turn_ids,
+        ("继续", "允许", "再试一次", "按计划继续", "现在过去了几个小时再试试呢"),
+        strict=True,
+    ):
+        ingest(
+            "jiuyue",
+            turn_id,
+            [{"type": "user_message", "sequence": 1, "content": content}],
+            datetime.now(UTC).isoformat(),
+        )
+
+    counts = wait_for(
+        lambda: turn_derivation_counts(turn_ids),
+        lambda value: value[2] == 0,
+    )
+
+    assert counts == (0, 0, 0)
+
+
+def test_candidate_episode_relationship_and_entity_stay_out_of_default_graph():
+    location = f"候选地点{RUN_ID}"
+    turn_id = f"candidate-travel-{RUN_ID}"
+    ingest(
+        "jiuyue",
+        turn_id,
+        [
+            {
+                "type": "user_message",
+                "sequence": 1,
+                "content": f"去了{location}旅行，遇到了大学同学小Z",
+            }
+        ],
+        datetime.now(UTC).isoformat(),
+    )
+    episodes = wait_for(
+        lambda: get_json(
+            "/api/v1/episodes",
+            shared_namespace=NAMESPACE,
+            episode_type="travel",
+            limit=200,
+        ),
+        lambda rows: any(location in row["summary"] for row in rows),
+    )
+    episode = next(item for item in episodes if location in item["summary"])
+    relationships = get_json("/api/v1/relationships", shared_namespace=NAMESPACE)
+    relationship = next(
+        item for item in relationships if item["episode_id"] == episode["id"]
+    )
+    graph = get_json(
+        "/api/v1/graph/subgraph",
+        shared_namespace=NAMESPACE,
+        view="universe",
+    )
+
+    assert episode["state"] == "candidate"
+    assert relationship["state"] == "candidate"
+    assert not any(item["data"]["record_id"] == episode["id"] for item in graph["episodes"])
+    assert not any(
+        node["data"].get("kind") == "entity" and node["data"].get("label") == location
+        for node in graph["nodes"]
+    )
+    assert not any(
+        edge["data"].get("record_id") == relationship["id"] for edge in graph["edges"]
+    )
+
+    with psycopg.connect(DATABASE_URL) as connection:
+        connection.execute(
+            "UPDATE memory.relationship_assertions SET state='forgotten' WHERE id=%s",
+            (relationship["id"],),
+        )
+        connection.execute(
+            """UPDATE retrieval.documents SET lifecycle_state='forgotten'
+               WHERE source_kind='relationship' AND source_id=%s""",
+            (relationship["id"],),
+        )
+        internal_turn_id = connection.execute(
+            "SELECT id FROM core.turns WHERE external_turn_id=%s",
+            (turn_id,),
+        ).fetchone()[0]
+        process_unified_turn(
+            connection,
+            (
+                new_uuid(),
+                stable_uuid("namespace", NAMESPACE),
+                "build_unified_turn",
+                internal_turn_id,
+                1,
+            ),
+        )
+        relation_state, document_state = connection.execute(
+            """SELECT relationship.state,document.lifecycle_state
+               FROM memory.relationship_assertions relationship
+               JOIN retrieval.documents document
+                 ON document.source_kind='relationship'
+                AND document.source_id=relationship.id
+               WHERE relationship.id=%s""",
+            (relationship["id"],),
+        ).fetchone()
+
+    assert relation_state == "forgotten"
+    assert document_state == "forgotten"
+
+
+def test_model_review_candidate_requires_explicit_recall_or_governance():
+    turn_id = f"model-review-{RUN_ID}"
+    statement = f"同学候选{RUN_ID}可能是以前的同学"
+    occurred_at = datetime.now(UTC)
+    ingest(
+        "jiuyue",
+        turn_id,
+        [{"type": "user_message", "sequence": 1, "content": statement}],
+        occurred_at.isoformat(),
+    )
+    wait_for(
+        lambda: turn_derivation_counts([turn_id]),
+        lambda value: value[2] == 0,
+    )
+
+    with psycopg.connect(DATABASE_URL) as connection:
+        event_id, internal_turn_id = connection.execute(
+            """SELECT event.id,event.turn_id
+               FROM evidence.events event
+               JOIN core.turns turn_record ON turn_record.id=event.turn_id
+               WHERE turn_record.external_turn_id=%s AND event.event_type='user_message'""",
+            (turn_id,),
+        ).fetchone()
+        extraction = ExtractAtomicFacts(
+            evidence=(
+                AtomicTurnEvidence(
+                    event_id=event_id,
+                    event_type="user_message",
+                    content=statement,
+                    occurred_at=occurred_at,
+                    tool_name="",
+                ),
+            ),
+            source_profile="jiuyue",
+            validation=AtomicFactValidation(
+                candidates=(
+                    AtomicFactCandidate(
+                        statement=statement,
+                        fact_type="long_term",
+                        admission="review",
+                        confidence=0.7,
+                        review_reason="identity_ambiguity",
+                        evidence_index=0,
+                        span_start=0,
+                        span_end=len(statement),
+                        entities=(),
+                    ),
+                ),
+                outcome="applied",
+                rejected_count=0,
+            ),
+            audit={"model": "isolated-contract-test"},
+        )
+        process_atomic_extraction(
+            connection,
+            (
+                new_uuid(),
+                stable_uuid("namespace", NAMESPACE),
+                "extract_atomic_turn",
+                internal_turn_id,
+                1,
+            ),
+            extraction,
+        )
+        fact_id = stable_uuid("fact", f"{event_id}:{statement}")
+
+    ordinary = recall(statement, "jiuyue", intent="conversation")
+    explicit = recall(statement, "jiuyue", intent="explicit")
+
+    assert all(item["memory_id"] != str(fact_id) for item in ordinary["items"])
+    assert any(item["memory_id"] == str(fact_id) for item in explicit["items"])

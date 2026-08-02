@@ -92,6 +92,13 @@ def fact_matches_lens(fact: dict, lens: GraphLens) -> bool:
     return True
 
 
+def fact_projection_allowed(fact: dict, lens: GraphLens) -> bool:
+    """The default universe is curated; candidates require a governance surface."""
+    if not lens.lifecycle_states and fact["memory_state"] != "active":
+        return False
+    return fact_matches_lens(fact, lens)
+
+
 def _pipe(values: set[str] | list[str]) -> str:
     return "|".join(sorted(values))
 
@@ -200,6 +207,50 @@ def load_graph(
                WHERE e.namespace_id=%s AND e.canonical_entity_id IS NULL
                  AND NOT EXISTS (
                    SELECT 1 FROM core.subjects subject WHERE subject.entity_id=e.id
+                 )
+                 AND (
+                   EXISTS (
+                     SELECT 1
+                     FROM memory.fact_entities support_link
+                     JOIN memory.entities support_entity ON support_entity.id=support_link.entity_id
+                     JOIN memory.facts support_fact ON support_fact.id=support_link.fact_id
+                     WHERE COALESCE(support_entity.canonical_entity_id,support_entity.id)=e.id
+                       AND support_fact.memory_state='active'
+                   )
+                   OR EXISTS (
+                     SELECT 1
+                     FROM memory.episode_entities support_link
+                     JOIN memory.entities support_entity ON support_entity.id=support_link.entity_id
+                     JOIN memory.episodes support_episode
+                       ON support_episode.id=support_link.episode_id
+                     WHERE COALESCE(support_entity.canonical_entity_id,support_entity.id)=e.id
+                       AND support_episode.state='active'
+                   )
+                   OR EXISTS (
+                     SELECT 1
+                     FROM memory.relationship_assertions support_relation
+                     JOIN memory.entities support_entity
+                       ON support_entity.id=support_relation.related_entity_id
+                     WHERE COALESCE(support_entity.canonical_entity_id,support_entity.id)=e.id
+                       AND support_relation.state='active'
+                   )
+                   OR EXISTS (
+                     SELECT 1
+                     FROM memory.entity_relations support_relation
+                     JOIN memory.entities support_source
+                       ON support_source.id=support_relation.source_entity_id
+                     JOIN memory.entities support_target
+                       ON support_target.id=support_relation.target_entity_id
+                     JOIN memory.relation_facts support_link
+                       ON support_link.relation_id=support_relation.id
+                     JOIN memory.facts support_fact ON support_fact.id=support_link.fact_id
+                     WHERE (
+                       COALESCE(support_source.canonical_entity_id,support_source.id)=e.id
+                       OR COALESCE(support_target.canonical_entity_id,support_target.id)=e.id
+                     )
+                       AND support_relation.lifecycle_state='active'
+                       AND support_fact.memory_state='active'
+                   )
                  )
                GROUP BY e.id,e.canonical_name,e.entity_type,e.merge_state""",
             (namespace_id,),
@@ -322,7 +373,9 @@ def load_graph(
             target.setdefault(relation["fact_id"], set()).add(celestial_id)
 
         selected_fact_ids = {
-            fact_id for fact_id, fact in fact_rows.items() if fact_matches_lens(fact, lens)
+            fact_id
+            for fact_id, fact in fact_rows.items()
+            if fact_projection_allowed(fact, lens)
         }
         for fact_id in sorted(selected_fact_ids, key=str):
             fact = fact_rows[fact_id]
@@ -408,7 +461,7 @@ def load_graph(
                FROM memory.episode_entities link
                JOIN memory.episodes episode ON episode.id=link.episode_id
                LEFT JOIN memory.entities entity ON entity.id=link.entity_id
-               WHERE episode.namespace_id=%s""",
+               WHERE episode.namespace_id=%s AND episode.state='active'""",
             (namespace_id,),
         )
         for relation in cursor.fetchall():
@@ -429,7 +482,8 @@ def load_graph(
                       step.status,step.occurred_at
                FROM memory.episode_steps step
                JOIN memory.episodes episode ON episode.id=step.episode_id
-               WHERE episode.namespace_id=%s ORDER BY step.episode_id,step.sequence_no""",
+               WHERE episode.namespace_id=%s AND episode.state='active'
+               ORDER BY step.episode_id,step.sequence_no""",
             (namespace_id,),
         )
         for step in cursor.fetchall():
@@ -448,7 +502,7 @@ def load_graph(
             """SELECT link.episode_id,link.artifact_id
                FROM memory.episode_artifacts link
                JOIN memory.episodes episode ON episode.id=link.episode_id
-               WHERE episode.namespace_id=%s""",
+               WHERE episode.namespace_id=%s AND episode.state='active'""",
             (namespace_id,),
         )
         for link in cursor.fetchall():
@@ -465,7 +519,7 @@ def load_graph(
                               d.review_state,d.confidence,d.version
                        FROM memory.episodes d
                        LEFT JOIN memory.entities e ON e.id=d.entity_id
-                       WHERE d.namespace_id=%s""",
+                       WHERE d.namespace_id=%s AND d.state='active'""",
                     (namespace_id,),
                 )
             else:

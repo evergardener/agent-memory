@@ -110,7 +110,7 @@ def test_evidence_excerpt_preserves_both_ends_with_a_visible_gap() -> None:
     assert "local excerpt omitted" in excerpt
 
 
-def test_atomic_policy_keeps_unconfirmed_user_fact_candidate(monkeypatch) -> None:
+def test_atomic_policy_accepts_validated_model_fact(monkeypatch) -> None:
     settings = Settings(
         service_token=SecretStr("a" * 32),
         ui_session_secret=SecretStr("b" * 32),
@@ -126,6 +126,9 @@ def test_atomic_policy_keeps_unconfirmed_user_fact_candidate(monkeypatch) -> Non
     candidate = AtomicFactCandidate(
         statement="Orchid 使用 PostgreSQL",
         fact_type="long_term",
+        admission="accept",
+        confidence=0.91,
+        review_reason=None,
         evidence_index=0,
         span_start=0,
         span_end=20,
@@ -135,4 +138,35 @@ def test_atomic_policy_keeps_unconfirmed_user_fact_candidate(monkeypatch) -> Non
     policy = _atomic_candidate_policy(candidate, evidence)
 
     assert policy is not None
-    assert policy[0:3] == ("long_term", "candidate", 0.65)
+    assert policy[0:3] == ("long_term", "active", 0.91)
+
+
+def test_atomic_policy_routes_true_ambiguity_to_review(monkeypatch) -> None:
+    settings = Settings(
+        service_token=SecretStr("a" * 32),
+        ui_session_secret=SecretStr("b" * 32),
+    )
+    monkeypatch.setattr("agent_memory.worker.get_settings", lambda: settings)
+    evidence = AtomicTurnEvidence(
+        event_id="event-2",
+        event_type="user_message",
+        content="小A 可能是我以前的同学",
+        occurred_at=datetime(2026, 7, 16, tzinfo=UTC),
+        tool_name="",
+    )
+    candidate = AtomicFactCandidate(
+        statement="小A 可能是我以前的同学",
+        fact_type="long_term",
+        admission="review",
+        confidence=0.7,
+        review_reason="identity_ambiguity",
+        evidence_index=0,
+        span_start=0,
+        span_end=13,
+        entities=(),
+    )
+
+    policy = _atomic_candidate_policy(candidate, evidence)
+
+    assert policy is not None
+    assert policy[0:3] == ("long_term", "candidate", 0.7)

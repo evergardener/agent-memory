@@ -325,7 +325,7 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
     temporal_terms = _temporal_query_terms(request.query) if temporal_signal else []
     procedure_terms = _procedure_query_terms(request.query) if procedure_signal else []
     lexical_states = (
-        "('candidate','active','forgotten')" if explicit_recall else "('candidate','active')"
+        "('candidate','active','forgotten')" if explicit_recall else "('active')"
     )
     with connection.cursor(row_factory=dict_row) as cursor:
         cursor.execute(
@@ -363,13 +363,13 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
         )
         entity = cursor.fetchall()
         cursor.execute(
-            """SELECT d.source_id AS memory_id,'fact' AS kind,d.text_redacted,f.source_profile,
+            f"""SELECT d.source_id AS memory_id,'fact' AS kind,d.text_redacted,f.source_profile,
                       f.extraction_method,
                       array_remove(array_agg(fe.event_id),NULL) AS source_ids
                FROM retrieval.documents d
                JOIN memory.facts f ON f.id=d.source_id AND d.source_kind='fact'
                LEFT JOIN memory.fact_evidence fe ON fe.fact_id=f.id
-               WHERE d.namespace_id=%s AND d.lifecycle_state IN ('candidate','active')
+               WHERE d.namespace_id=%s AND d.lifecycle_state IN {lexical_states}
                  AND (f.valid_to IS NULL OR f.valid_to > now())
                  AND d.embedding_model_version=%s AND d.embedding IS NOT NULL
                  AND (d.embedding <=> %s::vector) < 0.5

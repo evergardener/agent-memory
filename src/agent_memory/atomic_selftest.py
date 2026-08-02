@@ -62,6 +62,24 @@ def main() -> None:
             technology_start, technology_end = _span(CONTENT, "PostgreSQL")
             first_start, first_end = _span(CONTENT, STATEMENTS[0])
             second_start, second_end = _span(CONTENT, STATEMENTS[1])
+            first_fact_id = stable_uuid("fact", f"{event_id}:{STATEMENTS[0]}")
+            connection.execute(
+                """INSERT INTO memory.facts(
+                     id,namespace_id,statement,fact_type,confidence,memory_state,
+                     source_profile,valid_from,extraction_method,extraction_version
+                   ) VALUES (%s,%s,%s,'stage',0.5,'candidate',%s,%s,
+                             'deterministic-v1','deterministic-v1')
+                   ON CONFLICT(id) DO UPDATE SET
+                     memory_state='candidate',extraction_method='deterministic-v1',
+                     extraction_version='deterministic-v1',updated_at=now()""",
+                (
+                    first_fact_id,
+                    stable_uuid("namespace", NAMESPACE),
+                    STATEMENTS[0],
+                    context.source_profile,
+                    occurred_at,
+                ),
+            )
             extraction = ExtractAtomicFacts(
                 evidence=(
                     AtomicTurnEvidence(
@@ -78,6 +96,9 @@ def main() -> None:
                         AtomicFactCandidate(
                             statement=STATEMENTS[0],
                             fact_type="stage",
+                            admission="accept",
+                            confidence=0.9,
+                            review_reason=None,
                             evidence_index=0,
                             span_start=first_start,
                             span_end=first_end,
@@ -96,6 +117,9 @@ def main() -> None:
                         AtomicFactCandidate(
                             statement=STATEMENTS[1],
                             fact_type="long_term",
+                            admission="accept",
+                            confidence=0.9,
+                            review_reason=None,
                             evidence_index=0,
                             span_start=second_start,
                             span_end=second_end,
@@ -120,7 +144,7 @@ def main() -> None:
             )
             process_atomic_extraction(connection, job, extraction)
             facts = connection.execute(
-                """SELECT statement,extraction_method,extraction_version,
+                """SELECT statement,extraction_method,extraction_version,memory_state,
                           evidence_span_start,evidence_span_end
                    FROM memory.facts
                    WHERE namespace_id=%s AND statement=ANY(%s)
@@ -152,7 +176,8 @@ def main() -> None:
         assert all(
             row[1:3] == ("model-verbatim", ATOMIC_EXTRACTION_VERSION) for row in facts
         )
-        assert all(CONTENT[row[3] : row[4]] == row[0] for row in facts)
+        assert all(row[3] == "active" for row in facts)
+        assert all(CONTENT[row[4] : row[5]] == row[0] for row in facts)
         assert mentions == 2
         assert documents == 2
         assert audits >= 1
