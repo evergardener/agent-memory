@@ -47,6 +47,17 @@ PREFERENCE_PATTERN = re.compile(
     r"(?P<verb>喜欢|偏好|更喜欢|避免|要求|必须)"
     r"(?P<topic>[^，。；;\n]{1,80})"
 )
+CALL_ME_PATTERN = re.compile(
+    r"(?:以后|之后|请)?(?:称呼我为|叫我|称我为)\s*(?P<topic>[^，。；;\n]{1,40})"
+)
+LANGUAGE_PREFERENCE_PATTERN = re.compile(
+    r"(?:以后|之后|请)?(?:使用|用)\s*(?P<topic>中文|英文|英语|简体中文|繁体中文)"
+    r"(?:回答|回复|交流|对话)"
+)
+RESPONSE_STYLE_PATTERN = re.compile(
+    r"(?:以后|之后|请)?(?:回答|回复)(?:时)?\s*(?:保持|使用|采用)?\s*"
+    r"(?P<topic>简洁|详细|直接|温和|正式|口语化)(?:的)?(?:风格|方式|表达)?"
+)
 TEMPORAL_PATTERN = re.compile(
     r"(?P<label>我的生日|生日|纪念日|结婚纪念日)"
     r"(?:是|为|在|：|:)\s*(?:(?P<year>\d{4})年)?"
@@ -362,7 +373,17 @@ def parse_episode(text: str, occurred_at: datetime) -> EpisodeCandidate | None:
 
 
 def parse_preference(text: str) -> PreferenceCandidate | None:
-    match = PREFERENCE_PATTERN.search(redact_text(text).text)
+    redacted = redact_text(text).text
+    match = CALL_ME_PATTERN.search(redacted)
+    if match:
+        return PreferenceCandidate("称呼", "require", match.group("topic").strip(), 0.95)
+    match = LANGUAGE_PREFERENCE_PATTERN.search(redacted)
+    if match:
+        return PreferenceCandidate("回复语言", "require", match.group("topic").strip(), 0.95)
+    match = RESPONSE_STYLE_PATTERN.search(redacted)
+    if match:
+        return PreferenceCandidate("回复风格", "prefer", match.group("topic").strip(), 0.9)
+    match = PREFERENCE_PATTERN.search(redacted)
     if not match:
         return None
     topic = match.group("topic").strip()
@@ -845,23 +866,39 @@ def _store_preference(
         "preference", f"{namespace_id}:{user_subject_id}:{event_id}:{candidate.aspect.casefold()}"
     )
     prior = connection.execute(
-        """SELECT id,version FROM memory.preference_assertions
+        """SELECT id,version,polarity,topic_entity_id FROM memory.preference_assertions
            WHERE namespace_id=%s AND subject_id=%s AND lower(aspect)=lower(%s)
              AND state='active' AND id<>%s
            ORDER BY updated_at DESC LIMIT 1""",
         (namespace_id, user_subject_id, candidate.aspect, preference_id),
     ).fetchone()
+    if prior and prior[2] == candidate.polarity and prior[3] == topic_entity_id:
+        connection.execute(
+            """INSERT INTO memory.preference_evidence(preference_id,event_id)
+               VALUES (%s,%s) ON CONFLICT DO NOTHING""",
+            (prior[0], event_id),
+        )
+        connection.execute(
+            """UPDATE memory.preference_assertions
+               SET strength=GREATEST(strength,%s),fact_id=COALESCE(fact_id,%s),updated_at=now()
+               WHERE id=%s""",
+            (candidate.strength, fact_id, prior[0]),
+        )
+        return prior[0]
     if prior:
         connection.execute(
             """UPDATE memory.preference_assertions
-               SET state='superseded',valid_to=%s,updated_at=now() WHERE id=%s""",
+               SET state='superseded',valid_to=%s,version=version+1,updated_at=now()
+               WHERE id=%s""",
             (occurred_at, prior[0]),
         )
     connection.execute(
         """INSERT INTO memory.preference_assertions(
              id,namespace_id,subject_id,topic_entity_id,aspect,polarity,strength,
-             explicitness,valid_from,fact_id,state,supersedes_id,version
-           ) VALUES (%s,%s,%s,%s,%s,%s,%s,'explicit',%s,%s,'active',%s,%s)
+             explicitness,valid_from,fact_id,state,supersedes_id,version,
+             extraction_method,confirmed_at
+           ) VALUES (%s,%s,%s,%s,%s,%s,%s,'explicit',%s,%s,'active',%s,%s,
+                     'deterministic-v1',%s)
            ON CONFLICT(id) DO UPDATE SET
              aspect=excluded.aspect,polarity=excluded.polarity,
              strength=excluded.strength,fact_id=excluded.fact_id,updated_at=now()""",
@@ -877,7 +914,13 @@ def _store_preference(
             fact_id,
             prior[0] if prior else None,
             int(prior[1]) + 1 if prior else 1,
+            occurred_at,
         ),
+    )
+    connection.execute(
+        """INSERT INTO memory.preference_evidence(preference_id,event_id)
+           VALUES (%s,%s) ON CONFLICT DO NOTHING""",
+        (preference_id, event_id),
     )
     text = f"用户偏好 {candidate.polarity}: {candidate.aspect}"
     _upsert_document(connection, namespace_id, "preference", preference_id, text, "active")
@@ -1887,15 +1930,41 @@ def list_preferences(connection: Connection, namespace_key: str) -> list[dict]:
                       preference.aspect,preference.polarity,preference.strength,
                       preference.explicitness,preference.valid_from,preference.valid_to,
                       preference.state,preference.supersedes_id,preference.version,
-                      preference.created_at,preference.updated_at
+                      preference.extraction_method,preference.confirmed_at,
+                      preference.created_at,preference.updated_at,
+                      array_remove(array_agg(DISTINCT evidence.event_id),NULL) AS source_ids
                FROM memory.preference_assertions preference
                JOIN core.subjects subject ON subject.id=preference.subject_id
                LEFT JOIN memory.entities entity ON entity.id=preference.topic_entity_id
+               LEFT JOIN memory.preference_evidence evidence
+                 ON evidence.preference_id=preference.id
                WHERE preference.namespace_id=%s
+               GROUP BY preference.id,subject.display_name,entity.canonical_name
                ORDER BY preference.updated_at DESC""",
             (namespace_id,),
         )
         return cursor.fetchall()
+
+
+def preference_user_memory_preview(connection: Connection, namespace_key: str) -> dict:
+    """Render a USER memory diff suggestion without writing external files."""
+    active = [
+        item
+        for item in list_preferences(connection, namespace_key)
+        if item["state"] == "active"
+    ]
+    lines = [
+        f"- {item['aspect']}: {item['topic']} ({item['polarity']}, {item['explicitness']})"
+        for item in active
+    ]
+    return {
+        "automatic_write": False,
+        "active_preference_count": len(active),
+        "suggested_markdown": "\n".join(lines),
+        "source_ids": sorted(
+            {str(source_id) for item in active for source_id in item["source_ids"]}
+        ),
+    }
 
 
 def set_preference_state(

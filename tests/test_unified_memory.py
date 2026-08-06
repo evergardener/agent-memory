@@ -97,6 +97,28 @@ def test_explicit_preference_is_preserved() -> None:
     assert preference.aspect == "安静的咖啡馆"
 
 
+def test_explicit_call_name_language_and_style_preferences_are_preserved() -> None:
+    call_name = parse_preference("以后称呼我为公子")
+    language = parse_preference("以后使用中文回答")
+    style = parse_preference("回答时保持简洁风格")
+
+    assert (call_name.aspect, call_name.topic, call_name.polarity) == (
+        "称呼",
+        "公子",
+        "require",
+    )
+    assert (language.aspect, language.topic, language.polarity) == (
+        "回复语言",
+        "中文",
+        "require",
+    )
+    assert (style.aspect, style.topic, style.polarity) == (
+        "回复风格",
+        "简洁",
+        "prefer",
+    )
+
+
 def test_birthday_is_a_temporal_rule_not_an_episode() -> None:
     temporal = parse_temporal_rule("我的生日是7月25日")
 

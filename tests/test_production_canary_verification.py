@@ -16,6 +16,16 @@ def test_canary_source_query_uses_psql_stdin_variables_not_dynamic_sql() -> None
     assert "namespace.stable_key=:'namespace'" in inventory_script
 
 
+def test_runtime_and_quality_health_are_reported_separately() -> None:
+    verify_script = (ROOT / "scripts/predeploy-verify.sh").read_text(encoding="utf-8")
+
+    assert '"quality_status": "DEGRADED"' in verify_script
+    assert "failed_jobs_by_kind" in verify_script
+    assert "model_jobs_failed" in verify_script
+    assert "redaction_findings" in verify_script
+    assert "canary quality gate found terminally failed jobs" in verify_script
+
+
 def test_canary_backup_and_multi_profile_promotion_fail_closed_contracts() -> None:
     verify_script = (ROOT / "scripts/predeploy-verify.sh").read_text(encoding="utf-8")
     backup_script = (ROOT / "scripts/predeploy-backup.sh").read_text(encoding="utf-8")

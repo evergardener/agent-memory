@@ -12,6 +12,7 @@ from psycopg.rows import dict_row
 from .classification import classify_event, is_recallable_memory_content
 from .community_projection import enqueue_community_rebuild, rebuild_communities
 from .config import get_settings
+from .current_state import expire_due_current_items, upsert_current_item
 from .db import Database
 from .embeddings import EMBEDDING_VERSION, deterministic_embedding, vector_literal
 from .ids import new_uuid, stable_uuid
@@ -432,23 +433,19 @@ def process_extract(
         ),
     )
     if classification.fact_type == "current" and classification.valid_to is not None:
-        connection.execute(
-            """INSERT INTO state.current_items(
-                 id,namespace_id,topic_key,summary,source_fact_id,valid_from,expires_at
-               ) VALUES (%s,%s,%s,%s,%s,%s,%s)
-               ON CONFLICT(namespace_id,topic_key) DO UPDATE SET
-                 summary=excluded.summary,source_fact_id=excluded.source_fact_id,
-                 status='active',valid_from=excluded.valid_from,expires_at=excluded.expires_at,
-                 updated_at=now()""",
-            (
-                stable_uuid("current-item", f"{namespace_id}:{fact_statement.casefold()}"),
-                namespace_id,
-                fact_statement.casefold()[:256],
-                fact_statement,
-                fact_id,
-                occurred_at,
-                classification.valid_to,
-            ),
+        upsert_current_item(
+            connection,
+            namespace_id=namespace_id,
+            topic_key=fact_statement.casefold()[:256],
+            summary=fact_statement,
+            source_fact_id=fact_id,
+            valid_from=occurred_at,
+            expires_at=classification.valid_to,
+            actor_type="worker",
+            actor_id="core-worker",
+            reason="deterministic current admission passed policy",
+            decision_reason=classification.decision_reason or "current_policy_passed",
+            policy_version=classification.policy_version,
         )
     if classification.fact_type in {"stage", "long_term"}:
         rebuild_id = stable_uuid("job", f"rebuild_derived:extract:{event_id}")
@@ -502,7 +499,7 @@ def process_enhance_fact(
 def _atomic_candidate_policy(
     candidate: AtomicFactCandidate,
     evidence: AtomicTurnEvidence,
-) -> tuple[str, str, float, datetime | None] | None:
+) -> tuple[str, str, float, datetime | None, str, str] | None:
     settings = get_settings()
     classification = classify_event(
         evidence.event_type,
@@ -516,6 +513,8 @@ def _atomic_candidate_policy(
     if not is_recallable_memory_content(candidate.statement):
         return None
     fact_type = candidate.fact_type
+    if fact_type == "current" and classification.fact_type != "current":
+        return None
     if fact_type == "observed" and evidence.event_type not in {
         "tool_result",
         "environment_observation",
@@ -532,7 +531,14 @@ def _atomic_candidate_policy(
     valid_to = classification.valid_to if fact_type == "current" else None
     if fact_type == "current" and valid_to is None:
         valid_to = evidence.occurred_at + timedelta(days=settings.current_state_days)
-    return fact_type, memory_state, confidence, valid_to
+    return (
+        fact_type,
+        memory_state,
+        confidence,
+        valid_to,
+        classification.decision_reason or "model_four_state_admission",
+        classification.policy_version,
+    )
 
 
 def process_atomic_extraction(
@@ -557,7 +563,14 @@ def process_atomic_extraction(
         if policy is None:
             rejected_by_policy += 1
             continue
-        fact_type, memory_state, confidence, valid_to = policy
+        (
+            fact_type,
+            memory_state,
+            confidence,
+            valid_to,
+            decision_reason,
+            policy_version,
+        ) = policy
         fact_id = stable_uuid("fact", f"{event_id}:{candidate.statement}")
         fact_row = connection.execute(
             """INSERT INTO memory.facts(
@@ -679,26 +692,19 @@ def process_atomic_extraction(
             and fact_type == "current"
             and valid_to is not None
         ):
-            connection.execute(
-                """INSERT INTO state.current_items(
-                     id,namespace_id,topic_key,summary,source_fact_id,valid_from,expires_at
-                   ) VALUES (%s,%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT(namespace_id,topic_key) DO UPDATE SET
-                     summary=excluded.summary,source_fact_id=excluded.source_fact_id,
-                     status='active',valid_from=excluded.valid_from,
-                     expires_at=excluded.expires_at,updated_at=now()""",
-                (
-                    stable_uuid(
-                        "current-item",
-                        f"{namespace_id}:{candidate.statement.casefold()}",
-                    ),
-                    namespace_id,
-                    candidate.statement.casefold()[:256],
-                    candidate.statement,
-                    fact_id,
-                    evidence.occurred_at,
-                    valid_to,
-                ),
+            upsert_current_item(
+                connection,
+                namespace_id=namespace_id,
+                topic_key=candidate.statement.casefold()[:256],
+                summary=candidate.statement,
+                source_fact_id=fact_id,
+                valid_from=evidence.occurred_at,
+                expires_at=valid_to,
+                actor_type="worker",
+                actor_id="model-worker",
+                reason="model current admission passed deterministic policy",
+                decision_reason=decision_reason,
+                policy_version=policy_version,
             )
         if effective_memory_state == "active" and fact_type in {"stage", "long_term"}:
             rebuild_id = stable_uuid("job", f"rebuild_derived:atomic:{fact_id}")
@@ -715,6 +721,9 @@ def process_atomic_extraction(
                 "review_reason": candidate.review_reason,
                 "confidence": candidate.confidence,
                 "effective_memory_state": effective_memory_state,
+                "target_kind": fact_type,
+                "decision_reason": decision_reason,
+                "policy_version": policy_version,
             }
         )
     audit = {
@@ -942,7 +951,15 @@ def process_purge(connection: Connection, job) -> None:
     removed_evidence = 0
     for event_id in evidence_ids:
         still_used = connection.execute(
-            "SELECT 1 FROM memory.fact_evidence WHERE event_id=%s LIMIT 1", (event_id,)
+            """SELECT 1 FROM memory.fact_evidence WHERE event_id=%s
+               UNION ALL
+               SELECT 1 FROM memory.episode_steps WHERE evidence_event_id=%s
+               UNION ALL
+               SELECT 1 FROM projection.galaxy_membership_evidence WHERE event_id=%s
+               UNION ALL
+               SELECT 1 FROM memory.preference_evidence WHERE event_id=%s
+               LIMIT 1""",
+            (event_id, event_id, event_id, event_id),
         ).fetchone()
         if still_used is not None:
             continue
@@ -1099,10 +1116,7 @@ def run_maintenance(connection: Connection) -> None:
                 document_id,
             ),
         )
-    connection.execute(
-        """UPDATE state.current_items SET status='expired',updated_at=now()
-           WHERE status='active' AND expires_at <= now()"""
-    )
+    expire_due_current_items(connection)
     expired_procedures = connection.execute(
         """UPDATE memory.procedures
            SET state='dormant',review_state='candidate',version=version+1,updated_at=now()

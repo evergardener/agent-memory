@@ -170,3 +170,31 @@ def test_atomic_policy_routes_true_ambiguity_to_review(monkeypatch) -> None:
 
     assert policy is not None
     assert policy[0:3] == ("long_term", "candidate", 0.7)
+
+
+def test_atomic_model_cannot_bypass_current_state_policy(monkeypatch) -> None:
+    settings = Settings(
+        service_token=SecretStr("a" * 32),
+        ui_session_secret=SecretStr("b" * 32),
+    )
+    monkeypatch.setattr("agent_memory.worker.get_settings", lambda: settings)
+    evidence = AtomicTurnEvidence(
+        event_id="event-3",
+        event_type="user_message",
+        content="[Home Assistant] 智能音箱睡眠模式: turned off",
+        occurred_at=datetime(2026, 7, 16, tzinfo=UTC),
+        tool_name="",
+    )
+    candidate = AtomicFactCandidate(
+        statement=evidence.content,
+        fact_type="current",
+        admission="accept",
+        confidence=0.95,
+        review_reason=None,
+        evidence_index=0,
+        span_start=0,
+        span_end=len(evidence.content),
+        entities=(),
+    )
+
+    assert _atomic_candidate_policy(candidate, evidence) is None

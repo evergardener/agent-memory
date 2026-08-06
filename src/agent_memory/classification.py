@@ -2,10 +2,27 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-CURRENT_PATTERN = re.compile(
-    r"(?:天气|气温|下雨|暴雨|今天|明天|当前|临时|告警|"
-    r"turned\s+(?:on|off)|已?(?:开启|关闭|打开|关掉)|"
-    r"health|healthy|unhealthy|weather|today)",
+CURRENT_UNFINISHED_PATTERN = re.compile(
+    r"(?:未完成|尚未|待处理|待确认|等待|阻塞|卡住|暂停|搁置|稍后继续|"
+    r"pending|unfinished|waiting|blocked|paused|on\s+hold)",
+    re.IGNORECASE,
+)
+CURRENT_CONTINUITY_PATTERN = re.compile(
+    r"(?:先暂停|下次|下一(?:次|会话)|后续|稍后|继续|恢复后|"
+    r"next\s+(?:time|session)|later|continue|resume)",
+    re.IGNORECASE,
+)
+CURRENT_RECENCY_PATTERN = re.compile(
+    r"(?:当前|现在|正在|近期|今日|今天|current(?:ly)?|now|today)", re.IGNORECASE
+)
+ONE_SHOT_STATE_PATTERN = re.compile(
+    r"(?:\[Home Assistant\]|turned\s+(?:on|off)|已?(?:开启|关闭|打开|关掉)|"
+    r"天气|气温|下雨|暴雨|weather|health|healthy|unhealthy)",
+    re.IGNORECASE,
+)
+COMPLETED_STATE_PATTERN = re.compile(
+    r"(?:已完成|完成了|已经解决|修复完成|恢复正常|验证通过|测试通过|"
+    r"completed|resolved|fixed|passed)",
     re.IGNORECASE,
 )
 STAGE_PATTERN = re.compile(
@@ -109,6 +126,21 @@ class Classification:
     confidence: float
     valid_to: datetime | None = None
     create_fact: bool = True
+    decision_reason: str | None = None
+    policy_version: str = "deterministic-admission-v2"
+
+
+def current_admission_reason(content: str) -> str | None:
+    """Return the governed reason when content is eligible for Current State."""
+    if ONE_SHOT_STATE_PATTERN.search(content) or COMPLETED_STATE_PATTERN.search(content):
+        return None
+    if not CURRENT_UNFINISHED_PATTERN.search(content):
+        return None
+    if CURRENT_CONTINUITY_PATTERN.search(content):
+        return "unfinished_and_cross_session_continuity"
+    if CURRENT_RECENCY_PATTERN.search(content):
+        return "unfinished_and_recent"
+    return None
 
 
 def classify_event(
@@ -128,6 +160,8 @@ def classify_event(
         return Classification("evidence_only", "candidate", 1, create_fact=False)
     if QUERY_ONLY_PATTERN.search(content):
         return Classification("evidence_only", "candidate", 1, create_fact=False)
+    if ONE_SHOT_STATE_PATTERN.search(content):
+        return Classification("evidence_only", "candidate", 1, create_fact=False)
     if PREFERENCE_DIRECTIVE_PATTERN.search(content):
         return Classification("long_term", "active", 0.85)
     if DIALOGUE_CONTROL_PATTERN.fullmatch(content.strip()):
@@ -144,13 +178,15 @@ def classify_event(
         return Classification("evidence_only", "candidate", 1, create_fact=False)
     if event_type == "assistant_message" or LOW_VALUE_PATTERN.search(content):
         return Classification("low_value", "candidate", 0.9, create_fact=False)
-    if CURRENT_PATTERN.search(content):
-        ttl = (
-            timedelta(hours=weather_hours)
-            if re.search(r"天气|气温|下雨|暴雨|weather", content, re.I)
-            else timedelta(days=current_days)
+    current_reason = current_admission_reason(content)
+    if current_reason:
+        return Classification(
+            "current",
+            "active",
+            0.85,
+            timestamp + timedelta(days=current_days),
+            decision_reason=current_reason,
         )
-        return Classification("current", "active", 0.85, timestamp + ttl)
     if LONG_TERM_PATTERN.search(content):
         return Classification("long_term", "active", 0.85)
     if STAGE_PATTERN.search(content):
