@@ -4,6 +4,7 @@ from agent_memory.repository import (
     _duplicate_fact_ids,
     _overlapping_deterministic_fact_ids,
     fuzzy_query_allowed,
+    lexical_alias_terms,
     normalize_recall_query,
 )
 
@@ -61,6 +62,8 @@ def test_exact_duplicate_facts_merge_evidence_without_score_amplification() -> N
 
 def test_recall_query_aliases_and_low_information_fuzzy_gate() -> None:
     assert normalize_recall_query("邮件通知目前是不是暂停了") == "邮件提醒目前是不是暂停了"
+    assert lexical_alias_terms("邮件提醒目前是不是暂停了") == ["邮件提醒", "暂停"]
+    assert lexical_alias_terms("完全无关的量子花园散步问题") == []
     assert not fuzzy_query_allowed("123456789")
     assert not fuzzy_query_allowed("2f38f9df-5a76-4a33-a5a0-c6132d8af0a8")
     assert not fuzzy_query_allowed("a4f991cab0417d22c79bf081d122")

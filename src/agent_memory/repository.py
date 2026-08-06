@@ -308,6 +308,7 @@ QUERY_ALIASES = (
     (re.compile(r"邮件通知", re.IGNORECASE), "邮件提醒"),
     (re.compile(r"email\s+notification", re.IGNORECASE), "email reminder"),
 )
+LEXICAL_ALIAS_CONCEPTS = ("邮件提醒", "email reminder")
 LOW_INFORMATION_QUERY = re.compile(
     r"^(?:[0-9]+|[0-9a-f]{24,}|[0-9a-f]{8}-[0-9a-f-]{27,}|[A-Za-z0-9_-]{20,})$",
     re.IGNORECASE,
@@ -319,6 +320,22 @@ def normalize_recall_query(query: str) -> str:
     for pattern, replacement in QUERY_ALIASES:
         normalized = pattern.sub(replacement, normalized)
     return normalized
+
+
+def lexical_alias_terms(query: str) -> list[str]:
+    """Return curated high-precision terms for aliases that CJK FTS cannot segment."""
+    lowered = query.casefold()
+    terms: list[str] = []
+    for concept in LEXICAL_ALIAS_CONCEPTS:
+        if concept in lowered:
+            terms.append(concept)
+            break
+    if terms:
+        for state_term in ("暂停", "停用", "paused", "disabled"):
+            if state_term in lowered:
+                terms.append(state_term)
+                break
+    return terms
 
 
 def fuzzy_query_allowed(query: str) -> bool:
@@ -333,6 +350,7 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
     namespace_id = stable_uuid("namespace", request.context.shared_namespace)
     query_text = normalize_recall_query(request.query)
     allow_fuzzy = fuzzy_query_allowed(query_text)
+    alias_terms = lexical_alias_terms(query_text)
     query_embedding = vector_literal(deterministic_embedding(query_text))
     explicit_recall = request.intent == "explicit"
     temporal_signal = bool(
@@ -372,11 +390,28 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                WHERE d.namespace_id=%s AND d.lifecycle_state IN {lexical_states}
                  AND (f.valid_to IS NULL OR f.valid_to > now())
                  {current_state_filter}
-                 AND d.search_vector @@ plainto_tsquery('simple',%s)
+                 AND (
+                   d.search_vector @@ plainto_tsquery('simple',%s) OR
+                   (
+                     %s AND NOT EXISTS (
+                       SELECT 1 FROM unnest(%s::text[]) AS alias(term)
+                       WHERE position(lower(alias.term) in lower(d.text_redacted)) = 0
+                     )
+                   )
+                 )
                GROUP BY d.source_id,d.text_redacted,f.source_profile,f.extraction_method,
                         d.search_vector,d.lifecycle_state
-               ORDER BY ts_rank(d.search_vector,plainto_tsquery('simple',%s)) DESC LIMIT 25""",
-            (namespace_id, query_text, query_text),
+               ORDER BY CASE
+                 WHEN d.search_vector @@ plainto_tsquery('simple',%s) THEN 0 ELSE 1
+               END, ts_rank(d.search_vector,plainto_tsquery('simple',%s)) DESC LIMIT 25""",
+            (
+                namespace_id,
+                query_text,
+                bool(alias_terms),
+                alias_terms,
+                query_text,
+                query_text,
+            ),
         )
         lexical = cursor.fetchall()
         cursor.execute(

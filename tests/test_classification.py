@@ -103,6 +103,25 @@ def test_user_preference_directive_is_long_term_and_recallable():
     assert is_recallable_memory_content(content)
 
 
+def test_explicit_preference_forms_enter_the_deterministic_long_term_path() -> None:
+    for content in (
+        "以后称呼我为公子",
+        "请用英文回复",
+        "回答时保持简洁风格",
+        "变更前必须先备份",
+        "以后通过邮件提醒我",
+        "以后允许自动删除本地文件",
+    ):
+        result = classify_event("user_message", content, NOW)
+        assert (result.fact_type, result.memory_state) == ("long_term", "active")
+        assert result.create_fact
+        assert is_recallable_memory_content(content)
+
+    one_shot = classify_event("user_message", "允许修改", NOW)
+    assert one_shot.fact_type == "evidence_only"
+    assert not one_shot.create_fact
+
+
 def test_retrieval_tool_result_keeps_evidence_only():
     result = classify_event(
         "tool_result",

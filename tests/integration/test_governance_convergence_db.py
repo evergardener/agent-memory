@@ -20,9 +20,15 @@ from agent_memory.model_replay import (
 from agent_memory.model_replay import (
     replay_failed_model_jobs,
 )
-from agent_memory.repository import browse_memories, trace_memory
-from agent_memory.unified_memory import PreferenceCandidate, _store_preference
-from agent_memory.worker import process_purge
+from agent_memory.repository import browse_memories, ingest_turn, recall, trace_memory
+from agent_memory.schemas import (
+    IngestEvent,
+    IngestTurnRequest,
+    ProviderContext,
+    RecallRequest,
+)
+from agent_memory.unified_memory import PreferenceCandidate, _store_preference, process_unified_turn
+from agent_memory.worker import process_extract, process_purge
 
 pytestmark = [
     pytest.mark.integration,
@@ -196,6 +202,109 @@ def test_current_transition_hides_fact_and_is_idempotent() -> None:
         assert trace.current_state_resolution_reason == "task completed"
 
 
+def test_recall_gold_meets_top1_negative_and_resolved_gates() -> None:
+    namespace = f"hermes:automated-tests:governance-recall:{RUN_ID}"
+    namespace_id = stable_uuid("namespace", namespace)
+    statement = "先暂停邮件提醒任务，后续继续处理"
+    fact_id = stable_uuid("fact", f"{namespace_id}:{statement}")
+    distractor_id = stable_uuid("fact", f"{namespace_id}:distractor")
+
+    def request(query: str) -> RecallRequest:
+        return RecallRequest(
+            context=ProviderContext(
+                shared_namespace=namespace,
+                source_profile="test",
+                source_instance="governance-recall-gold",
+                external_session_id=RUN_ID,
+                external_turn_id=f"recall-{uuid4()}",
+                correlation_id=uuid4(),
+            ),
+            query=query,
+        )
+
+    positive_queries = (
+        "先暂停邮件提醒任务",
+        "暂停邮件提醒",
+        "邮件通知目前是不是暂停了",
+        "邮件提醒现在暂停了吗",
+        "邮件通知暂停状态",
+        "邮件提醒任务暂停",
+        "邮件通知是否还暂停",
+        "暂停的邮件通知",
+        "邮件提醒",
+        "邮件通知",
+    )
+    negative_queries = tuple(str(uuid4()) for _ in range(25))
+    negative_queries += tuple(f"{index:064x}" for index in range(25))
+    negative_queries += tuple(f"完全无关的量子花园散步问题第{index}号" for index in range(50))
+
+    with psycopg.connect(DATABASE_URL) as connection:
+        connection.execute(
+            "INSERT INTO core.namespaces(id,stable_key) VALUES (%s,%s)",
+            (namespace_id, namespace),
+        )
+        for memory_id, text in (
+            (fact_id, statement),
+            (distractor_id, "project:PostgreSQL 部署在 hostA"),
+        ):
+            connection.execute(
+                """INSERT INTO memory.facts(
+                     id,namespace_id,statement,fact_type,confidence,memory_state,
+                     source_profile,valid_from,valid_to
+                   ) VALUES (%s,%s,%s,%s,0.9,'active','test',now(),now()+interval '1 day')""",
+                (
+                    memory_id,
+                    namespace_id,
+                    text,
+                    "current" if memory_id == fact_id else "long_term",
+                ),
+            )
+            connection.execute(
+                """INSERT INTO retrieval.documents(
+                     id,namespace_id,source_kind,source_id,text_redacted,lifecycle_state
+                   ) VALUES (%s,%s,'fact',%s,%s,'active')""",
+                (stable_uuid("document", str(memory_id)), namespace_id, memory_id, text),
+            )
+        item = upsert_current_item(
+            connection,
+            namespace_id=namespace_id,
+            topic_key="mail-reminder",
+            summary=statement,
+            source_fact_id=fact_id,
+            valid_from=datetime.now(UTC),
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+            actor_type="worker",
+            actor_id="governance-recall-gold",
+            reason="gold fixture",
+        )
+
+        positive_results = [recall(connection, request(query))[0] for query in positive_queries]
+        correct_top1 = sum(
+            items and items[0].memory_id == fact_id for items in positive_results
+        )
+        top1_accuracy = correct_top1 / len(positive_results)
+        false_matches = sum(
+            bool(recall(connection, request(query))[0]) for query in negative_queries
+        )
+        false_match_rate = false_matches / len(negative_queries)
+
+        assert top1_accuracy >= 0.9
+        assert false_match_rate <= 0.01
+        assert all("lexical" in items[0].channels for items in positive_results if items)
+
+        transition_current_item(
+            connection,
+            namespace_id=namespace_id,
+            topic_key="mail-reminder",
+            target_status="resolved",
+            actor_type="provider",
+            actor_id="governance-recall-gold",
+            reason="task completed",
+            expected_version=item["version"],
+        )
+        assert all(not recall(connection, request(query))[0] for query in positive_queries)
+
+
 def test_preference_evidence_deduplicates_and_conflicts_supersede() -> None:
     with psycopg.connect(DATABASE_URL) as connection:
         create_namespace(connection)
@@ -245,6 +354,70 @@ def test_preference_evidence_deduplicates_and_conflicts_supersede() -> None:
         active = next(item for item in states if item[1] == "active")
         assert active[0] == replacement
         assert active[2] == first
+
+
+def test_explicit_preference_ingest_pipeline_creates_evidence_linked_records() -> None:
+    namespace = f"hermes:automated-tests:governance-preference:{RUN_ID}"
+    contents = (
+        "以后称呼我为公子",
+        "请用英文回复",
+        "回答时保持简洁风格",
+        "变更前必须先备份",
+        "以后通过邮件提醒我",
+    )
+    context = ProviderContext(
+        shared_namespace=namespace,
+        source_profile="test",
+        source_instance="governance-preference-gold",
+        external_session_id=RUN_ID,
+        external_turn_id="explicit-preference-ingest",
+        correlation_id=uuid4(),
+    )
+    request = IngestTurnRequest(
+        context=context,
+        idempotency_key=f"explicit-preference-ingest:{RUN_ID}",
+        occurred_at=datetime.now(UTC),
+        events=[
+            IngestEvent(type="user_message", sequence=index, content=content)
+            for index, content in enumerate(contents, start=1)
+        ],
+    )
+
+    with psycopg.connect(DATABASE_URL) as connection:
+        ingest_turn(connection, request)
+        jobs = connection.execute(
+            """SELECT id,namespace_id,kind,input_ref,input_version FROM ops.jobs
+               WHERE namespace_id=%s ORDER BY kind,id""",
+            (stable_uuid("namespace", namespace),),
+        ).fetchall()
+        for job in jobs:
+            if job[2] == "extract_facts":
+                process_extract(connection, job)
+        unified_job = next(job for job in jobs if job[2] == "build_unified_turn")
+        process_unified_turn(connection, unified_job)
+
+        rows = connection.execute(
+            """SELECT preference.aspect,preference.polarity,count(evidence.event_id)
+               FROM memory.preference_assertions preference
+               JOIN memory.preference_evidence evidence
+                 ON evidence.preference_id=preference.id
+               WHERE preference.namespace_id=%s AND preference.state='active'
+               GROUP BY preference.id,preference.aspect,preference.polarity""",
+            (stable_uuid("namespace", namespace),),
+        ).fetchall()
+        assert {(aspect, polarity) for aspect, polarity, _ in rows} == {
+            ("称呼", "require"),
+            ("回复语言", "require"),
+            ("回复风格", "prefer"),
+            ("变更前备份", "require"),
+            ("提醒方式", "require"),
+        }
+        assert all(evidence_count == 1 for _, _, evidence_count in rows)
+        assert connection.execute(
+            """SELECT count(*) FROM memory.facts
+               WHERE namespace_id=%s AND fact_type='long_term' AND memory_state='active'""",
+            (stable_uuid("namespace", namespace),),
+        ).fetchone()[0] == len(contents)
 
 
 def test_purge_preserves_evidence_referenced_by_preference() -> None:

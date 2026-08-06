@@ -43,20 +43,34 @@ SAW_PATTERN = re.compile(
     r"(?:看到|看了|看见了)(?P<name>[\u4e00-\u9fffA-Za-z0-9·_-]{1,20}?)(?:，|,|。|；|;|$)"
 )
 PREFERENCE_PATTERN = re.compile(
-    r"(?:我|本人)(?P<negation>不再|不|不要)?"
+    r"^(?:我|本人)(?P<negation>不再|不|不要)?"
     r"(?P<verb>喜欢|偏好|更喜欢|避免|要求|必须)"
     r"(?P<topic>[^，。；;\n]{1,80})"
 )
 CALL_ME_PATTERN = re.compile(
-    r"(?:以后|之后|请)?(?:称呼我为|叫我|称我为)\s*(?P<topic>[^，。；;\n]{1,40})"
+    r"^(?:以后|之后|请)?(?:称呼我为|叫我|称我为)\s*(?P<topic>[^，。；;\n]{1,40})"
 )
 LANGUAGE_PREFERENCE_PATTERN = re.compile(
-    r"(?:以后|之后|请)?(?:使用|用)\s*(?P<topic>中文|英文|英语|简体中文|繁体中文)"
+    r"^(?:以后|之后|请)?(?:使用|用)\s*(?P<topic>中文|英文|英语|简体中文|繁体中文)"
     r"(?:回答|回复|交流|对话)"
 )
 RESPONSE_STYLE_PATTERN = re.compile(
-    r"(?:以后|之后|请)?(?:回答|回复)(?:时)?\s*(?:保持|使用|采用)?\s*"
+    r"^(?:以后|之后|请)?(?:回答|回复)(?:时)?\s*(?:保持|使用|采用)?\s*"
     r"(?P<topic>简洁|详细|直接|温和|正式|口语化)(?:的)?(?:风格|方式|表达)?"
+)
+REMINDER_METHOD_PATTERN = re.compile(
+    r"^(?:以后|之后|每次|请)?(?:"
+    r"(?:通过|使用|用)\s*(?P<direct>邮件|电子邮件|短信|微信|企业微信|电话|日历|Hermes)"
+    r"\s*提醒我|提醒我时(?:请)?(?:通过|使用|用)\s*"
+    r"(?P<when>邮件|电子邮件|短信|微信|企业微信|电话|日历|Hermes))",
+    re.IGNORECASE,
+)
+OPERATION_CONSTRAINT_PATTERN = re.compile(
+    r"^(?:请\s*)?"
+    r"(?P<prefix>以后|之后|始终|默认|每次|操作时|执行时|执行前|变更时|变更前|部署前|删除前)?\s*"
+    r"(?P<verb>不要|禁止|别|避免|必须|务必|只允许|允许)\s*"
+    r"(?P<topic>[^，。；;\n?？]{2,80})",
+    re.IGNORECASE,
 )
 TEMPORAL_PATTERN = re.compile(
     r"(?P<label>我的生日|生日|纪念日|结婚纪念日)"
@@ -374,6 +388,8 @@ def parse_episode(text: str, occurred_at: datetime) -> EpisodeCandidate | None:
 
 def parse_preference(text: str) -> PreferenceCandidate | None:
     redacted = redact_text(text).text
+    if re.search(r"(?:[?？]|(?:吗|么|呢)[。.!！]?)\s*$", redacted):
+        return None
     match = CALL_ME_PATTERN.search(redacted)
     if match:
         return PreferenceCandidate("称呼", "require", match.group("topic").strip(), 0.95)
@@ -383,6 +399,36 @@ def parse_preference(text: str) -> PreferenceCandidate | None:
     match = RESPONSE_STYLE_PATTERN.search(redacted)
     if match:
         return PreferenceCandidate("回复风格", "prefer", match.group("topic").strip(), 0.9)
+    match = REMINDER_METHOD_PATTERN.search(redacted)
+    if match:
+        topic = match.group("direct") or match.group("when")
+        return PreferenceCandidate("提醒方式", "require", topic.strip(), 0.95)
+    match = OPERATION_CONSTRAINT_PATTERN.search(redacted)
+    if match:
+        prefix = (match.group("prefix") or "").strip()
+        topic = match.group("topic").strip()
+        verb = match.group("verb")
+        if verb == "允许" and not prefix:
+            return None
+        scoped_prefixes = {
+            "操作时",
+            "执行时",
+            "执行前",
+            "变更时",
+            "变更前",
+            "部署前",
+            "删除前",
+        }
+        scope = prefix if prefix in scoped_prefixes else ""
+        normalized_topic = f"{scope}{topic.removeprefix('先')}"
+        polarity = (
+            "avoid"
+            if verb in {"不要", "禁止", "别", "避免"}
+            else "allow"
+            if verb == "允许"
+            else "require"
+        )
+        return PreferenceCandidate(normalized_topic, polarity, topic, 0.95)
     match = PREFERENCE_PATTERN.search(redacted)
     if not match:
         return None
