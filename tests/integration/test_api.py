@@ -1148,11 +1148,24 @@ def test_lifecycle_state_continuity_and_report_are_available():
     )
     configured.raise_for_status()
     assert configured.json()["drift_hours"] == 48
-    before_simulation = httpx.get(
-        f"{API_URL}/api/v1/state",
-        params={"shared_namespace": TEST_NAMESPACE},
-        headers=headers,
-    ).json()["interaction"]["calculated_at"]
+    before_simulation = None
+    stable_reads = 0
+    for _ in range(40):
+        calculated_at = httpx.get(
+            f"{API_URL}/api/v1/state",
+            params={"shared_namespace": TEST_NAMESPACE},
+            headers=headers,
+        ).json()["interaction"]["calculated_at"]
+        if calculated_at == before_simulation:
+            stable_reads += 1
+        else:
+            before_simulation = calculated_at
+            stable_reads = 0
+        if stable_reads >= 4:
+            break
+        time.sleep(0.2)
+    else:
+        pytest.fail("interaction state did not stabilize before read-only simulation")
     simulated = post(
         "/api/v1/state/simulate",
         {
