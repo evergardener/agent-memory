@@ -11,6 +11,8 @@ from agent_memory.candidate_governance import (
     CandidateRecord,
     build_candidate_governance_report,
     build_parser,
+    load_private_report,
+    validate_apply_report,
     validate_model_decision,
     write_private_report,
 )
@@ -150,6 +152,7 @@ def test_report_prefilters_duplicates_and_bounds_model_calls(monkeypatch) -> Non
     }
     assert report["model_call_count"] == 1
     assert report["contains_memory_text"] is False
+    assert report["apply_supported"] is False
     assert first.statement not in json.dumps(report, ensure_ascii=False)
 
 
@@ -194,3 +197,131 @@ def test_cli_requires_an_explicit_model_call_budget() -> None:
                 "report.json",
             ]
         )
+
+
+def test_non_recallable_high_value_or_dependent_candidates_require_review(monkeypatch) -> None:
+    wrapped_preference = replace(
+        candidate("[1 image] 下次记得其他链接全部使用代码块"),
+        fact_id=UUID(int=10),
+    )
+    dependent_request = replace(
+        candidate("[1 image] 请排查 Surge 为什么无法解析？"),
+        fact_id=UUID(int=11),
+        impact={"fact_evidence": 1, "retrieval_documents": 1, "episode_facts": 1},
+    )
+    control = replace(candidate("继续"), fact_id=UUID(int=12))
+    monkeypatch.setattr(
+        "agent_memory.candidate_governance._load_candidates",
+        lambda _connection, _namespace_id: (
+            wrapped_preference,
+            dependent_request,
+            control,
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_memory.candidate_governance._load_existing_statements",
+        lambda _connection, _namespace_id: {},
+    )
+
+    report = build_candidate_governance_report(
+        SimpleNamespace(),
+        namespace_key="hermes:automated-tests",
+        expected_candidate_count=3,
+        max_model_calls=0,
+        adapter=SimpleNamespace(),
+    )
+
+    assert report["action_counts"] == {
+        "accept": 0,
+        "discard": 0,
+        "evidence_only": 1,
+        "review": 2,
+    }
+    assert report["manual_review_ratio"] == 0.6667
+    assert report["apply_action_count"] == 1
+    assert report["apply_supported"] is True
+    assert report["model_call_count"] == 0
+
+
+def test_apply_report_validation_accepts_only_text_free_safe_actions(monkeypatch) -> None:
+    record = candidate("继续")
+    monkeypatch.setattr(
+        "agent_memory.candidate_governance._load_candidates",
+        lambda _connection, _namespace_id: (record,),
+    )
+    monkeypatch.setattr(
+        "agent_memory.candidate_governance._load_existing_statements",
+        lambda _connection, _namespace_id: {},
+    )
+    report = build_candidate_governance_report(
+        SimpleNamespace(),
+        namespace_key="hermes:automated-tests",
+        expected_candidate_count=1,
+        max_model_calls=0,
+        adapter=SimpleNamespace(),
+    )
+
+    decisions = validate_apply_report(
+        report,
+        namespace_key="hermes:automated-tests",
+        expected_manifest_sha256=report["manifest_sha256"],
+    )
+    assert len(decisions) == 1
+
+    unsafe = {**report, "contains_memory_text": True}
+    with pytest.raises(ValueError, match="manifest is invalid"):
+        validate_apply_report(
+            unsafe,
+            namespace_key="hermes:automated-tests",
+            expected_manifest_sha256=report["manifest_sha256"],
+        )
+
+
+def test_private_report_loader_rejects_symlinks(tmp_path) -> None:
+    report_path = tmp_path / "report.json"
+    write_private_report(report_path, {"contains_memory_text": False})
+    link_path = tmp_path / "report-link.json"
+    link_path.symlink_to(report_path)
+
+    with pytest.raises(ValueError, match="cannot be opened safely"):
+        load_private_report(link_path)
+
+    report_path.chmod(0o644)
+    with pytest.raises(ValueError, match="must not be accessible"):
+        load_private_report(report_path)
+
+
+def test_input_snapshot_changes_when_governed_dependencies_change(monkeypatch) -> None:
+    base = candidate("继续")
+    monkeypatch.setattr(
+        "agent_memory.candidate_governance._load_existing_statements",
+        lambda _connection, _namespace_id: {},
+    )
+    monkeypatch.setattr(
+        "agent_memory.candidate_governance._load_candidates",
+        lambda _connection, _namespace_id: (base,),
+    )
+    first = build_candidate_governance_report(
+        SimpleNamespace(),
+        namespace_key="hermes:automated-tests",
+        expected_candidate_count=1,
+        max_model_calls=0,
+        adapter=SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        "agent_memory.candidate_governance._load_candidates",
+        lambda _connection, _namespace_id: (
+            replace(base, impact={**base.impact, "episode_facts": 1}),
+        ),
+    )
+    second = build_candidate_governance_report(
+        SimpleNamespace(),
+        namespace_key="hermes:automated-tests",
+        expected_candidate_count=1,
+        max_model_calls=0,
+        adapter=SimpleNamespace(),
+    )
+
+    assert first["input_snapshot_sha256"] != second["input_snapshot_sha256"]
+    assert first["apply_supported"] is True
+    assert second["apply_action_count"] == 0
