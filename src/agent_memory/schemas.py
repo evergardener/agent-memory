@@ -77,6 +77,8 @@ class RecallItem(BaseModel):
     why_recalled: str
     permission: str = "recall"
     applicability: dict[str, Any] | None = None
+    score_breakdown: dict[str, float] = Field(default_factory=dict)
+    retrieval_policy_version: str = "recall-gate-v2"
 
 
 class RecallResponse(BaseModel):
@@ -95,6 +97,9 @@ class MemoryBrowseItem(BaseModel):
     source_ids: list[UUID]
     extraction_method: str
     updated_at: datetime
+    current_state_status: Literal["active", "resolved", "expired"] | None = None
+    current_state_resolved_at: datetime | None = None
+    current_state_resolution_reason: str | None = None
 
 
 class MemoryBrowseResponse(BaseModel):
@@ -280,6 +285,9 @@ class MemoryTraceResponse(BaseModel):
     model_name: str | None = None
     evidence_span_start: int | None = None
     evidence_span_end: int | None = None
+    current_state_status: Literal["active", "resolved", "expired"] | None = None
+    current_state_resolved_at: datetime | None = None
+    current_state_resolution_reason: str | None = None
     evidence: list[EvidenceTraceItem]
     governance: list[GovernanceTraceItem]
 
@@ -644,6 +652,7 @@ class CurrentStateRequest(BaseModel):
     topic_key: str = Field(min_length=1, max_length=256)
     summary: str | None = Field(default=None, max_length=4000)
     expires_at: datetime | None = None
+    expected_version: int | None = Field(default=None, ge=1)
     reason: str = Field(min_length=1, max_length=2000)
 
     @model_validator(mode="after")

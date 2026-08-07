@@ -12,7 +12,7 @@ x-app-hardening: &app-hardening
 x-app-build: &app-build
   context: .
   args:
-    AGENT_MEMORY_BUILD_VERSION: ${AGENT_MEMORY_VERSION:-1.0.0-rc.8}
+    AGENT_MEMORY_BUILD_VERSION: ${AGENT_MEMORY_VERSION:-1.0.0-rc.9}
     AGENT_MEMORY_BUILD_REVISION: ${AGENT_MEMORY_REVISION:-unknown}
 
 services:
@@ -36,11 +36,11 @@ services:
 
   migrate:
     <<: *app-hardening
-    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-migrate:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.8}
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-migrate:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.9}
     build: *app-build
     command: ["alembic", "upgrade", "head"]
     environment: &app-env
-      AGENT_MEMORY_VERSION: ${AGENT_MEMORY_VERSION:-1.0.0-rc.8}
+      AGENT_MEMORY_VERSION: ${AGENT_MEMORY_VERSION:-1.0.0-rc.9}
       HOME: /tmp
       XDG_CACHE_HOME: /tmp/.cache
       AGENT_MEMORY_DATABASE_URL: postgresql://agent_memory:${AGENT_MEMORY_DB_PASSWORD}@postgres:5432/agent_memory
@@ -71,7 +71,7 @@ services:
 
   api:
     <<: *app-hardening
-    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-api:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.8}
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-api:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.9}
     build: *app-build
     command: ["agent-memory-api"]
     environment: *app-env
@@ -92,7 +92,7 @@ services:
   import-api:
     <<: *app-hardening
     profiles: ["import"]
-    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-api:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.8}
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-api:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.9}
     build: *app-build
     command: ["agent-memory-api"]
     environment:
@@ -115,7 +115,7 @@ services:
   import-worker:
     <<: *app-hardening
     profiles: ["import"]
-    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.8}
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.9}
     build: *app-build
     command: ["agent-memory-worker"]
     environment:
@@ -132,7 +132,7 @@ services:
   import-model-worker:
     <<: *app-hardening
     profiles: ["import"]
-    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.8}
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.9}
     build: *app-build
     command: ["agent-memory-worker"]
     environment:
@@ -157,7 +157,7 @@ services:
 
   worker:
     <<: *app-hardening
-    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.8}
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.9}
     build: *app-build
     command: ["agent-memory-worker"]
     environment:
@@ -172,7 +172,7 @@ services:
 
   model-worker:
     <<: *app-hardening
-    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.8}
+    image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-worker:${AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.9}
     build: *app-build
     command: ["agent-memory-worker"]
     environment:

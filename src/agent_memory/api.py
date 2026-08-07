@@ -141,6 +141,7 @@ from .unified_memory import (
     list_procedures,
     list_relationships,
     list_temporal_rules,
+    preference_user_memory_preview,
     set_episode_review,
     set_preference_state,
     set_procedure_state,
@@ -296,6 +297,7 @@ def browse_memories_endpoint(
     fact_type: str | None = Query(default=None, min_length=1, max_length=64),
     state: Literal["candidate", "active", "dormant", "forgotten"] | None = None,
     updated_after: datetime | None = None,
+    include_resolved: bool = False,
     limit: int = Query(default=10, ge=1, le=50),
 ):
     _check_namespace(shared_namespace)
@@ -307,6 +309,7 @@ def browse_memories_endpoint(
             fact_type=fact_type,
             state=state,
             updated_after=updated_after,
+            include_resolved=include_resolved,
             limit=limit,
         )
 
@@ -617,6 +620,16 @@ def preferences_endpoint(shared_namespace: str, request: Request):
     _check_namespace(shared_namespace)
     with request.app.state.database.connection() as connection:
         return list_preferences(connection, shared_namespace)
+
+
+@app.get(
+    "/api/v1/preferences/user-memory-preview",
+    dependencies=[Depends(require_api_access)],
+)
+def preference_user_memory_preview_endpoint(shared_namespace: str, request: Request):
+    _check_namespace(shared_namespace)
+    with request.app.state.database.connection() as connection:
+        return preference_user_memory_preview(connection, shared_namespace)
 
 
 @app.get(
@@ -1745,8 +1758,11 @@ def state_status(shared_namespace: str, request: Request):
 @app.post("/api/v1/state/items", dependencies=[Depends(require_api_access)])
 def update_current_state(request_body: CurrentStateRequest, request: Request):
     _check_namespace(request_body.context.shared_namespace)
-    with request.app.state.database.connection() as connection:
-        result = change_current_item(connection, request_body)
+    try:
+        with request.app.state.database.connection() as connection:
+            result = change_current_item(connection, request_body)
+    except ValueError as error:
+        raise _unified_action_error(error) from error
     if result is None:
         raise HTTPException(status_code=404, detail="NOT_FOUND")
     return result

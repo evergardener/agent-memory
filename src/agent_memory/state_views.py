@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from psycopg import Connection
 from psycopg.rows import dict_row
 
+from .current_state import expire_due_current_items, transition_current_item, upsert_current_item
 from .ids import new_uuid, stable_uuid
 from .interaction_state import (
     DEFAULT_AXES,
@@ -160,42 +161,43 @@ def _audit_state_change(connection: Connection, request, action: str, target_id)
 
 def change_current_item(connection: Connection, request) -> dict | None:
     namespace_id = stable_uuid("namespace", request.context.shared_namespace)
-    item_id = stable_uuid("current-item-manual", f"{namespace_id}:{request.topic_key}")
     if request.action == "resolve":
-        row = connection.execute(
-            """UPDATE state.current_items SET status='resolved',updated_at=now()
-               WHERE namespace_id=%s AND topic_key=%s AND status='active'
-               RETURNING id,status""",
-            (namespace_id, request.topic_key),
-        ).fetchone()
+        row = transition_current_item(
+            connection,
+            namespace_id=namespace_id,
+            topic_key=request.topic_key,
+            target_status="resolved",
+            actor_type="provider",
+            actor_id=request.context.source_profile,
+            reason=request.reason,
+            correlation_id=request.context.correlation_id,
+            expected_version=request.expected_version,
+        )
     else:
-        row = connection.execute(
-            """INSERT INTO state.current_items(
-                 id,namespace_id,topic_key,summary,status,valid_from,expires_at
-               ) VALUES (%s,%s,%s,%s,'active',now(),%s)
-               ON CONFLICT(namespace_id,topic_key) DO UPDATE SET
-                 summary=excluded.summary,status='active',valid_from=now(),
-                 expires_at=excluded.expires_at,updated_at=now()
-               RETURNING id,status""",
-            (item_id, namespace_id, request.topic_key, request.summary, request.expires_at),
-        ).fetchone()
+        row = upsert_current_item(
+            connection,
+            namespace_id=namespace_id,
+            topic_key=request.topic_key,
+            summary=request.summary,
+            source_fact_id=None,
+            valid_from=datetime.now(UTC),
+            expires_at=request.expires_at,
+            actor_type="provider",
+            actor_id=request.context.source_profile,
+            reason=request.reason,
+            correlation_id=request.context.correlation_id,
+            expected_version=request.expected_version,
+        )
     if row is None:
         return None
-    connection.execute(
-        """INSERT INTO audit.events(
-             id,namespace_id,actor_type,actor_id,action,target_type,target_id,reason,correlation_id
-           ) VALUES (%s,%s,'provider',%s,%s,'current_state',%s,%s,%s)""",
-        (
-            new_uuid(),
-            namespace_id,
-            request.context.source_profile,
-            f"state.{request.action}",
-            row[0],
-            request.reason,
-            request.context.correlation_id,
-        ),
-    )
-    return {"id": row[0], "status": row[1], "topic_key": request.topic_key}
+    return {
+        "id": row["id"],
+        "status": row["status"],
+        "topic_key": row["topic_key"],
+        "version": row["version"],
+        "resolved_at": row["resolved_at"],
+        "resolution_reason": row["resolution_reason"],
+    }
 
 
 def latest_state(connection: Connection, namespace_key: str) -> dict | None:
@@ -225,14 +227,11 @@ def active_continuity(connection: Connection, namespace_key: str) -> list[dict]:
 
 def active_current_items(connection: Connection, namespace_key: str) -> list[dict]:
     namespace_id = stable_uuid("namespace", namespace_key)
+    expire_due_current_items(connection, namespace_id)
     with connection.cursor(row_factory=dict_row) as cursor:
         cursor.execute(
-            """UPDATE state.current_items SET status='expired',updated_at=now()
-               WHERE namespace_id=%s AND status='active' AND expires_at <= now()""",
-            (namespace_id,),
-        )
-        cursor.execute(
-            """SELECT id,topic_key,summary,source_fact_id,valid_from,expires_at,status
+            """SELECT id,topic_key,summary,source_fact_id,valid_from,expires_at,status,
+                      resolved_at,resolution_reason,version
                FROM state.current_items
                WHERE namespace_id=%s AND status='active' ORDER BY expires_at""",
             (namespace_id,),

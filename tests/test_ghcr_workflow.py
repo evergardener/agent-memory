@@ -73,11 +73,11 @@ def test_quality_workflow_uses_node24_action_runtimes() -> None:
 def test_compose_decouples_application_version_from_image_tag() -> None:
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
 
-    assert compose.count("AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.8") == 7
+    assert compose.count("AGENT_MEMORY_IMAGE_TAG:-1.0.0-rc.9") == 7
     version_tagged_api = (
         "image: ${AGENT_MEMORY_IMAGE_PREFIX:-agent-memory}-api:${AGENT_MEMORY_VERSION"
     )
     assert version_tagged_api not in compose
     assert (
-        "AGENT_MEMORY_BUILD_VERSION: ${AGENT_MEMORY_VERSION:-1.0.0-rc.8}" in compose
+        "AGENT_MEMORY_BUILD_VERSION: ${AGENT_MEMORY_VERSION:-1.0.0-rc.9}" in compose
     )

@@ -142,7 +142,18 @@ counts="$("${COMPOSE[@]}" exec -T postgres psql -U agent_memory -d agent_memory 
      'events',(SELECT count(*) FROM evidence.events),
      'facts',(SELECT count(*) FROM memory.facts),
      'vault_entries',(SELECT count(*) FROM vault.entries),
-     'failed_jobs',(SELECT count(*) FROM ops.jobs WHERE status='failed')
+     'failed_jobs',(SELECT count(*) FROM ops.jobs WHERE status='failed'),
+     'failed_jobs_by_kind',COALESCE((
+       SELECT json_object_agg(kind,job_count) FROM (
+         SELECT kind,count(*) AS job_count FROM ops.jobs
+         WHERE status='failed' GROUP BY kind ORDER BY kind
+       ) failed_by_kind
+     ),'{}'::json),
+     'model_jobs_done',(SELECT count(*) FROM ops.jobs
+       WHERE kind IN ('extract_atomic_turn','enhance_fact') AND status='done'),
+     'model_jobs_failed',(SELECT count(*) FROM ops.jobs
+       WHERE kind IN ('extract_atomic_turn','enhance_fact') AND status='failed'),
+     'redaction_findings',(SELECT count(*) FROM evidence.redaction_findings)
    )::text;")"
 source_summary='null'
 backup_summary='null'
@@ -205,7 +216,7 @@ print(json.loads(sys.argv[1])["failed_jobs"])
 PY
 )"
   [[ "$failed_job_count" -eq 0 ]] \
-    || { echo "canary profile has not produced traceable evidence" >&2; exit 1; }
+    || { echo "canary quality gate found terminally failed jobs" >&2; exit 1; }
   python3 scripts/production_control.py backup-freshness \
     --state "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE" --mode canary \
     ${BACKUP_EXCEPTION:+--allow-pre-canary} >/dev/null
@@ -285,6 +296,7 @@ import sys
 
 print(json.dumps({
     "status": "PASS",
+    "quality_status": "DEGRADED" if json.loads(sys.argv[2])["failed_jobs"] else "PASS",
     "check": "production_verify",
     "mode": sys.argv[1],
     "counts": json.loads(sys.argv[2]),

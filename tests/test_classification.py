@@ -8,29 +8,25 @@ NOW = datetime(2026, 7, 13, 12, tzinfo=UTC)
 def test_classifies_examples_without_model_dependency():
     long_term = classify_event("user_message", "我决定内网服务部署在 server-a", NOW)
     stage = classify_event("user_message", "正在开发 project:atlas", NOW)
-    weather = classify_event("tool_result", "今天上海天气有暴雨", NOW)
+    current = classify_event("user_message", "当前邮件提醒任务暂停，后续继续处理", NOW)
     low_value = classify_event("assistant_message", "这个 Linux 命令可以这样使用", NOW)
 
     assert (long_term.fact_type, long_term.memory_state) == ("long_term", "active")
     assert (stage.fact_type, stage.memory_state) == ("stage", "active")
-    assert weather.fact_type == "current"
-    assert weather.valid_to == NOW + timedelta(hours=24)
+    assert current.fact_type == "current"
+    assert current.valid_to == NOW + timedelta(days=7)
     assert low_value.fact_type == "low_value"
     assert low_value.create_fact is False
 
 
 def test_configured_current_ttls_are_applied():
-    weather = classify_event(
-        "tool_result", "weather is rainy", NOW, current_days=10, weather_hours=6
+    current = classify_event(
+        "user_message", "当前部署被阻塞，下次继续", NOW, current_days=10, weather_hours=6
     )
-    temporary = classify_event(
-        "environment_observation", "当前服务健康", NOW, current_days=10, weather_hours=6
-    )
-    assert weather.valid_to == NOW + timedelta(hours=6)
-    assert temporary.valid_to == NOW + timedelta(days=10)
+    assert current.valid_to == NOW + timedelta(days=10)
 
 
-def test_home_assistant_instant_state_uses_current_ttl():
+def test_home_assistant_instant_state_is_evidence_only():
     result = classify_event(
         "user_message",
         "[Home Assistant] Xiaomi 智能音箱 Pro 睡眠模式: turned off",
@@ -38,9 +34,8 @@ def test_home_assistant_instant_state_uses_current_ttl():
         current_days=3,
     )
 
-    assert result.fact_type == "current"
-    assert result.memory_state == "active"
-    assert result.valid_to == NOW + timedelta(days=3)
+    assert result.fact_type == "evidence_only"
+    assert not result.create_fact
 
 
 def test_explicit_no_memory_request_keeps_evidence_only():
@@ -108,6 +103,25 @@ def test_user_preference_directive_is_long_term_and_recallable():
     assert is_recallable_memory_content(content)
 
 
+def test_explicit_preference_forms_enter_the_deterministic_long_term_path() -> None:
+    for content in (
+        "以后称呼我为公子",
+        "请用英文回复",
+        "回答时保持简洁风格",
+        "变更前必须先备份",
+        "以后通过邮件提醒我",
+        "以后允许自动删除本地文件",
+    ):
+        result = classify_event("user_message", content, NOW)
+        assert (result.fact_type, result.memory_state) == ("long_term", "active")
+        assert result.create_fact
+        assert is_recallable_memory_content(content)
+
+    one_shot = classify_event("user_message", "允许修改", NOW)
+    assert one_shot.fact_type == "evidence_only"
+    assert not one_shot.create_fact
+
+
 def test_retrieval_tool_result_keeps_evidence_only():
     result = classify_event(
         "tool_result",
@@ -119,15 +133,28 @@ def test_retrieval_tool_result_keeps_evidence_only():
     assert not result.create_fact
 
 
-def test_concise_observation_tool_result_can_become_fact():
+def test_concise_one_shot_observation_keeps_evidence_only():
     result = classify_event(
         "tool_result",
         "service:aurora health passed",
         NOW,
         tool_name="shell",
     )
-    assert result.fact_type == "current"
-    assert result.create_fact
+    assert result.fact_type == "evidence_only"
+    assert not result.create_fact
+
+
+def test_current_state_requires_unfinished_and_continuity_signal():
+    accepted = classify_event("user_message", "先暂停邮件提醒任务，后续继续处理", NOW)
+    completed = classify_event("user_message", "邮件提醒任务已完成", NOW)
+    instant = classify_event("user_message", "当前服务 healthy", NOW)
+
+    assert accepted.fact_type == "current"
+    assert accepted.create_fact
+    assert completed.fact_type == "evidence_only"
+    assert not completed.create_fact
+    assert instant.fact_type == "evidence_only"
+    assert not instant.create_fact
 
 
 def test_untrusted_tool_result_remains_evidence_only() -> None:

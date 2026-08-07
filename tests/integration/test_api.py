@@ -111,12 +111,12 @@ def test_ingest_is_idempotent_redacted_and_cross_profile_recallable():
             "idempotency_key": f"integration-turn-work-{RUN_ID}",
             "occurred_at": datetime.now(UTC).isoformat(),
             "events": [
-                {
-                    "type": "tool_result",
-                    "sequence": 1,
-                    "tool_name": "health_probe",
-                    "content": f"service:{service_marker} health check passed",
-                }
+                    {
+                        "type": "tool_result",
+                        "sequence": 1,
+                        "tool_name": "health_probe",
+                        "content": f"service:{service_marker} is deployed on hostA",
+                    }
             ],
         },
     )
@@ -631,6 +631,11 @@ def test_unclassified_dialogue_stays_out_of_review_queue_and_namespace_is_scoped
     assert invalid.status_code == 422
 
 
+def test_low_information_and_unrelated_queries_return_no_match():
+    assert recall(str(uuid4()))["items"] == []
+    assert recall("完全无关的量子花园散步问题")["items"] == []
+
+
 def test_browse_verifies_recent_preference_and_excludes_question_facts():
     profile = f"browse-{RUN_ID}"
     marker = f"BrowsePreference-{RUN_ID}"
@@ -1079,8 +1084,7 @@ def test_lifecycle_state_continuity_and_report_are_available():
             params={"shared_namespace": TEST_NAMESPACE},
             headers=headers,
         )
-        current_items = status.json().get("current_items") or []
-        if any(weather_marker in item["summary"] for item in current_items) and reports.json():
+        if status.json().get("interaction") and reports.json():
             break
         time.sleep(0.25)
     else:
@@ -1088,7 +1092,7 @@ def test_lifecycle_state_continuity_and_report_are_available():
 
     body = status.json()
     assert body["interaction"]["algorithm_version"] == "jiwen-neutral-v1"
-    assert any(weather_marker in item["summary"] for item in body["current_items"])
+    assert not any(weather_marker in item["summary"] for item in body["current_items"])
     assert body["continuities"]
     assert body["config"]["enabled"] is True
     assert all(low_value_marker not in item["text"] for item in recall(low_value_marker)["items"])
@@ -1144,11 +1148,24 @@ def test_lifecycle_state_continuity_and_report_are_available():
     )
     configured.raise_for_status()
     assert configured.json()["drift_hours"] == 48
-    before_simulation = httpx.get(
-        f"{API_URL}/api/v1/state",
-        params={"shared_namespace": TEST_NAMESPACE},
-        headers=headers,
-    ).json()["interaction"]["calculated_at"]
+    before_simulation = None
+    stable_reads = 0
+    for _ in range(40):
+        calculated_at = httpx.get(
+            f"{API_URL}/api/v1/state",
+            params={"shared_namespace": TEST_NAMESPACE},
+            headers=headers,
+        ).json()["interaction"]["calculated_at"]
+        if calculated_at == before_simulation:
+            stable_reads += 1
+        else:
+            before_simulation = calculated_at
+            stable_reads = 0
+        if stable_reads >= 4:
+            break
+        time.sleep(0.2)
+    else:
+        pytest.fail("interaction state did not stabilize before read-only simulation")
     simulated = post(
         "/api/v1/state/simulate",
         {

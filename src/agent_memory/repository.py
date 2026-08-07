@@ -304,29 +304,81 @@ def _procedure_query_terms(query: str) -> list[str]:
     return sorted(terms)
 
 
+QUERY_ALIASES = (
+    (re.compile(r"邮件通知", re.IGNORECASE), "邮件提醒"),
+    (re.compile(r"email\s+notification", re.IGNORECASE), "email reminder"),
+)
+LEXICAL_ALIAS_CONCEPTS = ("邮件提醒", "email reminder")
+LOW_INFORMATION_QUERY = re.compile(
+    r"^(?:[0-9]+|[0-9a-f]{24,}|[0-9a-f]{8}-[0-9a-f-]{27,}|[A-Za-z0-9_-]{20,})$",
+    re.IGNORECASE,
+)
+
+
+def normalize_recall_query(query: str) -> str:
+    normalized = " ".join(query.split()).strip()
+    for pattern, replacement in QUERY_ALIASES:
+        normalized = pattern.sub(replacement, normalized)
+    return normalized
+
+
+def lexical_alias_terms(query: str) -> list[str]:
+    """Return curated high-precision terms for aliases that CJK FTS cannot segment."""
+    lowered = query.casefold()
+    terms: list[str] = []
+    for concept in LEXICAL_ALIAS_CONCEPTS:
+        if concept in lowered:
+            terms.append(concept)
+            break
+    if terms:
+        for state_term in ("暂停", "停用", "paused", "disabled"):
+            if state_term in lowered:
+                terms.append(state_term)
+                break
+    return terms
+
+
+def fuzzy_query_allowed(query: str) -> bool:
+    compact = re.sub(r"\s+", "", query)
+    if len(compact) < 3 or LOW_INFORMATION_QUERY.fullmatch(compact):
+        return False
+    alpha_or_han = len(re.findall(r"[A-Za-z\u4e00-\u9fff]", compact))
+    return alpha_or_han >= 3
+
+
 def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallItem], bool]:
     namespace_id = stable_uuid("namespace", request.context.shared_namespace)
-    query_embedding = vector_literal(deterministic_embedding(request.query))
+    query_text = normalize_recall_query(request.query)
+    allow_fuzzy = fuzzy_query_allowed(query_text)
+    alias_terms = lexical_alias_terms(query_text)
+    query_embedding = vector_literal(deterministic_embedding(query_text))
     explicit_recall = request.intent == "explicit"
     temporal_signal = bool(
         re.search(
             r"(?:\d{1,4}\s*年|\d{1,2}\s*月|\d{1,2}\s*日|"
             r"今天|昨天|前天|去年|前年|什么时候|哪天|生日|纪念日)",
-            request.query,
+            query_text,
         )
     )
     procedure_signal = bool(
         re.search(
             r"(?:如何|怎么|怎样|再次|又|排查|修复|处理|故障|异常|"
             r"无法|失败|连接|部署|迁移|恢复)",
-            request.query,
+            query_text,
         )
     )
-    temporal_terms = _temporal_query_terms(request.query) if temporal_signal else []
-    procedure_terms = _procedure_query_terms(request.query) if procedure_signal else []
+    temporal_terms = _temporal_query_terms(query_text) if temporal_signal else []
+    procedure_terms = _procedure_query_terms(query_text) if procedure_signal else []
     lexical_states = (
         "('candidate','active','forgotten')" if explicit_recall else "('active')"
     )
+    current_state_filter = """
+      AND (f.fact_type <> 'current' OR NOT EXISTS (
+        SELECT 1 FROM state.current_items current_item
+        WHERE current_item.source_fact_id=f.id
+          AND current_item.status IN ('resolved','expired')
+      ))
+    """
     with connection.cursor(row_factory=dict_row) as cursor:
         cursor.execute(
             f"""SELECT d.source_id AS memory_id,'fact' AS kind,d.text_redacted,f.source_profile,
@@ -337,11 +389,29 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                LEFT JOIN memory.fact_evidence fe ON fe.fact_id=f.id
                WHERE d.namespace_id=%s AND d.lifecycle_state IN {lexical_states}
                  AND (f.valid_to IS NULL OR f.valid_to > now())
-                 AND d.search_vector @@ plainto_tsquery('simple',%s)
+                 {current_state_filter}
+                 AND (
+                   d.search_vector @@ plainto_tsquery('simple',%s) OR
+                   (
+                     %s AND NOT EXISTS (
+                       SELECT 1 FROM unnest(%s::text[]) AS alias(term)
+                       WHERE position(lower(alias.term) in lower(d.text_redacted)) = 0
+                     )
+                   )
+                 )
                GROUP BY d.source_id,d.text_redacted,f.source_profile,f.extraction_method,
                         d.search_vector,d.lifecycle_state
-               ORDER BY ts_rank(d.search_vector,plainto_tsquery('simple',%s)) DESC LIMIT 25""",
-            (namespace_id, request.query, request.query),
+               ORDER BY CASE
+                 WHEN d.search_vector @@ plainto_tsquery('simple',%s) THEN 0 ELSE 1
+               END, ts_rank(d.search_vector,plainto_tsquery('simple',%s)) DESC LIMIT 25""",
+            (
+                namespace_id,
+                query_text,
+                bool(alias_terms),
+                alias_terms,
+                query_text,
+                query_text,
+            ),
         )
         lexical = cursor.fetchall()
         cursor.execute(
@@ -357,9 +427,10 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                LEFT JOIN memory.entities canonical ON canonical.id=e.canonical_entity_id
                WHERE d.namespace_id=%s AND d.lifecycle_state IN {lexical_states}
                  AND (f.valid_to IS NULL OR f.valid_to > now())
+                 {current_state_filter}
                  AND (position(e.normalized_name in lower(%s)) > 0 OR
                       position(canonical.normalized_name in lower(%s)) > 0) LIMIT 25""",
-            (namespace_id, request.query, request.query),
+            (namespace_id, query_text, query_text),
         )
         entity = cursor.fetchall()
         cursor.execute(
@@ -371,6 +442,7 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                LEFT JOIN memory.fact_evidence fe ON fe.fact_id=f.id
                WHERE d.namespace_id=%s AND d.lifecycle_state IN {lexical_states}
                  AND (f.valid_to IS NULL OR f.valid_to > now())
+                 {current_state_filter}
                  AND d.embedding_model_version=%s AND d.embedding IS NOT NULL
                  AND (d.embedding <=> %s::vector) < 0.5
                GROUP BY d.source_id,d.text_redacted,f.source_profile,f.extraction_method,d.embedding
@@ -411,7 +483,7 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                      AND d.search_vector @@ plainto_tsquery('simple',%s)
                    ORDER BY ts_rank(d.search_vector,plainto_tsquery('simple',%s)) DESC
                    LIMIT 25""",
-            (namespace_id, namespace_id, namespace_id, request.query, request.query),
+            (namespace_id, namespace_id, namespace_id, query_text, query_text),
         )
         derived_lexical = cursor.fetchall()
         cursor.execute(
@@ -445,10 +517,10 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                 namespace_id,
                 namespace_id,
                 namespace_id,
-                request.query,
-                request.query,
-                request.query,
-                request.query,
+                query_text,
+                query_text,
+                query_text,
+                query_text,
             ),
         )
         derived_entity = cursor.fetchall()
@@ -504,10 +576,6 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                        SELECT 1 FROM unnest(%s::text[]) AS hint(term)
                        WHERE position(hint.term in lower(d.text_redacted)) > 0
                      )
-                   ) OR
-                   (
-                     d.embedding_model_version=%s AND d.embedding IS NOT NULL
-                     AND (d.embedding <=> %s::vector) < 0.5
                    )
                  )
                ORDER BY CASE
@@ -516,12 +584,10 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                LIMIT 25""",
             (
                 namespace_id,
-                request.query,
+                query_text,
                 temporal_signal,
                 temporal_terms,
-                EMBEDDING_VERSION,
-                query_embedding,
-                request.query,
+                query_text,
                 query_embedding,
             ),
         )
@@ -557,14 +623,6 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                        SELECT 1 FROM unnest(%s::text[]) AS hint(term)
                        WHERE position(hint.term in lower(d.text_redacted)) > 0
                      )
-                   ) OR
-                   (
-                     %s AND d.embedding_model_version=%s AND d.embedding IS NOT NULL
-                     AND (d.embedding <=> %s::vector) < 0.62
-                   ) OR
-                   (
-                     d.embedding_model_version=%s AND d.embedding IS NOT NULL
-                     AND (d.embedding <=> %s::vector) < 0.5
                    )
                  )
                ORDER BY CASE
@@ -578,15 +636,10 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                LIMIT 25""",
             (
                 namespace_id,
-                request.query,
+                query_text,
                 procedure_signal,
                 procedure_terms,
-                procedure_signal,
-                EMBEDDING_VERSION,
-                query_embedding,
-                EMBEDDING_VERSION,
-                query_embedding,
-                request.query,
+                query_text,
                 procedure_terms,
                 query_embedding,
             ),
@@ -609,11 +662,7 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                  AND d.lifecycle_state='active' AND relationship.state='active'
                  AND (
                    position(entity.normalized_name in lower(%s)) > 0 OR
-                   d.search_vector @@ plainto_tsquery('simple',%s) OR
-                   (
-                     d.embedding_model_version=%s AND d.embedding IS NOT NULL
-                     AND (d.embedding <=> %s::vector) < 0.5
-                   )
+                   d.search_vector @@ plainto_tsquery('simple',%s)
                  )
                GROUP BY d.source_id,d.text_redacted,entity.normalized_name,
                         d.search_vector,d.embedding,d.embedding_model_version
@@ -623,16 +672,17 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                LIMIT 25""",
             (
                 namespace_id,
-                request.query,
-                request.query,
-                EMBEDDING_VERSION,
-                query_embedding,
-                request.query,
+                query_text,
+                query_text,
+                query_text,
                 query_embedding,
             ),
         )
         relationship_rows = cursor.fetchall()
 
+    if not allow_fuzzy:
+        semantic = []
+        derived_semantic = []
     lexical.extend(derived_lexical)
     entity.extend(derived_entity)
     entity.extend(relationship_rows)
@@ -641,6 +691,14 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
     scores: dict[UUID, float] = defaultdict(float)
     records: dict[UUID, dict] = {}
     channels: dict[UUID, list[str]] = defaultdict(list)
+    channel_scores: dict[UUID, dict[str, float]] = defaultdict(dict)
+    channel_weights = {
+        "lexical": 0.72,
+        "semantic": 0.35,
+        "relation": 0.82,
+        "temporal": 0.8,
+        "procedure": 0.86,
+    }
     for channel, rows in (
         ("lexical", lexical),
         ("semantic", semantic),
@@ -663,7 +721,9 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                 continue
             seen_in_channel.add(memory_id)
             unique_rank += 1
-            scores[memory_id] += 1 / (60 + unique_rank)
+            contribution = channel_weights[channel] * max(0.7, 1 - (unique_rank - 1) * 0.015)
+            scores[memory_id] = 1 - (1 - scores[memory_id]) * (1 - contribution)
+            channel_scores[memory_id][channel] = round(contribution, 6)
             if memory_id in records:
                 merged_sources = {
                     *records[memory_id].get("source_ids", ()),
@@ -682,9 +742,19 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
     truncated = False
     suppressed = _overlapping_deterministic_fact_ids(records)
     suppressed.update(_duplicate_fact_ids(records, scores))
-    for memory_id, score in sorted(scores.items(), key=lambda item: item[1], reverse=True):
-        if memory_id in suppressed:
-            continue
+    ranked_scores = [
+        item
+        for item in sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        if item[0] not in suppressed and item[1] >= 0.55
+    ]
+    if (
+        request.intent != "explicit"
+        and len(ranked_scores) > 1
+        and ranked_scores[0][1] < 0.8
+        and ranked_scores[0][1] - ranked_scores[1][1] < 0.05
+    ):
+        ranked_scores = []
+    for memory_id, score in ranked_scores:
         row = records[memory_id]
         text = redact_text(row["text_redacted"]).text
         if (
@@ -703,6 +773,7 @@ def recall(connection: Connection, request: RecallRequest) -> tuple[list[RecallI
                 channels=channels[memory_id],
                 rrf_score=round(score, 8),
                 why_recalled="+".join(channels[memory_id]),
+                score_breakdown=channel_scores[memory_id],
                 applicability=(
                     procedure_applicability(
                         row.get("environment_fingerprint") or {},
@@ -727,6 +798,7 @@ def browse_memories(
     fact_type: str | None,
     state: str | None,
     updated_after,
+    include_resolved: bool = False,
     limit: int,
 ) -> MemoryBrowseResponse:
     """List recent recall-eligible facts for deterministic write verification."""
@@ -734,8 +806,20 @@ def browse_memories(
     filters = [
         "f.namespace_id=%s",
         "f.memory_state IN ('candidate','active','dormant','forgotten')",
-        "(f.valid_to IS NULL OR f.valid_to > now())",
+        (
+            "(f.fact_type='current' OR f.valid_to IS NULL OR f.valid_to > now())"
+            if include_resolved
+            else "(f.valid_to IS NULL OR f.valid_to > now())"
+        ),
     ]
+    if not include_resolved:
+        filters.append(
+            """(f.fact_type <> 'current' OR NOT EXISTS (
+                   SELECT 1 FROM state.current_items hidden_current
+                   WHERE hidden_current.source_fact_id=f.id
+                     AND hidden_current.status IN ('resolved','expired')
+                 ))"""
+        )
     parameters: list[object] = [namespace_id]
     if source_profile:
         filters.append("f.source_profile=%s")
@@ -755,11 +839,21 @@ def browse_memories(
             f"""SELECT f.id AS memory_id,f.statement,f.fact_type,
                       f.memory_state AS state,f.source_profile,f.confidence,
                       f.extraction_method,f.updated_at,
+                      current_item.status AS current_state_status,
+                      current_item.resolved_at AS current_state_resolved_at,
+                      current_item.resolution_reason AS current_state_resolution_reason,
                       array_remove(array_agg(DISTINCT fe.event_id),NULL) AS source_ids
                  FROM memory.facts f
                  LEFT JOIN memory.fact_evidence fe ON fe.fact_id=f.id
+                 LEFT JOIN LATERAL (
+                   SELECT status,resolved_at,resolution_reason
+                   FROM state.current_items
+                   WHERE source_fact_id=f.id
+                   ORDER BY updated_at DESC LIMIT 1
+                 ) current_item ON true
                 WHERE {" AND ".join(filters)}
-                GROUP BY f.id
+                GROUP BY f.id,current_item.status,current_item.resolved_at,
+                         current_item.resolution_reason
                 ORDER BY f.updated_at DESC,f.id DESC
                 LIMIT %s""",
             [*parameters, fetch_limit],
@@ -793,6 +887,13 @@ def browse_memories(
             source_ids=row["source_ids"],
             extraction_method=row["extraction_method"],
             updated_at=row["updated_at"],
+            current_state_status=row["current_state_status"],
+            current_state_resolved_at=row["current_state_resolved_at"],
+            current_state_resolution_reason=(
+                redact_text(row["current_state_resolution_reason"]).text
+                if row["current_state_resolution_reason"]
+                else None
+            ),
         )
         item_by_text[normalized] = item
         items.append(item)
@@ -805,10 +906,20 @@ def trace_memory(
     namespace_id = stable_uuid("namespace", namespace_key)
     with connection.cursor(row_factory=dict_row) as cursor:
         cursor.execute(
-            """SELECT id,statement,memory_state,version,supersedes_fact_id,
-                      extraction_method,extraction_version,model_name,
-                      evidence_span_start,evidence_span_end
-               FROM memory.facts WHERE id=%s AND namespace_id=%s""",
+            """SELECT fact.id,fact.statement,fact.memory_state,fact.version,
+                      fact.supersedes_fact_id,fact.extraction_method,
+                      fact.extraction_version,fact.model_name,
+                      fact.evidence_span_start,fact.evidence_span_end,
+                      current_item.status AS current_state_status,
+                      current_item.resolved_at AS current_state_resolved_at,
+                      current_item.resolution_reason AS current_state_resolution_reason
+               FROM memory.facts fact
+               LEFT JOIN LATERAL (
+                 SELECT status,resolved_at,resolution_reason
+                 FROM state.current_items WHERE source_fact_id=fact.id
+                 ORDER BY updated_at DESC LIMIT 1
+               ) current_item ON true
+               WHERE fact.id=%s AND fact.namespace_id=%s""",
             (memory_id, namespace_id),
         )
         fact = cursor.fetchone()
@@ -830,6 +941,9 @@ def trace_memory(
             fact["model_name"] = None
             fact["evidence_span_start"] = None
             fact["evidence_span_end"] = None
+            fact["current_state_status"] = None
+            fact["current_state_resolved_at"] = None
+            fact["current_state_resolution_reason"] = None
             cursor.execute(
                 """WITH linked_facts AS (
                      SELECT fact_id FROM memory.episode_facts WHERE episode_id=%s
@@ -890,6 +1004,13 @@ def trace_memory(
         model_name=fact["model_name"],
         evidence_span_start=fact["evidence_span_start"],
         evidence_span_end=fact["evidence_span_end"],
+        current_state_status=fact["current_state_status"],
+        current_state_resolved_at=fact["current_state_resolved_at"],
+        current_state_resolution_reason=(
+            redact_text(fact["current_state_resolution_reason"]).text
+            if fact["current_state_resolution_reason"]
+            else None
+        ),
         evidence=evidence,
         governance=governance,
     )

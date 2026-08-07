@@ -2,10 +2,27 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-CURRENT_PATTERN = re.compile(
-    r"(?:天气|气温|下雨|暴雨|今天|明天|当前|临时|告警|"
-    r"turned\s+(?:on|off)|已?(?:开启|关闭|打开|关掉)|"
-    r"health|healthy|unhealthy|weather|today)",
+CURRENT_UNFINISHED_PATTERN = re.compile(
+    r"(?:未完成|尚未|待处理|待确认|等待|阻塞|卡住|暂停|搁置|稍后继续|"
+    r"pending|unfinished|waiting|blocked|paused|on\s+hold)",
+    re.IGNORECASE,
+)
+CURRENT_CONTINUITY_PATTERN = re.compile(
+    r"(?:先暂停|下次|下一(?:次|会话)|后续|稍后|继续|恢复后|"
+    r"next\s+(?:time|session)|later|continue|resume)",
+    re.IGNORECASE,
+)
+CURRENT_RECENCY_PATTERN = re.compile(
+    r"(?:当前|现在|正在|近期|今日|今天|current(?:ly)?|now|today)", re.IGNORECASE
+)
+ONE_SHOT_STATE_PATTERN = re.compile(
+    r"(?:\[Home Assistant\]|turned\s+(?:on|off)|已?(?:开启|关闭|打开|关掉)|"
+    r"天气|气温|下雨|暴雨|weather|health|healthy|unhealthy)",
+    re.IGNORECASE,
+)
+COMPLETED_STATE_PATTERN = re.compile(
+    r"(?:已完成|完成了|已经解决|修复完成|恢复正常|验证通过|测试通过|"
+    r"completed|resolved|fixed|passed)",
     re.IGNORECASE,
 )
 STAGE_PATTERN = re.compile(
@@ -22,9 +39,22 @@ DECLARATIVE_ENTITY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 PREFERENCE_DIRECTIVE_PATTERN = re.compile(
-    r"^(?:(?:请|以后|之后|回答时|回复时|和我(?:对话|交流)时)\s*)?"
-    r"(?:不要|禁止|别|避免|允许|必须).{0,24}"
-    r"(?:使用|采用|说|写|称呼|提醒|推荐|询问|删除|保存|同步|修改)|"
+    r"^(?:(?:请|以后|之后|始终|默认|每次|操作时|执行时|执行前|变更时|"
+    r"变更前|部署前|删除前|回答时|回复时|和我(?:对话|交流)时)\s*)?"
+    r"(?:不要|禁止|别|避免|必须|务必|只允许).{0,24}"
+    r"(?:使用|采用|说|写|称呼|提醒|推荐|询问|删除|保存|同步|修改|备份|"
+    r"检查|运行|执行)|"
+    r"^(?:以后|之后|始终|默认|每次|操作时|执行时|执行前|变更时|变更前|"
+    r"部署前|删除前)\s*允许.{0,24}"
+    r"(?:使用|采用|说|写|称呼|提醒|推荐|询问|删除|保存|同步|修改|备份|"
+    r"检查|运行|执行)|"
+    r"^(?:(?:请|以后|之后)\s*)?(?:称呼我为|叫我|称我为).{1,40}|"
+    r"^(?:(?:请|以后|之后)\s*)?(?:使用|用)\s*"
+    r"(?:中文|英文|英语|简体中文|繁体中文)(?:回答|回复|交流|对话)|"
+    r"^(?:(?:请|以后|之后)\s*)?(?:回答|回复)(?:时)?\s*"
+    r"(?:保持|使用|采用)?\s*(?:简洁|详细|直接|温和|正式|口语化)|"
+    r"^(?:(?:请|以后|之后|每次)\s*)?(?:(?:通过|使用|用).{1,12}提醒(?:我)?|"
+    r"提醒(?:我)?时(?:请)?(?:通过|使用|用).{1,12})|"
     r"^(?:please\s+)?(?:don't|do\s+not|never|always|only).{0,24}"
     r"(?:use|say|write|call|remind|recommend|ask|delete|save|sync|change)",
     re.IGNORECASE,
@@ -88,7 +118,10 @@ def is_recallable_memory_content(content: str) -> bool:
         and len(content) <= 2000
         and not stripped.startswith(("{", "["))
         and not NO_MEMORY_PATTERN.search(content)
-        and not QUERY_ONLY_PATTERN.search(content)
+        and (
+            not QUERY_ONLY_PATTERN.search(content)
+            or PREFERENCE_DIRECTIVE_PATTERN.search(stripped)
+        )
         and (
             not DIRECTIVE_PREFIX_PATTERN.search(stripped)
             or PREFERENCE_DIRECTIVE_PATTERN.search(stripped)
@@ -109,6 +142,21 @@ class Classification:
     confidence: float
     valid_to: datetime | None = None
     create_fact: bool = True
+    decision_reason: str | None = None
+    policy_version: str = "deterministic-admission-v2"
+
+
+def current_admission_reason(content: str) -> str | None:
+    """Return the governed reason when content is eligible for Current State."""
+    if ONE_SHOT_STATE_PATTERN.search(content) or COMPLETED_STATE_PATTERN.search(content):
+        return None
+    if not CURRENT_UNFINISHED_PATTERN.search(content):
+        return None
+    if CURRENT_CONTINUITY_PATTERN.search(content):
+        return "unfinished_and_cross_session_continuity"
+    if CURRENT_RECENCY_PATTERN.search(content):
+        return "unfinished_and_recent"
+    return None
 
 
 def classify_event(
@@ -126,7 +174,9 @@ def classify_event(
         return Classification("evidence_only", "candidate", 1, create_fact=False)
     if NO_MEMORY_PATTERN.search(content):
         return Classification("evidence_only", "candidate", 1, create_fact=False)
-    if QUERY_ONLY_PATTERN.search(content):
+    if QUERY_ONLY_PATTERN.search(content) and not PREFERENCE_DIRECTIVE_PATTERN.search(content):
+        return Classification("evidence_only", "candidate", 1, create_fact=False)
+    if ONE_SHOT_STATE_PATTERN.search(content):
         return Classification("evidence_only", "candidate", 1, create_fact=False)
     if PREFERENCE_DIRECTIVE_PATTERN.search(content):
         return Classification("long_term", "active", 0.85)
@@ -144,13 +194,15 @@ def classify_event(
         return Classification("evidence_only", "candidate", 1, create_fact=False)
     if event_type == "assistant_message" or LOW_VALUE_PATTERN.search(content):
         return Classification("low_value", "candidate", 0.9, create_fact=False)
-    if CURRENT_PATTERN.search(content):
-        ttl = (
-            timedelta(hours=weather_hours)
-            if re.search(r"天气|气温|下雨|暴雨|weather", content, re.I)
-            else timedelta(days=current_days)
+    current_reason = current_admission_reason(content)
+    if current_reason:
+        return Classification(
+            "current",
+            "active",
+            0.85,
+            timestamp + timedelta(days=current_days),
+            decision_reason=current_reason,
         )
-        return Classification("current", "active", 0.85, timestamp + ttl)
     if LONG_TERM_PATTERN.search(content):
         return Classification("long_term", "active", 0.85)
     if STAGE_PATTERN.search(content):
