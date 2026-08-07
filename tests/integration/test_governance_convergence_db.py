@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 import psycopg
 import pytest
 
+from agent_memory.candidate_governance import build_candidate_governance_report
 from agent_memory.current_state import transition_current_item, upsert_current_item
 from agent_memory.governance_debt import (
     APPLY_CONFIRMATION as GOVERNANCE_CONFIRMATION,
@@ -516,3 +517,85 @@ def test_targeted_model_replay_and_governance_manifest_are_fail_closed() -> None
         assert applied["integrity_before"]["evidence_hash"] == applied["integrity_after"][
             "evidence_hash"
         ]
+
+
+def test_historical_candidate_model_preview_is_read_only_and_text_free() -> None:
+    statement = f"项目 Orchid 使用 PostgreSQL {RUN_ID}"
+    duplicate_statement = f"用户要求继续 {RUN_ID}"
+
+    class Adapter:
+        calls = 0
+
+        def complete_json(self, **_kwargs):
+            self.calls += 1
+            return (
+                {
+                    "action": "accept",
+                    "reason": "explicit_supported_memory",
+                    "confidence": 0.91,
+                    "fact_type": "long_term",
+                },
+                {"redaction_count": 0},
+            )
+
+    with psycopg.connect(DATABASE_URL) as connection:
+        create_namespace(connection)
+        active_id = stable_uuid("fact", f"active-duplicate:{RUN_ID}")
+        connection.execute(
+            """INSERT INTO memory.facts(
+                 id,namespace_id,statement,fact_type,confidence,memory_state,source_profile
+               ) VALUES (%s,%s,%s,'long_term',0.9,'active','test')""",
+            (active_id, NAMESPACE_ID, duplicate_statement),
+        )
+        for suffix, candidate_statement in (
+            ("candidate-model", statement),
+            ("candidate-duplicate", duplicate_statement),
+        ):
+            event_id = create_event(connection, suffix)
+            connection.execute(
+                """UPDATE evidence.events
+                   SET redacted_payload=jsonb_build_object('content',%s::text)
+                   WHERE id=%s""",
+                (candidate_statement, event_id),
+            )
+            fact_id = stable_uuid("fact", f"{suffix}:{RUN_ID}")
+            connection.execute(
+                """INSERT INTO memory.facts(
+                     id,namespace_id,statement,fact_type,confidence,memory_state,
+                     source_profile,extraction_method
+                   ) VALUES (%s,%s,%s,'candidate',0.7,'candidate','test','deterministic-v1')""",
+                (fact_id, NAMESPACE_ID, candidate_statement),
+            )
+            connection.execute(
+                """INSERT INTO memory.fact_evidence(fact_id,event_id,support_kind,weight)
+                   VALUES (%s,%s,'direct',1.0)""",
+                (fact_id, event_id),
+            )
+        before = connection.execute(
+            """SELECT
+                 (SELECT count(*) FROM memory.facts WHERE namespace_id=%s),
+                 (SELECT count(*) FROM audit.events WHERE namespace_id=%s)""",
+            (NAMESPACE_ID, NAMESPACE_ID),
+        ).fetchone()
+        adapter = Adapter()
+        report = build_candidate_governance_report(
+            connection,
+            namespace_key=NAMESPACE,
+            expected_candidate_count=2,
+            max_model_calls=1,
+            adapter=adapter,
+        )
+        after = connection.execute(
+            """SELECT
+                 (SELECT count(*) FROM memory.facts WHERE namespace_id=%s),
+                 (SELECT count(*) FROM audit.events WHERE namespace_id=%s)""",
+            (NAMESPACE_ID, NAMESPACE_ID),
+        ).fetchone()
+
+    assert before == after
+    assert adapter.calls == 1
+    assert report["action_counts"]["accept"] == 1
+    assert report["action_counts"]["discard"] == 1
+    assert report["write_count"] == 0
+    assert report["contains_memory_text"] is False
+    assert statement not in str(report)
