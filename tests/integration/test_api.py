@@ -618,6 +618,7 @@ def test_unclassified_dialogue_stays_out_of_review_queue_and_namespace_is_scoped
     first = first_page.json()
     assert totals == [0] * 20
     assert first["items"] == []
+    assert all(count == 0 for count in first["counts_by_kind"].values())
     assert first["limit"] == 3 and first["offset"] == 0
     denied = get(
         "/api/v1/memories/review",

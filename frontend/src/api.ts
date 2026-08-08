@@ -191,6 +191,7 @@ export type ReviewQueueItem = {
 export type ReviewQueue = {
   items: ReviewQueueItem[];
   total: number;
+  counts_by_kind: Partial<Record<ReviewQueueItem["memory_kind"], number>>;
   limit: number;
   offset: number;
   profiles: string[];

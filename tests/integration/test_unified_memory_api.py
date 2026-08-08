@@ -632,6 +632,7 @@ def test_f2_to_f5_unified_memory_end_to_end():
         for item in review_queue["items"]
         if item["memory_id"] == created_procedure["id"]
     )
+    assert review_queue["counts_by_kind"]["procedure"] >= 1
     assert queued_procedure["memory_kind"] == "procedure"
     assert queued_procedure["version"] == created_procedure["version"]
     bulk_payload = {

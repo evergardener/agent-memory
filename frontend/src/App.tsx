@@ -37,11 +37,20 @@ const emptyGraph: GraphData = {
 const emptyReviewQueue: ReviewQueue = {
   items: [],
   total: 0,
+  counts_by_kind: {},
   limit: 25,
   offset: 0,
   profiles: []
 };
 const REVIEW_PAGE_SIZE = 25;
+const REVIEW_KIND_LABELS: Record<ReviewQueueItem["memory_kind"], string> = {
+  fact: "事实",
+  episode: "情节",
+  preference: "偏好",
+  relationship: "关系",
+  temporal_rule: "时间规则",
+  procedure: "流程"
+};
 const ENTITY_TYPES = ["person", "agent", "project", "service", "location", "organization", "tool", "technology", "device", "concept", "event", "other"];
 const RELATION_EDGE_KINDS = new Set([
   "relation",
@@ -74,6 +83,10 @@ function splitIds(value = "") {
 
 function isRelationEdge(kind = "") {
   return RELATION_EDGE_KINDS.has(kind);
+}
+
+function isErrorMessage(message: string) {
+  return /(?:失败|错误|未执行|不匹配|不可用|Error|HTTP\s*\d)/i.test(message);
 }
 
 function parseStringList(value = "") {
@@ -195,6 +208,16 @@ export default function App() {
   const [galaxyLocked, setGalaxyLocked] = useState(false);
   const [galaxyReason, setGalaxyReason] = useState("");
   const [galaxyBusy, setGalaxyBusy] = useState(false);
+
+  const messageTone = isErrorMessage(message) ? "error" : "success";
+  useEffect(() => {
+    if (!message) return;
+    const timeout = window.setTimeout(
+      () => setMessage((current) => current === message ? "" : current),
+      messageTone === "error" ? 8000 : 4500
+    );
+    return () => window.clearTimeout(timeout);
+  }, [message, messageTone]);
 
   const activeGalaxy = useMemo(
     () => graph.galaxies.find((galaxy) => galaxy.id === activeGalaxyId) || null,
@@ -939,7 +962,16 @@ export default function App() {
         <span><strong>{counts.protected}</strong> 受保护资源</span>
       </section>}
 
-      {message && <div className="banner">{message}</div>}
+      {message && <div
+        className={`banner banner-${messageTone}`}
+        role={messageTone === "error" ? "alert" : "status"}
+        aria-live={messageTone === "error" ? "assertive" : "polite"}
+        aria-atomic="true"
+      >
+        <span className="banner-icon" aria-hidden="true">{messageTone === "error" ? "!" : "✓"}</span>
+        <span className="banner-text">{message}</span>
+        <button type="button" className="banner-dismiss" aria-label="关闭提示" onClick={() => setMessage("")}>×</button>
+      </div>}
 
       {tab === "map" ? (
         <section className="workspace">
@@ -1628,6 +1660,13 @@ function ReportsPanel({
   }, [queue.items]);
   const page = Math.floor(queue.offset / queue.limit) + 1;
   const pages = Math.max(1, Math.ceil(queue.total / queue.limit));
+  const kindCounts = Object.entries(REVIEW_KIND_LABELS)
+    .map(([kind, label]) => ({
+      kind: kind as ReviewQueueItem["memory_kind"],
+      label,
+      count: queue.counts_by_kind?.[kind as ReviewQueueItem["memory_kind"]] || 0
+    }))
+    .filter((item) => item.count > 0);
   return (
     <section className="reports-page">
       <div className="page-intro"><p className="eyebrow">DEFAULT · EVERY 7 DAYS</p><h2>整理报告</h2><p>后台整理结果仅保存在星图，默认不主动外发。</p></div>
@@ -1711,7 +1750,11 @@ function ReportsPanel({
         <div className="review-toolbar">
           <label>治理原因<select value={reason} onChange={(event) => onReasonChange(event.target.value as typeof reason)}><option value="all">全部</option><option value="untrusted_tool">不可信工具</option><option value="candidate">待确认</option></select></label>
           <label>来源 profile<select value={profile} onChange={(event) => onProfileChange(event.target.value)}><option value="all">全部 profile</option>{queue.profiles.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
-          <span>共 {queue.total} 条 · 第 {page}/{pages} 页</span>
+          <div className="review-counts" aria-label="待治理记忆数量">
+            <strong>共 {queue.total} 条</strong>
+            {kindCounts.map((item) => <span key={item.kind}>{item.label} {item.count}</span>)}
+            <small>第 {page}/{pages} 页</small>
+          </div>
         </div>
         {queue.items.length === 0 ? <p className="muted">当前没有待治理记忆。</p> : (
           <div className="review-list">

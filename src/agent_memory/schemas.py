@@ -318,6 +318,7 @@ class ReviewQueueItem(BaseModel):
 class ReviewQueueResponse(BaseModel):
     items: list[ReviewQueueItem]
     total: int
+    counts_by_kind: dict[str, int]
     limit: int
     offset: int
     profiles: list[str]

@@ -1228,6 +1228,17 @@ def list_review_queue(
         ),
         reverse=True,
     )
+    counts_by_kind = {
+        kind: sum(item.memory_kind == kind for item in collected)
+        for kind in (
+            "fact",
+            "episode",
+            "preference",
+            "relationship",
+            "temporal_rule",
+            "procedure",
+        )
+    }
     total = len(collected)
     items = collected[offset : offset + limit]
     profiles = [
@@ -1241,6 +1252,7 @@ def list_review_queue(
     return ReviewQueueResponse(
         items=items,
         total=total,
+        counts_by_kind=counts_by_kind,
         limit=limit,
         offset=offset,
         profiles=profiles,
