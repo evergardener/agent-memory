@@ -5,6 +5,13 @@ from uuid import UUID, uuid4
 import psycopg
 import pytest
 
+from agent_memory.candidate_governance import (
+    APPLY_CONFIRMATION as CANDIDATE_GOVERNANCE_CONFIRMATION,
+)
+from agent_memory.candidate_governance import (
+    apply_candidate_governance_report,
+    build_candidate_governance_report,
+)
 from agent_memory.current_state import transition_current_item, upsert_current_item
 from agent_memory.governance_debt import (
     APPLY_CONFIRMATION as GOVERNANCE_CONFIRMATION,
@@ -516,3 +523,258 @@ def test_targeted_model_replay_and_governance_manifest_are_fail_closed() -> None
         assert applied["integrity_before"]["evidence_hash"] == applied["integrity_after"][
             "evidence_hash"
         ]
+
+
+def test_historical_candidate_model_preview_is_read_only_and_text_free() -> None:
+    statement = f"项目 Orchid 使用 PostgreSQL {RUN_ID}"
+    duplicate_statement = f"用户要求继续 {RUN_ID}"
+
+    class Adapter:
+        calls = 0
+
+        def complete_json(self, **_kwargs):
+            self.calls += 1
+            return (
+                {
+                    "action": "accept",
+                    "reason": "explicit_supported_memory",
+                    "confidence": 0.91,
+                    "fact_type": "long_term",
+                },
+                {"redaction_count": 0},
+            )
+
+    with psycopg.connect(DATABASE_URL) as connection:
+        create_namespace(connection)
+        active_id = stable_uuid("fact", f"active-duplicate:{RUN_ID}")
+        connection.execute(
+            """INSERT INTO memory.facts(
+                 id,namespace_id,statement,fact_type,confidence,memory_state,source_profile
+               ) VALUES (%s,%s,%s,'long_term',0.9,'active','test')""",
+            (active_id, NAMESPACE_ID, duplicate_statement),
+        )
+        for suffix, candidate_statement in (
+            ("candidate-model", statement),
+            ("candidate-duplicate", duplicate_statement),
+        ):
+            event_id = create_event(connection, suffix)
+            connection.execute(
+                """UPDATE evidence.events
+                   SET redacted_payload=jsonb_build_object('content',%s::text)
+                   WHERE id=%s""",
+                (candidate_statement, event_id),
+            )
+            fact_id = stable_uuid("fact", f"{suffix}:{RUN_ID}")
+            connection.execute(
+                """INSERT INTO memory.facts(
+                     id,namespace_id,statement,fact_type,confidence,memory_state,
+                     source_profile,extraction_method
+                   ) VALUES (%s,%s,%s,'candidate',0.7,'candidate','test','deterministic-v1')""",
+                (fact_id, NAMESPACE_ID, candidate_statement),
+            )
+            connection.execute(
+                """INSERT INTO memory.fact_evidence(fact_id,event_id,support_kind,weight)
+                   VALUES (%s,%s,'direct',1.0)""",
+                (fact_id, event_id),
+            )
+        before = connection.execute(
+            """SELECT
+                 (SELECT count(*) FROM memory.facts WHERE namespace_id=%s),
+                 (SELECT count(*) FROM audit.events WHERE namespace_id=%s)""",
+            (NAMESPACE_ID, NAMESPACE_ID),
+        ).fetchone()
+        adapter = Adapter()
+        report = build_candidate_governance_report(
+            connection,
+            namespace_key=NAMESPACE,
+            expected_candidate_count=2,
+            max_model_calls=1,
+            adapter=adapter,
+        )
+        after = connection.execute(
+            """SELECT
+                 (SELECT count(*) FROM memory.facts WHERE namespace_id=%s),
+                 (SELECT count(*) FROM audit.events WHERE namespace_id=%s)""",
+            (NAMESPACE_ID, NAMESPACE_ID),
+        ).fetchone()
+
+    assert before == after
+    assert adapter.calls == 1
+    assert report["action_counts"]["accept"] == 1
+    assert report["action_counts"]["discard"] == 1
+    assert report["write_count"] == 0
+    assert report["contains_memory_text"] is False
+    assert statement not in str(report)
+
+
+def test_historical_candidate_apply_merges_evidence_and_is_idempotent() -> None:
+    namespace = f"hermes:automated-tests:candidate-apply:{RUN_ID}"
+    namespace_id = stable_uuid("namespace", namespace)
+    source_id = stable_uuid("source", f"{namespace_id}:candidate-apply")
+    session_id = stable_uuid("session", f"{source_id}:{RUN_ID}")
+    canonical_statement = f"允许继续 {RUN_ID}"
+    low_value_statement = "继续"
+    review_statement = "[1 image] 下次记得其他链接全部使用代码块"
+
+    class Adapter:
+        def complete_json(self, **_kwargs):
+            raise AssertionError("deterministic candidate apply must not call a model")
+
+    with psycopg.connect(DATABASE_URL) as connection:
+        connection.execute(
+            "INSERT INTO core.namespaces(id,stable_key) VALUES (%s,%s)",
+            (namespace_id, namespace),
+        )
+        connection.execute(
+            """INSERT INTO core.sources(id,namespace_id,source_profile,source_instance)
+               VALUES (%s,%s,'test','candidate-apply')""",
+            (source_id, namespace_id),
+        )
+        connection.execute(
+            """INSERT INTO core.sessions(
+                 id,namespace_id,source_id,external_session_id,started_at
+               ) VALUES (%s,%s,%s,%s,now())""",
+            (session_id, namespace_id, source_id, RUN_ID),
+        )
+        canonical_id = stable_uuid("fact", f"{namespace_id}:canonical")
+        connection.execute(
+            """INSERT INTO memory.facts(
+                 id,namespace_id,statement,fact_type,confidence,memory_state,source_profile
+               ) VALUES (%s,%s,%s,'long_term',0.9,'active','test')""",
+            (canonical_id, namespace_id, canonical_statement),
+        )
+        for index, (suffix, statement) in enumerate(
+            (
+                ("duplicate", canonical_statement),
+                ("low-value", low_value_statement),
+                ("review", review_statement),
+            ),
+            start=1,
+        ):
+            turn_id = stable_uuid("turn", f"{session_id}:{suffix}")
+            event_id = stable_uuid("event", f"{turn_id}:{suffix}")
+            fact_id = stable_uuid("fact", f"{namespace_id}:{suffix}")
+            connection.execute(
+                """INSERT INTO core.turns(id,session_id,external_turn_id,occurred_at)
+                   VALUES (%s,%s,%s,now())""",
+                (turn_id, session_id, suffix),
+            )
+            connection.execute(
+                """INSERT INTO evidence.events(
+                     id,namespace_id,turn_id,event_type,sequence_no,redacted_payload,
+                     payload_hash,ingest_key,occurred_at
+                   ) VALUES (
+                     %s,%s,%s,'user_message',%s,jsonb_build_object('content',%s::text),
+                     %s,%s,now()
+                   )""",
+                (
+                    event_id,
+                    namespace_id,
+                    turn_id,
+                    index,
+                    statement,
+                    f"hash-{suffix}-{RUN_ID}",
+                    f"{RUN_ID}:{suffix}",
+                ),
+            )
+            connection.execute(
+                """INSERT INTO memory.facts(
+                     id,namespace_id,statement,fact_type,confidence,memory_state,
+                     source_profile,extraction_method
+                   ) VALUES (%s,%s,%s,'candidate',0.7,'candidate','test','deterministic-v1')""",
+                (fact_id, namespace_id, statement),
+            )
+            connection.execute(
+                """INSERT INTO memory.fact_evidence(fact_id,event_id,support_kind,weight)
+                   VALUES (%s,%s,'direct',1.0)""",
+                (fact_id, event_id),
+            )
+            connection.execute(
+                """INSERT INTO retrieval.documents(
+                     id,namespace_id,source_kind,source_id,text_redacted,lifecycle_state
+                   ) VALUES (%s,%s,'fact',%s,%s,'candidate')""",
+                (
+                    stable_uuid("document", str(fact_id)),
+                    namespace_id,
+                    fact_id,
+                    statement,
+                ),
+            )
+        report = build_candidate_governance_report(
+            connection,
+            namespace_key=namespace,
+            expected_candidate_count=3,
+            max_model_calls=0,
+            adapter=Adapter(),
+        )
+        assert report["action_counts"] == {
+            "accept": 0,
+            "discard": 1,
+            "evidence_only": 1,
+            "review": 1,
+        }
+        assert report["apply_supported"] is True
+        with pytest.raises(ValueError, match="apply requires --confirm"):
+            apply_candidate_governance_report(
+                connection,
+                namespace_key=namespace,
+                report=report,
+                expected_manifest_sha256=report["manifest_sha256"],
+                confirmation="WRONG",
+                reason="integration test",
+            )
+        connection.execute(
+            "UPDATE memory.facts SET statement=%s WHERE id=%s",
+            (f"changed canonical {RUN_ID}", canonical_id),
+        )
+        with pytest.raises(ValueError, match="canonical fact changed since dry-run"):
+            apply_candidate_governance_report(
+                connection,
+                namespace_key=namespace,
+                report=report,
+                expected_manifest_sha256=report["manifest_sha256"],
+                confirmation=CANDIDATE_GOVERNANCE_CONFIRMATION,
+                reason="integration test",
+            )
+        connection.execute(
+            "UPDATE memory.facts SET statement=%s WHERE id=%s",
+            (canonical_statement, canonical_id),
+        )
+        result = apply_candidate_governance_report(
+            connection,
+            namespace_key=namespace,
+            report=report,
+            expected_manifest_sha256=report["manifest_sha256"],
+            confirmation=CANDIDATE_GOVERNANCE_CONFIRMATION,
+            reason="integration test",
+        )
+        repeated = apply_candidate_governance_report(
+            connection,
+            namespace_key=namespace,
+            report=report,
+            expected_manifest_sha256=report["manifest_sha256"],
+            confirmation=CANDIDATE_GOVERNANCE_CONFIRMATION,
+            reason="integration test",
+        )
+        states = connection.execute(
+            """SELECT memory_state,count(*) FROM memory.facts
+               WHERE namespace_id=%s GROUP BY memory_state ORDER BY memory_state""",
+            (namespace_id,),
+        ).fetchall()
+        canonical_evidence = connection.execute(
+            "SELECT count(*) FROM memory.fact_evidence WHERE fact_id=%s",
+            (canonical_id,),
+        ).fetchone()[0]
+
+    assert result["governed_fact_count"] == 2
+    assert result["merged_evidence_count"] == 1
+    assert result["integrity_before"]["event_count"] == result["integrity_after"][
+        "event_count"
+    ]
+    assert result["integrity_before"]["evidence_hash"] == result["integrity_after"][
+        "evidence_hash"
+    ]
+    assert repeated["already_applied"] is True
+    assert repeated["write_count"] == 0
+    assert dict(states) == {"active": 1, "candidate": 1, "isolated": 2}
+    assert canonical_evidence == 1

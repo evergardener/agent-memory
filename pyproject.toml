@@ -49,6 +49,8 @@ agent-memory-community-evaluation = "agent_memory.community_evaluation:main"
 agent-memory-apply-reviewed-relations = "agent_memory.reviewed_relations:main"
 agent-memory-replay-model-jobs = "agent_memory.model_replay:main"
 agent-memory-governance-debt = "agent_memory.governance_debt:main"
+agent-memory-candidate-governance = "agent_memory.candidate_governance:main"
+agent-memory-apply-candidate-governance = "agent_memory.candidate_governance:apply_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_memory"]
