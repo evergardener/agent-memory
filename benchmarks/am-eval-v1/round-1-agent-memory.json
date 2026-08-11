@@ -1,0 +1,104 @@
+{
+  "benchmark_id": "am-eval-v1",
+  "run_id": "agent-memory-1.0.0rc9-deterministic-r1-20260811",
+  "system": {
+    "name": "agent-memory",
+    "version": "1.0.0rc9",
+    "revision": "eca5ff22b517ea495dcb2b2081796ed76fe2bc98+am-eval-worktree"
+  },
+  "track": "deterministic-baseline",
+  "dataset": {
+    "id": "agent-memory-deterministic-fixtures-20260811",
+    "sha256": "445be4b6c2131db01c43e18d74188d5f445cd4910751e347de60dd065a1f2b4a"
+  },
+  "hard_gates": {
+    "G01": {
+      "value": 0,
+      "sample_count": 9,
+      "evidence": ["tests/test_redaction.py: 9 redaction test functions PASS"]
+    },
+    "G04": {
+      "value": 0,
+      "sample_count": 1,
+      "evidence": ["tests/test_unified_memory.py::test_travel_episode_keeps_experiences_and_participant_roles PASS"]
+    },
+    "G05": {
+      "value": 0,
+      "sample_count": 10,
+      "evidence": ["tests/integration/test_governance_convergence_db.py::test_recall_gold_meets_top1_negative_and_resolved_gates PASS"]
+    },
+    "G08": {
+      "value": 0,
+      "sample_count": 2,
+      "evidence": ["tests/test_unified_memory.py::test_procedure_applicability_requires_an_exact_environment_match PASS"]
+    },
+    "G09": {
+      "value": 1.0,
+      "sample_count": 5,
+      "evidence": ["tests/integration/test_governance_convergence_db.py::test_explicit_preference_ingest_pipeline_creates_evidence_linked_records PASS"]
+    }
+  },
+  "metrics": {
+    "M04": {
+      "value": 1.0,
+      "sample_count": 4,
+      "evidence": ["成都旅行 fixture 的 4 个实体及 location/participant/object 角色全部匹配"]
+    },
+    "M05": {
+      "value": 1.0,
+      "sample_count": 10,
+      "evidence": ["H04 PostgreSQL fixture: 10/10 自然改写 Top-1"]
+    },
+    "M06": {
+      "value": 1.0,
+      "sample_count": 10,
+      "evidence": ["H04 PostgreSQL fixture: 10/10 Top-1 命中，因此同组 Recall@5 为 10/10"]
+    },
+    "M08": {
+      "value": 0.0,
+      "sample_count": 100,
+      "evidence": ["H04 PostgreSQL fixture: 25 UUID + 25 hash + 50 无关自然问句为 0/100 误命中"]
+    },
+    "M09": {
+      "value": 1.0,
+      "sample_count": 7,
+      "evidence": ["显式范围、单日、相对日期、跨年、模糊日期、生日和非法日期 fixture 全部 PASS"]
+    },
+    "M10": {
+      "value": 1.0,
+      "sample_count": 2,
+      "evidence": ["current resolve 与 preference supersedes 两组 DB 生命周期 fixture PASS"]
+    },
+    "M11": {
+      "value": 1.0,
+      "sample_count": 4,
+      "evidence": ["旅行、技术情节、经过时长负例、生日非 episode 四组 fixture PASS"]
+    },
+    "M12": {
+      "value": 1.0,
+      "sample_count": 4,
+      "evidence": ["applicable/incompatible/unknown/expired 四种程序环境结果 PASS"]
+    },
+    "M13": {
+      "value": 0.0,
+      "sample_count": 2,
+      "evidence": ["unknown 与 expired 程序 fixture 均明确 auto_apply=false"]
+    },
+    "M15": {
+      "value": 1.0,
+      "sample_count": 8,
+      "evidence": ["tests/integration/test_governance_convergence_db.py: 8/8 PASS"]
+    },
+    "M20": {
+      "value": 1.0,
+      "sample_count": 2,
+      "evidence": ["current 重复 resolve 与 candidate governance 重放两组幂等 fixture PASS"]
+    }
+  },
+  "notes": [
+    "本轮不调用外部模型，不发送生产数据，不连接生产 namespace。",
+    "完整非集成 pytest PASS；定向规则/脱敏/评分器 48 tests PASS；隔离 PostgreSQL 治理 8 tests PASS。",
+    "G02/G03/G06/G07/G10 以及真实 embedding、外部对照、延迟、人工治理率和模型失败率保持缺测。",
+    "部分覆盖下的 measured_score 仅表示已测项目表现，不能作为 release 或外部优越性结论。"
+  ]
+}

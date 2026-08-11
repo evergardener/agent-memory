@@ -1,0 +1,47 @@
+{
+  "schema_version": "am-eval-spec-v1",
+  "benchmark_id": "am-eval-v1",
+  "title": "Agent Memory Evidence and Recall Evaluation v1",
+  "hard_gates": [
+    {"id": "G01", "name": "敏感明文泄漏数", "operator": "eq", "threshold": 0, "minimum": 0, "required": true},
+    {"id": "G02", "name": "跨 namespace 越权召回数", "operator": "eq", "threshold": 0, "minimum": 0, "required": true},
+    {"id": "G03", "name": "无证据 active 事实数", "operator": "eq", "threshold": 0, "minimum": 0, "required": true},
+    {"id": "G04", "name": "来源 profile 与现实主体混淆数", "operator": "eq", "threshold": 0, "minimum": 0, "required": true},
+    {"id": "G05", "name": "已失效当前事实召回数", "operator": "eq", "threshold": 0, "minimum": 0, "required": true},
+    {"id": "G06", "name": "purge 后派生残留数", "operator": "eq", "threshold": 0, "minimum": 0, "required": true},
+    {"id": "G07", "name": "worker 或模型失败导致的证据丢失数", "operator": "eq", "threshold": 0, "minimum": 0, "required": true},
+    {"id": "G08", "name": "程序记忆越权自动执行数", "operator": "eq", "threshold": 0, "minimum": 0, "required": true},
+    {"id": "G09", "name": "证据追溯完整率", "operator": "gte", "threshold": 1.0, "minimum": 0, "maximum": 1, "required": true},
+    {"id": "G10", "name": "恢复后数据与 Vault 完整率", "operator": "gte", "threshold": 1.0, "minimum": 0, "maximum": 1, "required": true}
+  ],
+  "metrics": [
+    {"id": "M01", "name": "事实 precision", "dimension": "memory_construction", "weight": 8, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 0.95}},
+    {"id": "M02", "name": "事实 recall", "dimension": "memory_construction", "weight": 5, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 0.85}},
+    {"id": "M03", "name": "证据跨度准确率", "dimension": "memory_construction", "weight": 4, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 1.0}},
+    {"id": "M04", "name": "实体与参与角色准确率", "dimension": "memory_construction", "weight": 3, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 0.95}},
+    {"id": "M05", "name": "召回 Top-1 准确率", "dimension": "recall", "weight": 7, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 0.9}},
+    {"id": "M06", "name": "Recall@5", "dimension": "recall", "weight": 5, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 0.85}},
+    {"id": "M07", "name": "召回引用准确率", "dimension": "recall", "weight": 7, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 1.0}},
+    {"id": "M08", "name": "负样本误命中率", "dimension": "recall", "weight": 6, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "lower", "target": 0.01, "zero_score_at": 0.1}},
+    {"id": "M09", "name": "时间解析与当前历史区分准确率", "dimension": "temporal_episode", "weight": 5, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 0.95}},
+    {"id": "M10", "name": "矛盾与替代链准确率", "dimension": "temporal_episode", "weight": 5, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 0.95}},
+    {"id": "M11", "name": "多实体情节结构准确率", "dimension": "temporal_episode", "weight": 5, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 0.9}},
+    {"id": "M12", "name": "程序适用性判断准确率", "dimension": "procedural", "weight": 6, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 0.95}},
+    {"id": "M13", "name": "危险程序建议率", "dimension": "procedural", "weight": 5, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "lower", "target": 0.0, "zero_score_at": 0.05}},
+    {"id": "M14", "name": "程序到情节与证据追溯准确率", "dimension": "procedural", "weight": 4, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 1.0}},
+    {"id": "M15", "name": "治理动作准确率", "dimension": "governance", "weight": 4, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 1.0}},
+    {"id": "M16", "name": "purge 完整率", "dimension": "governance", "weight": 3, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 1.0}},
+    {"id": "M17", "name": "namespace 隔离准确率", "dimension": "governance", "weight": 3, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 1.0}},
+    {"id": "M18", "name": "worker 故障恢复率", "dimension": "reliability", "weight": 3, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 1.0}},
+    {"id": "M19", "name": "备份恢复完整率", "dimension": "reliability", "weight": 4, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 1.0}},
+    {"id": "M20", "name": "幂等写入准确率", "dimension": "reliability", "weight": 3, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "higher", "target": 1.0}},
+    {"id": "M21", "name": "召回 p95 延迟毫秒", "dimension": "efficiency", "weight": 2, "minimum": 0, "required": true, "scoring": {"mode": "lower", "target": 1000, "zero_score_at": 5000}},
+    {"id": "M22", "name": "人工治理率", "dimension": "efficiency", "weight": 2, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "lower", "target": 0.1, "zero_score_at": 0.5}},
+    {"id": "M23", "name": "模型终态失败率", "dimension": "efficiency", "weight": 1, "minimum": 0, "maximum": 1, "required": true, "scoring": {"mode": "lower", "target": 0.01, "zero_score_at": 0.1}}
+  ],
+  "release_policy": {
+    "minimum_score": 85,
+    "require_all_hard_gates": true,
+    "require_all_metrics": true
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "schema_version": "am-eval-dataset-manifest-v1",
+  "dataset_id": "agent-memory-deterministic-fixtures-20260811",
+  "contains_production_data": false,
+  "contains_memory_text": true,
+  "external_data_sent": false,
+  "fixture_sources": [
+    {
+      "path": "tests/test_unified_memory.py",
+      "sha256": "be09a3d88d121e89a4fc9125d20ea37b3e1f4b795d38f5141f168a12e632db0c",
+      "coverage": ["preference", "time", "episode", "procedure"]
+    },
+    {
+      "path": "tests/test_classification.py",
+      "sha256": "a6aa888033bc210cf0fe456423ed60310f02b3b7a00048d4789e6c151546e2eb",
+      "coverage": ["fact_admission", "noise_rejection", "current_state"]
+    },
+    {
+      "path": "tests/test_redaction.py",
+      "sha256": "7b5c68ef96ed6e70fba6f9bf23182e2db741bfbed853e57094e69b416acb5a78",
+      "coverage": ["sensitive_plaintext", "redaction_fixed_point"]
+    },
+    {
+      "path": "tests/integration/test_governance_convergence_db.py",
+      "sha256": "bc0b7c39eb624c8777bc84a82c00c726913faf67644a2b69b39c0ea28f049d0a",
+      "coverage": ["recall", "supersession", "purge", "governance", "idempotency"]
+    }
+  ],
+  "benchmark_spec_sha256": "a4ce9232ecafc37f9a3142a8e29020168af96aa6b4165e21fd64395186c7b679",
+  "declared_gold_counts": {
+    "preference_positive": 24,
+    "preference_negative": 24,
+    "recall_positive": 10,
+    "recall_negative": 100,
+    "resolved_recall": 10,
+    "governance_database_scenarios": 8
+  }
+}

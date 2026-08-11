@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 新增 AM-Eval v1 长期记忆评估规范、10 项 fail-closed 硬门禁、23 项 100 分质量指标和机器评分器；评分结果同时报告已测得分与覆盖率，缺测项不得被当作通过，并为 Honcho、Graphiti、Hindsight、Mem0 隔离对照预留统一契约。第一轮确定性基线为 5/10 硬门禁通过、0 失败、54% 指标覆盖、已测项 100 分，决策按规范保持 `INCOMPLETE`。
 - 安全 Review 加固：移除 `.env.example` 中可用的已知管理密码哈希，生产与 Release 预检拒绝旧公开示例凭据；登录和 Vault 密码复验增加五次失败锁定、`Retry-After` 与并行 scrypt 上限，UI 会话绑定当前密码哈希，改密后旧 Cookie 立即失效。
 - 治理队列改为 PostgreSQL 统一聚合、稳定排序和分页，API 仅脱敏当前页；新增 `0019_review_queue_indexes` 为情节、偏好、关系、时间规则和流程候选提供部分索引，迁移已通过空库升级、回退和再升级验证。
 - 外部模型端点强制 HTTPS，HTTP 仅允许本机、私网或 Docker 内部模型；统一 `VERSION`、Python 包、运行默认值和 `uv.lock` 的 rc.9 版本元数据，并增加 CI 一致性测试。
