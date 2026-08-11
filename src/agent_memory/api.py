@@ -11,6 +11,7 @@ import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
 
+from . import __version__
 from .community_projection import PROJECTION_VERSION as COMMUNITY_PROJECTION_VERSION
 from .config import get_settings
 from .db import Database
@@ -121,11 +122,12 @@ from .subjects import (
 )
 from .ui_auth import (
     COOKIE_NAME,
+    PasswordRateLimited,
     create_session,
     require_api_access,
     require_service_access,
     require_ui_session,
-    verify_password,
+    verify_password_with_limits,
 )
 from .unified_memory import (
     bulk_govern_unified_targets,
@@ -194,17 +196,41 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Agent Memory for Hermes",
-    version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.8"),
+    version=os.getenv("AGENT_MEMORY_VERSION", __version__),
     lifespan=lifespan,
 )
 
 
+def _password_attempt_identity(request: Request, scope: str) -> str:
+    client_host = request.client.host if request.client else "unknown"
+    return f"{scope}:{client_host}"
+
+
+def _password_rate_limit_error(error: PasswordRateLimited) -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail="PASSWORD_RATE_LIMITED",
+        headers={"Retry-After": str(error.retry_after)},
+    )
+
+
 @app.post("/api/v1/ui/login", response_model=UiLoginResponse)
-def ui_login(request_body: UiLoginRequest, response: Response):
+def ui_login(request_body: UiLoginRequest, response: Response, request: Request):
     settings = get_settings()
-    if not verify_password(request_body.password.get_secret_value(), settings.ui_password_hash):
+    try:
+        authenticated = verify_password_with_limits(
+            request_body.password.get_secret_value(),
+            settings.ui_password_hash,
+            identity=_password_attempt_identity(request, "ui-login"),
+        )
+    except PasswordRateLimited as error:
+        raise _password_rate_limit_error(error) from error
+    if not authenticated:
         raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS")
-    token = create_session(settings.ui_session_secret.get_secret_value())
+    token = create_session(
+        settings.ui_session_secret.get_secret_value(),
+        settings.ui_password_hash,
+    )
     response.set_cookie(
         COOKIE_NAME,
         token,
@@ -233,7 +259,7 @@ def ui_config():
     return UiConfigResponse(
         namespace=settings.namespace,
         namespace_id=stable_uuid("namespace", settings.namespace),
-        version=os.getenv("AGENT_MEMORY_VERSION", "1.0.0-rc.8"),
+        version=os.getenv("AGENT_MEMORY_VERSION", __version__),
     )
 
 
@@ -345,7 +371,7 @@ def review_queue_endpoint(
     reason: Literal["all", "candidate", "untrusted_tool"] = "all",
     source_profile: str | None = Query(default=None, min_length=1, max_length=128),
     limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=100_000),
 ):
     _check_namespace(shared_namespace)
     settings = get_settings()
@@ -1068,8 +1094,16 @@ def _check_namespace(namespace: str) -> None:
         raise HTTPException(status_code=403, detail="NAMESPACE_DENIED")
 
 
-def _verify_vault_reauthentication(password: str) -> None:
-    if not verify_password(password, get_settings().ui_password_hash):
+def _verify_vault_reauthentication(password: str, request: Request) -> None:
+    try:
+        authenticated = verify_password_with_limits(
+            password,
+            get_settings().ui_password_hash,
+            identity=_password_attempt_identity(request, "vault-reauthentication"),
+        )
+    except PasswordRateLimited as error:
+        raise _password_rate_limit_error(error) from error
+    if not authenticated:
         raise HTTPException(status_code=401, detail="VAULT_REAUTHENTICATION_REQUIRED")
 
 
@@ -1122,7 +1156,7 @@ def reveal_vault_entry(
     response: Response,
 ):
     _check_namespace(request_body.context.shared_namespace)
-    _verify_vault_reauthentication(request_body.password.get_secret_value())
+    _verify_vault_reauthentication(request_body.password.get_secret_value(), request)
     with request.app.state.database.connection() as connection:
         secret = reveal_entry(
             connection,
@@ -1153,7 +1187,7 @@ def update_vault_entry_metadata(
     entry_id: UUID, request_body: VaultEntryMetadataUpdate, request: Request
 ):
     _check_namespace(request_body.context.shared_namespace)
-    _verify_vault_reauthentication(request_body.password.get_secret_value())
+    _verify_vault_reauthentication(request_body.password.get_secret_value(), request)
     with request.app.state.database.connection() as connection:
         updated = update_entry_metadata(
             connection,
@@ -1183,7 +1217,7 @@ def replace_vault_entry_secret(
     entry_id: UUID, request_body: VaultEntryReplaceRequest, request: Request
 ):
     _check_namespace(request_body.context.shared_namespace)
-    _verify_vault_reauthentication(request_body.password.get_secret_value())
+    _verify_vault_reauthentication(request_body.password.get_secret_value(), request)
     with request.app.state.database.connection() as connection:
         updated = replace_entry_secret(
             connection,
@@ -1213,7 +1247,7 @@ def change_vault_entry_status(
     entry_id: UUID, request_body: VaultEntryStatusRequest, request: Request
 ):
     _check_namespace(request_body.context.shared_namespace)
-    _verify_vault_reauthentication(request_body.password.get_secret_value())
+    _verify_vault_reauthentication(request_body.password.get_secret_value(), request)
     with request.app.state.database.connection() as connection:
         updated = set_entry_status(
             connection,
@@ -1242,7 +1276,7 @@ def delete_vault_entry(entry_id: UUID, request_body: VaultEntryDeleteRequest, re
     _check_namespace(request_body.context.shared_namespace)
     if request_body.confirm_entry_id != entry_id:
         raise HTTPException(status_code=409, detail="DELETE_CONFIRMATION_MISMATCH")
-    _verify_vault_reauthentication(request_body.password.get_secret_value())
+    _verify_vault_reauthentication(request_body.password.get_secret_value(), request)
     with request.app.state.database.connection() as connection:
         deleted = delete_entry(
             connection,

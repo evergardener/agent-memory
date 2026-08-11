@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- 安全 Review 加固：移除 `.env.example` 中可用的已知管理密码哈希，生产与 Release 预检拒绝旧公开示例凭据；登录和 Vault 密码复验增加五次失败锁定、`Retry-After` 与并行 scrypt 上限，UI 会话绑定当前密码哈希，改密后旧 Cookie 立即失效。
+- 治理队列改为 PostgreSQL 统一聚合、稳定排序和分页，API 仅脱敏当前页；新增 `0019_review_queue_indexes` 为情节、偏好、关系、时间规则和流程候选提供部分索引，迁移已通过空库升级、回退和再升级验证。
+- 外部模型端点强制 HTTPS，HTTP 仅允许本机、私网或 Docker 内部模型；统一 `VERSION`、Python 包、运行默认值和 `uv.lock` 的 rc.9 版本元数据，并增加 CI 一致性测试。
 - GitHub Actions 在 `main` 的源码、单测、前端和 shell 门禁通过后，一次构建并向 GHCR 发布 API/worker/migrate 三个 `linux/amd64,linux/arm64` 镜像；产物包含 SBOM、Buildx provenance 和 GitHub artifact attestation。
 - 生产镜像标签与应用版本解耦：生产 env 固定 `ghcr.io/evergardener/agent-memory-*:sha-<full revision>`，默认先 pull、核对 OCI version/revision 后 `--no-build` 启动；可变 `main` 标签在生产预检中失败关闭。
 - 修复真实 `jiuyue` 试运行发现的整段会话工具历史重复回灌：Provider 只采集最后一个用户回合之后的工具调用与结果，重复回合仍由稳定 turn idempotency key 拒绝。

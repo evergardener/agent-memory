@@ -124,6 +124,26 @@ def test_external_production_model_key_is_sealed_outside_env(tmp_path: Path) -> 
     state = json.loads(state_file.read_text(encoding="utf-8"))
     assert state["model_api_base"] == "http://192.168.7.7:11434/v1"
 
+    rejected_external_http = subprocess.run(
+        [
+            "bash",
+            "scripts/production-configure-model.sh",
+            str(env_file),
+            "openai/test-model",
+            "http://models.example.com/v1",
+            "external-redacted",
+            "ALLOW_REDACTED_PRODUCTION_DATA_TO_MODEL",
+            str(key_input),
+        ],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+        env=command_env,
+    )
+    assert rejected_external_http.returncode != 0
+    assert "must use HTTPS" in rejected_external_http.stderr
+
     key_input.chmod(0o644)
     rejected_permissions = subprocess.run(
         [

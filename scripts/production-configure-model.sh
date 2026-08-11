@@ -93,6 +93,10 @@ if [[ "$DATA_SCOPE" == "external-redacted" && "$endpoint_kind" != "external" ]];
   echo "external-redacted scope requires a non-loopback model endpoint" >&2
   exit 1
 fi
+if [[ "$DATA_SCOPE" == "external-redacted" && "$API_BASE" != https://* ]]; then
+  echo "external-redacted model endpoint must use HTTPS" >&2
+  exit 1
+fi
 
 umask 077
 if [[ -n "$KEY_INPUT_FILE" ]]; then

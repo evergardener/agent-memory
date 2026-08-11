@@ -127,6 +127,21 @@ def test_predeploy_preflight_rejects_plaintext_password_in_env_file(
     assert "plaintext UI test password" in result.stderr
 
 
+def test_predeploy_preflight_rejects_public_example_ui_password(tmp_path: Path) -> None:
+    public_example_hash = (
+        "scrypt$16384$8$1$MDEyMzQ1Njc4OWFiY2RlZg=="
+        "$7ySXM0If1M4WCFpHm02Qm9yXSFm4G08fzWj6opQWQgw="
+    )
+    result = _run(
+        _write_predeploy_env(
+            tmp_path,
+            AGENT_MEMORY_UI_PASSWORD_HASH=public_example_hash,
+        )
+    )
+    assert result.returncode != 0
+    assert "public example credential" in result.stderr
+
+
 def test_predeploy_preflight_rejects_production_namespace_model_and_reserved_port(
     tmp_path: Path,
 ) -> None:

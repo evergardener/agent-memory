@@ -1028,12 +1028,111 @@ def list_review_queue(
 ) -> ReviewQueueResponse:
     namespace_id = stable_uuid("namespace", namespace_key)
     trusted = list(trusted_tools)
-    filters = ["f.namespace_id=%s", "f.memory_state <> 'purge_requested'"]
-    parameters: list[object] = [namespace_id]
-    if source_profile:
-        filters.append("f.source_profile=%s")
-        parameters.append(source_profile)
-    base_query = f"""
+    review_condition = (
+        "(memory_state='candidate' OR (has_untrusted_tool AND NOT has_trusted_support))"
+    )
+    if reason == "candidate":
+        review_condition = "memory_state='candidate'"
+    elif reason == "untrusted_tool":
+        review_condition = "has_untrusted_tool AND NOT has_trusted_support"
+
+    parameters: list[object] = [trusted, trusted, namespace_id]
+    source_ctes = ""
+    unified_items = ""
+    if reason != "untrusted_tool":
+        source_ctes = """,
+        episode_sources AS (
+          SELECT episode.id AS episode_id,
+                 COALESCE(min(source.source_profile),'derived') AS source_profile,
+                 count(DISTINCT step.evidence_event_id)
+                   FILTER (WHERE step.evidence_event_id IS NOT NULL) AS evidence_count
+          FROM memory.episodes episode
+          LEFT JOIN memory.episode_steps step ON step.episode_id=episode.id
+          LEFT JOIN evidence.events event ON event.id=step.evidence_event_id
+          LEFT JOIN core.turns turn_record ON turn_record.id=event.turn_id
+          LEFT JOIN core.sessions session_record ON session_record.id=turn_record.session_id
+          LEFT JOIN core.sources source ON source.id=session_record.source_id
+          WHERE episode.namespace_id=%s
+          GROUP BY episode.id
+        ), fact_sources AS (
+          SELECT fact.id AS fact_id,fact.source_profile,
+                 count(DISTINCT evidence.event_id) AS evidence_count
+          FROM memory.facts fact
+          LEFT JOIN memory.fact_evidence evidence ON evidence.fact_id=fact.id
+          WHERE fact.namespace_id=%s
+          GROUP BY fact.id
+        )
+        """
+        unified_items = """
+        UNION ALL
+        SELECT episode.id,'episode'::text,
+               episode.title || ' · ' || episode.summary,
+               'episode:' || episode.episode_type,episode.state,source.source_profile,
+               episode.confidence,source.evidence_count,episode.updated_at,
+               COALESCE(episode.extractor_version,'unified-memory-v1'),episode.version,
+               ARRAY['candidate']::text[],ARRAY[]::text[],false
+        FROM memory.episodes episode
+        JOIN episode_sources source ON source.episode_id=episode.id
+        WHERE episode.namespace_id=%s
+          AND episode.origin<>'legacy_derived'
+          AND (episode.state='candidate' OR episode.review_state='candidate')
+        UNION ALL
+        SELECT preference.id,'preference',
+               '偏好 ' || preference.polarity || ' · ' || preference.aspect,
+               'preference',preference.state,
+               COALESCE(source.source_profile,'derived'),preference.strength,
+               COALESCE(source.evidence_count,0),preference.updated_at,
+               'unified-memory-v1',preference.version,
+               ARRAY['candidate']::text[],ARRAY[]::text[],false
+        FROM memory.preference_assertions preference
+        LEFT JOIN fact_sources source ON source.fact_id=preference.fact_id
+        WHERE preference.namespace_id=%s AND preference.state='candidate'
+        UNION ALL
+        SELECT relationship.id,'relationship',
+               subject.display_name || ' — ' || relationship.label || ' → '
+                 || entity.canonical_name,
+               'relationship',relationship.state,
+               COALESCE(source.source_profile,'derived'),1,
+               COALESCE(source.evidence_count,0),relationship.updated_at,
+               'unified-memory-v1',relationship.version,
+               ARRAY['candidate']::text[],ARRAY[]::text[],false
+        FROM memory.relationship_assertions relationship
+        JOIN core.subjects subject ON subject.id=relationship.subject_id
+        JOIN memory.entities entity ON entity.id=relationship.related_entity_id
+        LEFT JOIN fact_sources source ON source.fact_id=relationship.fact_id
+        WHERE relationship.namespace_id=%s AND relationship.state='candidate'
+        UNION ALL
+        SELECT temporal.id,'temporal_rule',
+               temporal.label || ' · ' || temporal.month || '月' || temporal.day || '日',
+               'temporal_rule:' || temporal.rule_type,temporal.state,
+               COALESCE(source.source_profile,'derived'),1,
+               COALESCE(source.evidence_count,0),temporal.updated_at,
+               'unified-memory-v1',temporal.version,
+               ARRAY['candidate']::text[],ARRAY[]::text[],false
+        FROM memory.temporal_rules temporal
+        LEFT JOIN fact_sources source ON source.fact_id=temporal.fact_id
+        WHERE temporal.namespace_id=%s AND temporal.review_state='candidate'
+        UNION ALL
+        SELECT procedure.id,'procedure',procedure.title || ' · ' || procedure.goal,
+               'procedure',procedure.state,
+               COALESCE(source.source_profile,'derived'),1,
+               COALESCE(source.evidence_count,0),procedure.updated_at,
+               'unified-memory-v1',procedure.version,
+               ARRAY['candidate']::text[],ARRAY[]::text[],false
+        FROM memory.procedures procedure
+        LEFT JOIN LATERAL (
+          SELECT min(episode_source.source_profile) AS source_profile,
+                 sum(episode_source.evidence_count) AS evidence_count
+          FROM memory.procedure_support support
+          JOIN episode_sources episode_source ON episode_source.episode_id=support.episode_id
+          WHERE support.procedure_id=procedure.id
+        ) source ON true
+        WHERE procedure.namespace_id=%s
+          AND (procedure.state='candidate' OR procedure.review_state='candidate')
+        """
+        parameters.extend([namespace_id] * 7)
+
+    query = f"""
         WITH review_facts AS (
           SELECT f.id,f.statement,f.fact_type,f.memory_state,f.source_profile,
                  f.confidence,f.updated_at,f.extraction_method,f.version,
@@ -1054,158 +1153,59 @@ def list_review_queue(
           FROM memory.facts f
           LEFT JOIN memory.fact_evidence fe ON fe.fact_id=f.id
           LEFT JOIN evidence.events e ON e.id=fe.event_id
-          WHERE {" AND ".join(filters)}
+          WHERE f.namespace_id=%s AND f.memory_state <> 'purge_requested'
           GROUP BY f.id
         )
+        {source_ctes}, review_items AS (
+          SELECT id AS memory_id,'fact'::text AS memory_kind,statement,fact_type,
+                 memory_state AS state,source_profile,confidence,evidence_count,updated_at,
+                 extraction_method,version,
+                 array_remove(ARRAY[
+                   CASE WHEN has_untrusted_tool AND NOT has_trusted_support
+                        THEN 'untrusted_tool'::text END,
+                   CASE WHEN memory_state='candidate' THEN 'candidate'::text END
+                 ],NULL)::text[] AS review_reasons,
+                 COALESCE(tool_names,ARRAY[]::text[]) AS tool_names,
+                 (has_untrusted_tool AND NOT has_trusted_support) AS untrusted_priority
+          FROM review_facts WHERE {review_condition}
+          {unified_items}
+        ), filtered_items AS (
+          SELECT * FROM review_items
+          WHERE (%s::text IS NULL OR source_profile=%s)
+        ), counts AS (
+          SELECT count(*)::int AS total,
+                 count(*) FILTER (WHERE memory_kind='fact')::int AS fact_count,
+                 count(*) FILTER (WHERE memory_kind='episode')::int AS episode_count,
+                 count(*) FILTER (WHERE memory_kind='preference')::int AS preference_count,
+                 count(*) FILTER (WHERE memory_kind='relationship')::int AS relationship_count,
+                 count(*) FILTER (WHERE memory_kind='temporal_rule')::int
+                   AS temporal_rule_count,
+                 count(*) FILTER (WHERE memory_kind='procedure')::int AS procedure_count
+          FROM filtered_items
+        )
+        SELECT page.*,counts.total,counts.fact_count,counts.episode_count,
+               counts.preference_count,counts.relationship_count,
+               counts.temporal_rule_count,counts.procedure_count
+        FROM counts
+        LEFT JOIN LATERAL (
+          SELECT * FROM filtered_items
+          ORDER BY untrusted_priority DESC,updated_at DESC,memory_id DESC
+          LIMIT %s OFFSET %s
+        ) page ON true
+        ORDER BY page.untrusted_priority DESC NULLS LAST,
+                 page.updated_at DESC NULLS LAST,page.memory_id DESC NULLS LAST
     """
-    parameters = [trusted, trusted, *parameters]
-    review_condition = (
-        "(memory_state='candidate' OR (has_untrusted_tool AND NOT has_trusted_support))"
-    )
-    if reason == "candidate":
-        review_condition = "memory_state='candidate'"
-    elif reason == "untrusted_tool":
-        review_condition = "has_untrusted_tool AND NOT has_trusted_support"
+    parameters.extend([source_profile, source_profile, limit, offset])
     with connection.cursor(row_factory=dict_row) as cursor:
-        cursor.execute(
-            base_query
-            + f"""SELECT * FROM review_facts WHERE {review_condition}
-                   ORDER BY (has_untrusted_tool AND NOT has_trusted_support) DESC,
-                            updated_at DESC,id DESC""",
-            parameters,
-        )
-        fact_rows = cursor.fetchall()
-        unified_rows: list[dict] = []
-        if reason != "untrusted_tool":
-            cursor.execute(
-                """
-                WITH episode_sources AS (
-                  SELECT episode.id AS episode_id,
-                         COALESCE(min(source.source_profile),'derived') AS source_profile,
-                         count(DISTINCT step.evidence_event_id)
-                           FILTER (WHERE step.evidence_event_id IS NOT NULL) AS evidence_count
-                  FROM memory.episodes episode
-                  LEFT JOIN memory.episode_steps step ON step.episode_id=episode.id
-                  LEFT JOIN evidence.events event ON event.id=step.evidence_event_id
-                  LEFT JOIN core.turns turn_record ON turn_record.id=event.turn_id
-                  LEFT JOIN core.sessions session_record
-                    ON session_record.id=turn_record.session_id
-                  LEFT JOIN core.sources source ON source.id=session_record.source_id
-                  WHERE episode.namespace_id=%s
-                  GROUP BY episode.id
-                ), fact_sources AS (
-                  SELECT fact.id AS fact_id,fact.source_profile,
-                         count(DISTINCT evidence.event_id) AS evidence_count
-                  FROM memory.facts fact
-                  LEFT JOIN memory.fact_evidence evidence ON evidence.fact_id=fact.id
-                  WHERE fact.namespace_id=%s
-                  GROUP BY fact.id
-                )
-                SELECT episode.id,'episode'::text AS memory_kind,
-                       episode.title || ' · ' || episode.summary AS statement,
-                       'episode:' || episode.episode_type AS fact_type,
-                       episode.state,source.source_profile,episode.confidence,
-                       source.evidence_count,episode.updated_at,
-                       COALESCE(episode.extractor_version,'unified-memory-v1')
-                         AS extraction_method,
-                       episode.version
-                FROM memory.episodes episode
-                JOIN episode_sources source ON source.episode_id=episode.id
-                WHERE episode.namespace_id=%s
-                  AND episode.origin<>'legacy_derived'
-                  AND (episode.state='candidate' OR episode.review_state='candidate')
-                UNION ALL
-                SELECT preference.id,'preference',
-                       '偏好 ' || preference.polarity || ' · ' || preference.aspect,
-                       'preference',preference.state,
-                       COALESCE(source.source_profile,'derived'),preference.strength,
-                       COALESCE(source.evidence_count,0),preference.updated_at,
-                       'unified-memory-v1',preference.version
-                FROM memory.preference_assertions preference
-                LEFT JOIN fact_sources source ON source.fact_id=preference.fact_id
-                WHERE preference.namespace_id=%s AND preference.state='candidate'
-                UNION ALL
-                SELECT relationship.id,'relationship',
-                       subject.display_name || ' — ' || relationship.label || ' → '
-                         || entity.canonical_name,
-                       'relationship',relationship.state,
-                       COALESCE(source.source_profile,'derived'),1,
-                       COALESCE(source.evidence_count,0),relationship.updated_at,
-                       'unified-memory-v1',relationship.version
-                FROM memory.relationship_assertions relationship
-                JOIN core.subjects subject ON subject.id=relationship.subject_id
-                JOIN memory.entities entity ON entity.id=relationship.related_entity_id
-                LEFT JOIN fact_sources source ON source.fact_id=relationship.fact_id
-                WHERE relationship.namespace_id=%s AND relationship.state='candidate'
-                UNION ALL
-                SELECT temporal.id,'temporal_rule',
-                       temporal.label || ' · ' || temporal.month || '月' || temporal.day || '日',
-                       'temporal_rule:' || temporal.rule_type,temporal.state,
-                       COALESCE(source.source_profile,'derived'),1,
-                       COALESCE(source.evidence_count,0),temporal.updated_at,
-                       'unified-memory-v1',temporal.version
-                FROM memory.temporal_rules temporal
-                LEFT JOIN fact_sources source ON source.fact_id=temporal.fact_id
-                WHERE temporal.namespace_id=%s AND temporal.review_state='candidate'
-                UNION ALL
-                SELECT procedure.id,'procedure',procedure.title || ' · ' || procedure.goal,
-                       'procedure',procedure.state,
-                       COALESCE(source.source_profile,'derived'),1,
-                       COALESCE(source.evidence_count,0),procedure.updated_at,
-                       'unified-memory-v1',procedure.version
-                FROM memory.procedures procedure
-                LEFT JOIN LATERAL (
-                  SELECT min(episode_source.source_profile) AS source_profile,
-                         sum(episode_source.evidence_count) AS evidence_count
-                  FROM memory.procedure_support support
-                  JOIN episode_sources episode_source
-                    ON episode_source.episode_id=support.episode_id
-                  WHERE support.procedure_id=procedure.id
-                ) source ON true
-                WHERE procedure.namespace_id=%s
-                  AND (procedure.state='candidate' OR procedure.review_state='candidate')
-                """,
-                (
-                    namespace_id,
-                    namespace_id,
-                    namespace_id,
-                    namespace_id,
-                    namespace_id,
-                    namespace_id,
-                    namespace_id,
-                ),
-            )
-            unified_rows = cursor.fetchall()
+        cursor.execute(query, parameters)
+        rows = cursor.fetchall()
     collected: list[ReviewQueueItem] = []
-    for row in fact_rows:
-        reasons = []
-        if row["has_untrusted_tool"] and not row["has_trusted_support"]:
-            reasons.append("untrusted_tool")
-        if row["memory_state"] == "candidate":
-            reasons.append("candidate")
-        collected.append(
-            ReviewQueueItem(
-                memory_id=row["id"],
-                memory_kind="fact",
-                statement=redact_text(row["statement"]).text,
-                fact_type=row["fact_type"],
-                state=row["memory_state"],
-                source_profile=row["source_profile"],
-                confidence=float(row["confidence"]),
-                evidence_count=int(row["evidence_count"]),
-                updated_at=row["updated_at"],
-                extraction_method=row["extraction_method"],
-                version=int(row["version"]),
-                review_reasons=reasons,
-                tool_names=[name for name in row["tool_names"] if name],
-            )
-        )
-    for row in unified_rows:
-        if source_profile and row["source_profile"] != source_profile:
+    for row in rows:
+        if row["memory_id"] is None:
             continue
         collected.append(
             ReviewQueueItem(
-                memory_id=row["id"],
+                memory_id=row["memory_id"],
                 memory_kind=row["memory_kind"],
                 statement=redact_text(row["statement"]).text,
                 fact_type=row["fact_type"],
@@ -1216,31 +1216,19 @@ def list_review_queue(
                 updated_at=row["updated_at"],
                 extraction_method=row["extraction_method"],
                 version=int(row["version"]),
-                review_reasons=["candidate"],
-                tool_names=[],
+                review_reasons=list(row["review_reasons"] or []),
+                tool_names=[name for name in row["tool_names"] if name],
             )
         )
-    collected.sort(
-        key=lambda item: (
-            "untrusted_tool" in item.review_reasons,
-            item.updated_at,
-            str(item.memory_id),
-        ),
-        reverse=True,
-    )
+    summary = rows[0]
     counts_by_kind = {
-        kind: sum(item.memory_kind == kind for item in collected)
-        for kind in (
-            "fact",
-            "episode",
-            "preference",
-            "relationship",
-            "temporal_rule",
-            "procedure",
-        )
+        "fact": int(summary["fact_count"]),
+        "episode": int(summary["episode_count"]),
+        "preference": int(summary["preference_count"]),
+        "relationship": int(summary["relationship_count"]),
+        "temporal_rule": int(summary["temporal_rule_count"]),
+        "procedure": int(summary["procedure_count"]),
     }
-    total = len(collected)
-    items = collected[offset : offset + limit]
     profiles = [
         row[0]
         for row in connection.execute(
@@ -1250,8 +1238,8 @@ def list_review_queue(
         ).fetchall()
     ]
     return ReviewQueueResponse(
-        items=items,
-        total=total,
+        items=collected,
+        total=int(summary["total"]),
         counts_by_kind=counts_by_kind,
         limit=limit,
         offset=offset,

@@ -77,6 +77,21 @@ def test_release_preflight_rejects_image_tag_version_drift(tmp_path: Path) -> No
     assert "AGENT_MEMORY_IMAGE_TAG must equal VERSION" in result.stderr
 
 
+def test_release_preflight_rejects_public_example_ui_password(tmp_path: Path) -> None:
+    public_example_hash = (
+        "scrypt$16384$8$1$MDEyMzQ1Njc4OWFiY2RlZg=="
+        "$7ySXM0If1M4WCFpHm02Qm9yXSFm4G08fzWj6opQWQgw="
+    )
+    result = _run(
+        _write_release_env(
+            tmp_path,
+            AGENT_MEMORY_UI_PASSWORD_HASH=public_example_hash,
+        )
+    )
+    assert result.returncode != 0
+    assert "public example credential" in result.stderr
+
+
 def test_release_preflight_rejects_primary_network_and_external_model(tmp_path: Path) -> None:
     network = _run(
         _write_release_env(tmp_path / "network", AGENT_MEMORY_BACKEND_SUBNET="172.16.240.0/24")

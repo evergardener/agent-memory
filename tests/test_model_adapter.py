@@ -84,6 +84,17 @@ def test_external_model_requires_explicit_real_data_authorization():
     assert profile.api_base == "https://models.example.com/v1"
 
 
+def test_external_model_rejects_plaintext_http_even_with_data_authorization():
+    with pytest.raises(ValueError, match="EXTERNAL_MODEL_HTTPS_REQUIRED"):
+        ModelProfile.from_settings(
+            settings(
+                namespace="hermes:import-staging",
+                model_api_base="http://models.example.com/v1",
+                model_allow_external_data=True,
+            )
+        )
+
+
 def test_fact_candidate_must_be_a_verbatim_evidence_substring():
     evidence = "project:Orion uses service:relay on port 10443"
     accepted = validate_verbatim_fact_candidate(

@@ -126,6 +126,8 @@ class ModelProfile:
             parsed = urlparse(api_base)
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                 raise ValueError("MODEL_API_BASE_INVALID")
+            if parsed.scheme == "http" and not _is_local_model_endpoint(api_base):
+                raise ValueError("EXTERNAL_MODEL_HTTPS_REQUIRED")
         if (
             not settings.namespace.startswith("hermes:automated-tests")
             and not settings.model_allow_external_data

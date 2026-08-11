@@ -60,6 +60,9 @@ done
 [[ ${#AGENT_MEMORY_UI_SESSION_SECRET} -ge 32 ]] || fail "release UI session secret is too short"
 [[ "$AGENT_MEMORY_UI_PASSWORD_HASH" == 'scrypt$'* ]] \
   || fail "release UI password hash must use scrypt"
+known_example_ui_hash='scrypt$16384$8$1$MDEyMzQ1Njc4OWFiY2RlZg==$7ySXM0If1M4WCFpHm02Qm9yXSFm4G08fzWj6opQWQgw='
+[[ "$AGENT_MEMORY_UI_PASSWORD_HASH" != "$known_example_ui_hash" ]] \
+  || fail "release UI password hash still uses the public example credential"
 
 # Reject primary runtime paths before checking whether they exist. A clean Git
 # worktree may not contain data/postgres yet, but that must not make the primary

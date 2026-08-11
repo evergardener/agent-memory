@@ -78,6 +78,9 @@ done
   || fail "predeploy UI session secret is too short"
 [[ "$AGENT_MEMORY_UI_PASSWORD_HASH" == 'scrypt$'* ]] \
   || fail "predeploy UI password hash must use scrypt"
+known_example_ui_hash='scrypt$16384$8$1$MDEyMzQ1Njc4OWFiY2RlZg==$7ySXM0If1M4WCFpHm02Qm9yXSFm4G08fzWj6opQWQgw='
+[[ "$AGENT_MEMORY_UI_PASSWORD_HASH" != "$known_example_ui_hash" ]] \
+  || fail "predeploy UI password hash still uses the public example credential"
 
 runtime_root="$(cd "$(dirname "$ENV_FILE")" && pwd)"
 [[ -d "$AGENT_MEMORY_POSTGRES_DATA_DIR" ]] \
