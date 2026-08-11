@@ -4,7 +4,7 @@
   "system": {
     "name": "agent-memory",
     "version": "1.0.0rc9",
-    "revision": "eca5ff22b517ea495dcb2b2081796ed76fe2bc98+am-eval-worktree"
+    "revision": "a405edf2e7c99b94f4a28fc6003dc57221f95d4c"
   },
   "track": "deterministic-baseline",
   "dataset": {
