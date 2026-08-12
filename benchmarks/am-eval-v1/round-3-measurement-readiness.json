@@ -1,7 +1,7 @@
 {
   "schema_version": "am-eval-measurement-readiness-v1",
   "run_id": "agent-memory-1.0.0rc9-measurement-r3-20260812",
-  "system_revision": "TO_BE_PINNED",
+  "system_revision": "9fca4ea7a59a795c6e8f17f0cea49dc508129dff",
   "status": "MEASUREMENT_READY_REAL_RUN_PENDING",
   "official_metrics_updated": false,
   "datasets": [
