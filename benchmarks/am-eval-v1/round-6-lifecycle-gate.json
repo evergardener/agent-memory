@@ -1,0 +1,109 @@
+{
+  "schema_version": "am-eval-lifecycle-gate-evidence-v1",
+  "run_id": "agent-memory-1.0.0rc9-lifecycle-gate-r6-20260812",
+  "system_revision": "658ee27cdeaae563021221bb5665e824ed701c1a",
+  "status": "LIFECYCLE_GATE_PASS_FORMAL_EVAL_INCOMPLETE",
+  "official_metrics_updated": false,
+  "dataset": {
+    "id": "agent-memory-lifecycle-gold-v1",
+    "manifest_sha256": "fe14754d58113181fb0b49a42169a5cd1acf52ccea75a3ce40d5375ccbc757c5",
+    "case_file_sha256": "62cb844821ce7ba4c211d20af7650583ab8ab8bc04b1b8ffd9c3591a4db114d0",
+    "case_count": 20,
+    "split_counts": {
+      "development": 10,
+      "validation": 10
+    },
+    "contains_memory_text": false,
+    "contains_production_data": false,
+    "visibility": "open",
+    "blind_cases": 0
+  },
+  "lifecycle_cli": {
+    "status": "PASS",
+    "passed": 20,
+    "failed": 0,
+    "action_counts": {
+      "confirm": 2,
+      "correct": 3,
+      "current_expire": 2,
+      "current_resolve": 2,
+      "entity_merge": 2,
+      "entity_split": 2,
+      "entity_unmerge": 1,
+      "forget": 2,
+      "isolate": 2,
+      "purge": 2
+    },
+    "invariant_pass_counts": {
+      "action_audited": 12,
+      "correction_evidence_preserved": 2,
+      "current_hidden": 3,
+      "entity_links_preserved": 3,
+      "evidence_preserved": 2,
+      "namespace_denied": 6,
+      "purge_confirmation_required": 1,
+      "purge_residue_zero": 1,
+      "recall_excluded": 6,
+      "stale_version_rejected": 1,
+      "state_changed": 11
+    },
+    "output_mode": "0600",
+    "postgresql_binding": "127.0.0.1:55438",
+    "temporary_database": "am_eval_lifecycle_cli_20260812_658ee27",
+    "temporary_databases_remaining": 0,
+    "external_model_called": false,
+    "external_data_sent": false
+  },
+  "verification": {
+    "targeted_contract_and_runner_tests": {
+      "passed": 88,
+      "failed": 0
+    },
+    "non_integration_tests": {
+      "passed": 394,
+      "failed": 0,
+      "deselected_integration": 42
+    },
+    "isolated_lifecycle_integration": {
+      "passed": 1,
+      "failed": 0,
+      "lifecycle_cases_passed": 20,
+      "lifecycle_cases_failed": 0
+    },
+    "ruff_check": "PASS",
+    "new_python_files_format_check": "PASS",
+    "uv_lock_check": "PASS",
+    "diff_check": "PASS",
+    "repository_secret_and_production_reference_review": "PASS"
+  },
+  "implemented_gates": [
+    "official lifecycle JSONL hash and manifest structure are pinned in code",
+    "exact 20-case action coverage and 10/10 development-validation split are mandatory",
+    "zero-case and reduced-case direct runner calls fail closed",
+    "runtime invariants use explicit checks and remain active under optimized Python",
+    "runner requires an automated namespace prefix and a dedicated empty database",
+    "database URL is read from the environment and must target loopback am_eval_ storage",
+    "output must be new, outside the repository and under a 0700-or-stricter directory",
+    "case output excludes memory text and records only aggregate status and error types",
+    "corrected memory trace preserves supersession and evidence lineage",
+    "forgotten, isolated, resolved, expired and purged memories are excluded from recall",
+    "purge verifies confirmation, physical residue removal and audit events",
+    "entity merge, unmerge and split preserve governed fact links and namespace isolation"
+  ],
+  "boundaries": {
+    "production_data_read": false,
+    "production_api_or_database_connected": false,
+    "production_namespace_connected": false,
+    "production_modified": false,
+    "external_model_called": false,
+    "external_data_sent": false,
+    "private_gold_created_or_read": false,
+    "official_am_eval_score_changed": false
+  },
+  "remaining_requirements": [
+    "run the authorized public synthetic atomic set against a configured non-production external model",
+    "create and independently review the private redacted Hermes gold outside the repository",
+    "run the frozen private blind manifest only after separate model-transmission authorization",
+    "measure aggregate-only production M22 and terminal M23 under separate production read authorization"
+  ]
+}

@@ -24,6 +24,8 @@
 及 [`../../docs/V1.0-AM-Eval第五轮私有金标工具验证报告.md`](../../docs/V1.0-AM-Eval第五轮私有金标工具验证报告.md)。
 冻结生命周期操作契约及运行方法见
 [`../../docs/V1.0-AM-Eval生命周期Gate运行手册.md`](../../docs/V1.0-AM-Eval生命周期Gate运行手册.md)。
+第六轮实际运行证据见 [`round-6-lifecycle-gate.json`](round-6-lifecycle-gate.json) 及
+[`../../docs/V1.0-AM-Eval第六轮生命周期门禁报告.md`](../../docs/V1.0-AM-Eval第六轮生命周期门禁报告.md)。
 
 验证冻结数据集：
 
