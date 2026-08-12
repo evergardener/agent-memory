@@ -1,0 +1,60 @@
+{
+  "schema_version": "am-eval-runner-cli-gate-v1",
+  "run_id": "agent-memory-1.0.0rc9-atomic-runner-cli-gate-20260812",
+  "system_revision": "f857e7c2030426102af20db8426388013743ab72",
+  "status": "CLI_GATE_PASS_REAL_EXTERNAL_MODEL_PENDING",
+  "official_metrics_updated": false,
+  "runtime": {
+    "runner_entrypoint": "python -m agent_memory.am_eval_atomic_runner",
+    "model_adapter": "real LiteLLM adapter",
+    "model_endpoint": "random loopback OpenAI-compatible test server",
+    "model_name": "openai/test-model",
+    "case_count": 2,
+    "model_call_budget": 2,
+    "observed_model_calls": 2,
+    "job_statuses": {"done": 2},
+    "cli_exit_code": 0,
+    "summary_status": "COMPLETE",
+    "private_output_mode": "0600",
+    "efficiency_output_mode": "0600",
+    "external_data_sent": false
+  },
+  "metrics": {
+    "M01": 1.0,
+    "M02": 1.0,
+    "M03": 1.0,
+    "M07": 1.0,
+    "M22": 0.0,
+    "M23": 0.0
+  },
+  "verification": {
+    "runner_integration_tests": {"passed": 3, "failed": 0},
+    "non_integration_tests": {"passed": 356, "failed": 0, "deselected": 41},
+    "ruff": "PASS",
+    "uv_lock_check": "PASS",
+    "diff_check": "PASS"
+  },
+  "cleanup": {
+    "database_pattern": "am_eval_cli_*",
+    "database_remaining": 0,
+    "loopback_model_server_stopped": true,
+    "external_model_called": false
+  },
+  "boundaries": {
+    "production_connected": false,
+    "production_modified": false,
+    "external_model_called": false,
+    "external_data_sent": false,
+    "contains_private_memory_text": false,
+    "nonproduction_external_model_key_ready": false
+  },
+  "interpretation": [
+    "The result validates the CLI, Settings, LiteLLM, worker, database, output and scorer path.",
+    "The synthetic fixture metrics are not a real external-model or blind quality score."
+  ],
+  "remaining_requirements": [
+    "configure a non-production external model key and run the 24-case synthetic shakedown",
+    "create a private 100-150 claim blind gold set after separate data authorization",
+    "run aggregate-only production shadow M22 after separate production authorization"
+  ]
+}

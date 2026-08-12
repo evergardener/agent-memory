@@ -15,6 +15,9 @@
 成功/超时路径、调用预算和非零退出码 Gate 见
 [`round-4-atomic-runner-failure-gate.json`](round-4-atomic-runner-failure-gate.json) 及
 [`../../docs/V1.0-AM-Eval第四轮Runner故障门禁报告.md`](../../docs/V1.0-AM-Eval第四轮Runner故障门禁报告.md)。
+完整 CLI、真实 LiteLLM 和回环 OpenAI 兼容端点 Gate 见
+[`round-4-atomic-runner-cli-gate.json`](round-4-atomic-runner-cli-gate.json) 及
+[`../../docs/V1.0-AM-Eval第四轮CLI端到端门禁报告.md`](../../docs/V1.0-AM-Eval第四轮CLI端到端门禁报告.md)。
 
 验证冻结数据集：
 
