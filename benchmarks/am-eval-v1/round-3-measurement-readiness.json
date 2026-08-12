@@ -25,8 +25,29 @@
     "dataset_validation": "PASS",
     "diff_check": "PASS",
     "database_api_gate": {
-      "status": "NOT_RERUN",
-      "reason": "local execution authorization unavailable; no runtime or database code changed"
+      "status": "PASS",
+      "database_migration": "0019_review_queue_indexes",
+      "governance_tests": {"passed": 8, "failed": 0},
+      "api_runtime_tests": {"passed": 20, "failed": 0}
+    },
+    "worker_recovery_gate": {
+      "status": "PASS",
+      "outage_state": {"evidence_count": 1, "pending_job_count": 2, "fact_count": 0},
+      "recovery_recall_attempts": 1,
+      "recovered_source_count": 1
+    },
+    "restore_gate": {
+      "status": "PASS",
+      "table_count": 42,
+      "counts_equal": true,
+      "source_vault_decrypt": true,
+      "restore_vault_decrypt": true
+    },
+    "cleanup_gate": {
+      "status": "PASS",
+      "temporary_database_count": 0,
+      "api_port_listeners": 0,
+      "temporary_files_remaining": 0
     }
   },
   "measurement_contracts": {
@@ -42,7 +63,7 @@
     "external_data_sent": false,
     "production_connected": false,
     "production_modified": false,
-    "temporary_database_created": false,
+    "temporary_database_created_and_removed": true,
     "contains_private_memory_text": false
   },
   "remaining_requirements": [
