@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from agent_memory.am_eval_dataset import load_dataset
 from agent_memory.repository import _procedure_query_terms, _temporal_query_terms
 from agent_memory.unified_memory import (
     parse_date_range,
@@ -12,6 +14,10 @@ from agent_memory.unified_memory import (
 
 REFERENCE_TIME = datetime(2026, 7, 12, 8, 30, tzinfo=UTC)
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+DATASET_MANIFEST = (
+    Path(__file__).parents[1]
+    / "benchmarks/am-eval-v1/datasets/deterministic-gold-v1/manifest.json"
+)
 
 
 def test_date_range_uses_event_year_without_inventing_an_explicit_year() -> None:
@@ -148,61 +154,17 @@ def test_explicit_operation_and_reminder_preferences_are_preserved() -> None:
 
 
 def test_preference_gold_accuracy_is_at_least_ninety_five_percent() -> None:
-    positive = (
-        "以后称呼我为公子",
-        "请叫我 Evergarden",
-        "之后称我为小园",
-        "以后使用中文回答",
-        "请用英文回复",
-        "之后用繁体中文交流",
-        "回答时保持简洁风格",
-        "回复时采用正式方式",
-        "以后回答直接一些",
-        "我喜欢安静的咖啡馆",
-        "我不喜欢嘈杂的餐厅",
-        "我偏好早上处理邮件",
-        "我更喜欢简短的汇报",
-        "我避免夜间收到通知",
-        "我要求变更必须留记录",
-        "我必须先检查备份",
-        "不要自动删除本地文件",
-        "禁止修改生产容器",
-        "变更前必须先备份",
-        "部署前务必运行测试",
-        "每次只允许执行只读检查",
-        "以后通过邮件提醒我",
-        "请用短信提醒我",
-        "提醒我时请使用企业微信",
+    cases = [
+        case
+        for case in load_dataset(DATASET_MANIFEST)
+        if case["suite"] == "preference"
+    ]
+    correct = sum(
+        (parse_preference(case["input"]["text"]) is not None)
+        is case["expected"]["selected"]
+        for case in cases
     )
-    negative = (
-        "我去了一次安静咖啡馆",
-        "今天在成都看了熊猫",
-        "邮件通知目前是不是暂停了",
-        "现在打开客厅灯",
-        "允许修改",
-        "继续执行",
-        "帮我安装 imagegen skill",
-        "模型已切换为 qwen",
-        "任务已经完成",
-        "天气今天转晴",
-        "[Home Assistant] 客厅灯 turned off",
-        "请问你喜欢什么颜色",
-        "他喜欢安静的咖啡馆",
-        "我昨天收到邮件提醒",
-        "他说以后称呼我为公子",
-        "同事建议以后通过邮件提醒我",
-        "文档示例：不要自动删除本地文件",
-        "生日是七月二十五日",
-        "刚才通过短信收到了验证码",
-        "电话提醒响了一次",
-        "她说我喜欢安静的咖啡馆",
-        "请用中文回答可以吗？",
-        "可以用邮件提醒我吗？",
-        "备份已经完成",
-    )
-    correct = sum(parse_preference(text) is not None for text in positive)
-    correct += sum(parse_preference(text) is None for text in negative)
-    accuracy = correct / (len(positive) + len(negative))
+    accuracy = correct / len(cases)
 
     assert accuracy >= 0.95, f"preference gold accuracy={accuracy:.2%}"
 

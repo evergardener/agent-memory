@@ -23,6 +23,7 @@ Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。生�
 - F1–F7 隔离实现、故障恢复与安全证据：[`docs/V1.0-F1-F7隔离实施验证报告.md`](docs/V1.0-F1-F7隔离实施验证报告.md)
 - 长期记忆统一评估、外部系统对照与评分规则：[`docs/V1.0-AM-Eval长期记忆评估规范.md`](docs/V1.0-AM-Eval长期记忆评估规范.md)
 - AM-Eval 第一轮确定性基线、实际结果与覆盖缺口：[`docs/V1.0-AM-Eval第一轮基线评估报告.md`](docs/V1.0-AM-Eval第一轮基线评估报告.md)
+- AM-Eval 第二轮冻结数据集、隔离运行与恢复基线：[`docs/V1.0-AM-Eval第二轮隔离基线评估报告.md`](docs/V1.0-AM-Eval第二轮隔离基线评估报告.md)
 
 ## 环境要求
 

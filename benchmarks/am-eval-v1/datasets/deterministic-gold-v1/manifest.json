@@ -1,0 +1,50 @@
+{
+  "schema_version": "am-eval-dataset-manifest-v1",
+  "dataset_id": "agent-memory-deterministic-gold-v1",
+  "frozen_at": "2026-08-12",
+  "case_count": 176,
+  "contains_production_data": false,
+  "contains_memory_text": true,
+  "external_data_sent": false,
+  "visibility": "open",
+  "blind_cases": 0,
+  "files": [
+    {
+      "path": "preference.jsonl",
+      "sha256": "d089c34d415522529c39a319f1f996612c53965602f19e16f9317a4605335966",
+      "case_count": 48,
+      "suites": ["preference"]
+    },
+    {
+      "path": "temporal.jsonl",
+      "sha256": "5be6a6891cbb10dc7c0a8c19bd9122a4042711d1856d09fa59e238e3f3b081a3",
+      "case_count": 10,
+      "suites": ["date_range", "temporal_rule"]
+    },
+    {
+      "path": "episode-procedure.jsonl",
+      "sha256": "7d35caacffad14071984220009448a293012686782ede4636330e2225e1c0712",
+      "case_count": 8,
+      "suites": ["episode", "procedure"]
+    },
+    {
+      "path": "recall.jsonl",
+      "sha256": "a6095df16e56cba9100c46f6c829f84ff7613d55b338ad02c31fe56b18fa850d",
+      "case_count": 110,
+      "suites": ["recall"]
+    }
+  ],
+  "suite_counts": {
+    "date_range": 6,
+    "episode": 4,
+    "preference": 48,
+    "procedure": 4,
+    "recall": 110,
+    "temporal_rule": 4
+  },
+  "notes": [
+    "All cases are synthetic or project-authored fixtures; no production transcript was copied.",
+    "Open development and validation cases prevent regressions but do not qualify as a blind benchmark.",
+    "Recall contains 10 positive rewrites and 100 frozen negative queries."
+  ]
+}

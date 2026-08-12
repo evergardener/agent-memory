@@ -1,0 +1,160 @@
+{
+  "benchmark_id": "am-eval-v1",
+  "run_id": "agent-memory-1.0.0rc9-deterministic-r2-20260812",
+  "system": {
+    "name": "agent-memory",
+    "version": "1.0.0rc9",
+    "revision": "TO_BE_PINNED"
+  },
+  "track": "deterministic-baseline",
+  "dataset": {
+    "id": "agent-memory-deterministic-gold-v1",
+    "sha256": "6b06f88949f0acd135368ce8d8b4564e66f922eb54b083699d4ebb60c495f2cf"
+  },
+  "hard_gates": {
+    "G01": {
+      "value": 0,
+      "sample_count": 9,
+      "evidence": ["tests/test_redaction.py: 9 redaction test functions PASS"]
+    },
+    "G02": {
+      "value": 0,
+      "sample_count": 6,
+      "evidence": ["isolated API recall, entity, report, review and browse namespace denials PASS"]
+    },
+    "G03": {
+      "value": 0,
+      "sample_count": 17,
+      "evidence": ["17 active facts scanned; every active fact retained at least one evidence link"]
+    },
+    "G04": {
+      "value": 0,
+      "sample_count": 2,
+      "evidence": ["two positive episode fixtures excluded source profile names from participants"]
+    },
+    "G05": {
+      "value": 0,
+      "sample_count": 10,
+      "evidence": ["frozen 10-query recall set returned no resolved current fact"]
+    },
+    "G06": {
+      "value": 0,
+      "sample_count": 2,
+      "evidence": ["two isolated API purge runs left no recall, trace, graph or direct derivative residue"]
+    },
+    "G07": {
+      "value": 0,
+      "sample_count": 1,
+      "evidence": ["worker-stop ingest retained evidence and two pending jobs; restart restored recall with evidence"]
+    },
+    "G08": {
+      "value": 0,
+      "sample_count": 4,
+      "evidence": ["all four frozen procedure applicability cases kept auto_apply=false"]
+    },
+    "G09": {
+      "value": 1.0,
+      "sample_count": 5,
+      "evidence": ["five explicit preference categories retained evidence links"]
+    },
+    "G10": {
+      "value": 1.0,
+      "sample_count": 1,
+      "evidence": ["fresh custom dump/restore matched 28 table groups and decrypted one Vault entry in both databases"]
+    }
+  },
+  "metrics": {
+    "M04": {
+      "value": 1.0,
+      "sample_count": 6,
+      "evidence": ["six expected entities and participant roles matched across travel and technical episodes"]
+    },
+    "M05": {
+      "value": 1.0,
+      "sample_count": 10,
+      "evidence": ["frozen recall JSONL: 10/10 positive rewrites matched Top-1"]
+    },
+    "M06": {
+      "value": 1.0,
+      "sample_count": 10,
+      "evidence": ["frozen recall JSONL: all 10 positives matched within Top-1 and therefore Top-5"]
+    },
+    "M08": {
+      "value": 0.0,
+      "sample_count": 100,
+      "evidence": ["frozen recall JSONL: 25 UUID, 25 hash and 50 unrelated queries produced 0 false matches"]
+    },
+    "M09": {
+      "value": 1.0,
+      "sample_count": 10,
+      "evidence": ["six date-range and four temporal-rule JSONL cases matched exactly"]
+    },
+    "M10": {
+      "value": 1.0,
+      "sample_count": 2,
+      "evidence": ["current resolve and preference supersession database cases PASS"]
+    },
+    "M11": {
+      "value": 1.0,
+      "sample_count": 4,
+      "evidence": ["four episode JSONL cases matched selection, entities, roles and ordered steps"]
+    },
+    "M12": {
+      "value": 1.0,
+      "sample_count": 4,
+      "evidence": ["applicable, incompatible, unknown and expired procedure cases matched"]
+    },
+    "M13": {
+      "value": 0.0,
+      "sample_count": 3,
+      "evidence": ["incompatible, unknown and expired procedures never enabled auto application"]
+    },
+    "M14": {
+      "value": 1.0,
+      "sample_count": 1,
+      "evidence": ["confirmed procedure joined to success episode, fact and evidence event"]
+    },
+    "M15": {
+      "value": 1.0,
+      "sample_count": 8,
+      "evidence": ["isolated governance convergence database suite: 8/8 PASS"]
+    },
+    "M16": {
+      "value": 1.0,
+      "sample_count": 2,
+      "evidence": ["two purge exercises removed recall, trace, graph visibility and direct derivatives"]
+    },
+    "M17": {
+      "value": 1.0,
+      "sample_count": 6,
+      "evidence": ["six API namespace violations were denied without cross-namespace output"]
+    },
+    "M18": {
+      "value": 1.0,
+      "sample_count": 1,
+      "evidence": ["worker outage retained evidence and pending jobs; restart completed recall projection"]
+    },
+    "M19": {
+      "value": 1.0,
+      "sample_count": 1,
+      "evidence": ["fresh dump/restore preserved 28 table groups and Vault decryptability"]
+    },
+    "M20": {
+      "value": 1.0,
+      "sample_count": 2,
+      "evidence": ["current transition and candidate governance replay idempotency cases PASS"]
+    },
+    "M21": {
+      "value": 7.702,
+      "sample_count": 110,
+      "evidence": ["loopback isolated API: frozen recall set p50 4.278ms, p95 7.702ms, max 38.269ms"]
+    }
+  },
+  "notes": [
+    "All measurements used synthetic project-authored data in isolated loopback-only runtime resources.",
+    "No production container, database, namespace or Vault was connected or modified.",
+    "No external model was called and no data was sent externally.",
+    "M01/M02/M03/M07/M22/M23 remain not_measured; the result therefore remains INCOMPLETE.",
+    "The open dataset has development and validation cases only and is not a blind benchmark."
+  ]
+}

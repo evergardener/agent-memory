@@ -1,0 +1,77 @@
+{
+  "schema_version": "am-eval-runtime-evidence-v1",
+  "run_id": "agent-memory-1.0.0rc9-deterministic-r2-20260812",
+  "system_revision": "TO_BE_PINNED",
+  "dataset": {
+    "id": "agent-memory-deterministic-gold-v1",
+    "manifest_sha256": "6b06f88949f0acd135368ce8d8b4564e66f922eb54b083699d4ebb60c495f2cf",
+    "cases": 176,
+    "development_cases": 126,
+    "validation_cases": 50,
+    "blind_cases": 0,
+    "contains_production_data": false
+  },
+  "execution": {
+    "non_integration": {
+      "passed": 313,
+      "skipped_integration": 38,
+      "failed": 0
+    },
+    "database": {
+      "host_binding": "127.0.0.1:55438",
+      "temporary_database": "am_eval_r2_20260812",
+      "migration_head": "0019_review_queue_indexes",
+      "governance_tests": {"passed": 8, "failed": 0}
+    },
+    "runtime": {
+      "api_binding": "127.0.0.1:57788",
+      "namespace": "hermes:automated-tests:am-eval-r2",
+      "api_tests": {"passed": 16, "failed": 0},
+      "am_eval_runtime_tests": {"passed": 4, "failed": 0},
+      "model_enabled": false
+    },
+    "worker_outage_recovery": {
+      "evidence_before_restart": 1,
+      "pending_jobs_before_restart": 2,
+      "facts_before_restart": 0,
+      "recall_after_restart": true,
+      "evidence_links_after_restart": 1
+    },
+    "invariants": {
+      "active_facts_checked": 17,
+      "active_facts_without_evidence": 0,
+      "namespace_denials_checked": 6,
+      "namespace_leaks": 0,
+      "purge_runs_checked": 2,
+      "purge_residues": 0,
+      "active_procedure_lineages_checked": 1,
+      "broken_procedure_lineages": 0,
+      "terminal_failed_jobs": 0
+    },
+    "recall_latency": {
+      "sample_count": 110,
+      "p50_ms": 4.278,
+      "p95_ms": 7.702,
+      "max_ms": 38.269
+    },
+    "restore": {
+      "dump_format": "postgresql-custom",
+      "table_groups_compared": 28,
+      "table_group_counts_equal": true,
+      "vault_entries": 1,
+      "source_vault_decrypt": "PASS",
+      "restored_vault_decrypt": "PASS"
+    },
+    "cleanup": {
+      "temporary_databases_remaining": 0,
+      "api_port_listening_after_cleanup": false,
+      "temporary_dumps_removed": true
+    }
+  },
+  "boundaries": {
+    "production_containers_connected": false,
+    "production_namespace_connected": false,
+    "external_model_calls": 0,
+    "external_data_sent": false
+  }
+}

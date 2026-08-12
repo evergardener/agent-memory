@@ -1,0 +1,48 @@
+{"schema_version":"am-eval-case-v1","case_id":"pref-001","suite":"preference","split":"development","input":{"text":"以后称呼我为公子"},"expected":{"selected":true,"aspect":"称呼","topic":"公子","polarity":"require"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-002","suite":"preference","split":"validation","input":{"text":"请叫我 Evergarden"},"expected":{"selected":true,"aspect":"称呼","topic":"Evergarden","polarity":"require"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-003","suite":"preference","split":"development","input":{"text":"之后称我为小园"},"expected":{"selected":true,"aspect":"称呼","topic":"小园","polarity":"require"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-004","suite":"preference","split":"development","input":{"text":"以后使用中文回答"},"expected":{"selected":true,"aspect":"回复语言","topic":"中文","polarity":"require"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-005","suite":"preference","split":"validation","input":{"text":"请用英文回复"},"expected":{"selected":true,"aspect":"回复语言","topic":"英文","polarity":"require"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-006","suite":"preference","split":"development","input":{"text":"之后用繁体中文交流"},"expected":{"selected":true,"aspect":"回复语言","topic":"繁体中文","polarity":"require"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-007","suite":"preference","split":"development","input":{"text":"回答时保持简洁风格"},"expected":{"selected":true,"aspect":"回复风格","topic":"简洁","polarity":"prefer"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-008","suite":"preference","split":"validation","input":{"text":"回复时采用正式方式"},"expected":{"selected":true,"aspect":"回复风格","topic":"正式","polarity":"prefer"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-009","suite":"preference","split":"development","input":{"text":"以后回答直接一些"},"expected":{"selected":true,"aspect":"回复风格","topic":"直接","polarity":"prefer"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-010","suite":"preference","split":"development","input":{"text":"我喜欢安静的咖啡馆"},"expected":{"selected":true,"aspect":"安静的咖啡馆","topic":"安静的咖啡馆","polarity":"like"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-011","suite":"preference","split":"validation","input":{"text":"我不喜欢嘈杂的餐厅"},"expected":{"selected":true,"aspect":"嘈杂的餐厅","topic":"嘈杂的餐厅","polarity":"dislike"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-012","suite":"preference","split":"development","input":{"text":"我偏好早上处理邮件"},"expected":{"selected":true,"aspect":"早上处理邮件","topic":"早上处理邮件","polarity":"prefer"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-013","suite":"preference","split":"development","input":{"text":"我更喜欢简短的汇报"},"expected":{"selected":true,"aspect":"简短的汇报","topic":"简短的汇报","polarity":"prefer"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-014","suite":"preference","split":"validation","input":{"text":"我避免夜间收到通知"},"expected":{"selected":true,"aspect":"夜间收到通知","topic":"夜间收到通知","polarity":"avoid"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-015","suite":"preference","split":"development","input":{"text":"我要求变更必须留记录"},"expected":{"selected":true,"aspect":"变更必须留记录","topic":"变更必须留记录","polarity":"require"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-016","suite":"preference","split":"development","input":{"text":"我必须先检查备份"},"expected":{"selected":true,"aspect":"先检查备份","topic":"先检查备份","polarity":"require"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-017","suite":"preference","split":"validation","input":{"text":"不要自动删除本地文件"},"expected":{"selected":true,"aspect":"自动删除本地文件","topic":"自动删除本地文件","polarity":"avoid"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-018","suite":"preference","split":"development","input":{"text":"禁止修改生产容器"},"expected":{"selected":true,"aspect":"修改生产容器","topic":"修改生产容器","polarity":"avoid"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-019","suite":"preference","split":"development","input":{"text":"变更前必须先备份"},"expected":{"selected":true,"aspect":"变更前备份","topic":"先备份","polarity":"require"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-020","suite":"preference","split":"validation","input":{"text":"部署前务必运行测试"},"expected":{"selected":true,"aspect":"部署前运行测试","topic":"运行测试","polarity":"require"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-021","suite":"preference","split":"development","input":{"text":"每次只允许执行只读检查"},"expected":{"selected":true,"aspect":"执行只读检查","topic":"执行只读检查","polarity":"require"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-022","suite":"preference","split":"development","input":{"text":"以后通过邮件提醒我"},"expected":{"selected":true,"aspect":"提醒方式","topic":"邮件","polarity":"require"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-023","suite":"preference","split":"validation","input":{"text":"请用短信提醒我"},"expected":{"selected":true,"aspect":"提醒方式","topic":"短信","polarity":"require"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-024","suite":"preference","split":"development","input":{"text":"提醒我时请使用企业微信"},"expected":{"selected":true,"aspect":"提醒方式","topic":"企业微信","polarity":"require"}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-025","suite":"preference","split":"development","input":{"text":"我去了一次安静咖啡馆"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-026","suite":"preference","split":"validation","input":{"text":"今天在成都看了熊猫"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-027","suite":"preference","split":"development","input":{"text":"邮件通知目前是不是暂停了"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-028","suite":"preference","split":"development","input":{"text":"现在打开客厅灯"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-029","suite":"preference","split":"validation","input":{"text":"允许修改"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-030","suite":"preference","split":"development","input":{"text":"继续执行"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-031","suite":"preference","split":"development","input":{"text":"帮我安装 imagegen skill"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-032","suite":"preference","split":"validation","input":{"text":"模型已切换为 qwen"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-033","suite":"preference","split":"development","input":{"text":"任务已经完成"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-034","suite":"preference","split":"development","input":{"text":"天气今天转晴"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-035","suite":"preference","split":"validation","input":{"text":"[Home Assistant] 客厅灯 turned off"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-036","suite":"preference","split":"development","input":{"text":"请问你喜欢什么颜色"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-037","suite":"preference","split":"development","input":{"text":"他喜欢安静的咖啡馆"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-038","suite":"preference","split":"validation","input":{"text":"我昨天收到邮件提醒"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-039","suite":"preference","split":"development","input":{"text":"他说以后称呼我为公子"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-040","suite":"preference","split":"development","input":{"text":"同事建议以后通过邮件提醒我"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-041","suite":"preference","split":"validation","input":{"text":"文档示例：不要自动删除本地文件"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-042","suite":"preference","split":"development","input":{"text":"生日是七月二十五日"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-043","suite":"preference","split":"development","input":{"text":"刚才通过短信收到了验证码"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-044","suite":"preference","split":"validation","input":{"text":"电话提醒响了一次"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-045","suite":"preference","split":"development","input":{"text":"她说我喜欢安静的咖啡馆"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-046","suite":"preference","split":"development","input":{"text":"请用中文回答可以吗？"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-047","suite":"preference","split":"validation","input":{"text":"可以用邮件提醒我吗？"},"expected":{"selected":false}}
+{"schema_version":"am-eval-case-v1","case_id":"pref-048","suite":"preference","split":"development","input":{"text":"备份已经完成"},"expected":{"selected":false}}

@@ -1,10 +1,12 @@
 import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import psycopg
 import pytest
 
+from agent_memory.am_eval_dataset import load_dataset
 from agent_memory.candidate_governance import (
     APPLY_CONFIRMATION as CANDIDATE_GOVERNANCE_CONFIRMATION,
 )
@@ -49,6 +51,10 @@ DATABASE_URL = os.getenv("AGENT_MEMORY_DATABASE_URL", "")
 RUN_ID = uuid4().hex
 NAMESPACE = f"hermes:automated-tests:governance:{RUN_ID}"
 NAMESPACE_ID = stable_uuid("namespace", NAMESPACE)
+DATASET_MANIFEST = (
+    Path(__file__).parents[2]
+    / "benchmarks/am-eval-v1/datasets/deterministic-gold-v1/manifest.json"
+)
 
 
 def create_namespace(connection) -> None:
@@ -229,21 +235,20 @@ def test_recall_gold_meets_top1_negative_and_resolved_gates() -> None:
             query=query,
         )
 
-    positive_queries = (
-        "先暂停邮件提醒任务",
-        "暂停邮件提醒",
-        "邮件通知目前是不是暂停了",
-        "邮件提醒现在暂停了吗",
-        "邮件通知暂停状态",
-        "邮件提醒任务暂停",
-        "邮件通知是否还暂停",
-        "暂停的邮件通知",
-        "邮件提醒",
-        "邮件通知",
+    recall_cases = [
+        case for case in load_dataset(DATASET_MANIFEST) if case["suite"] == "recall"
+    ]
+    positive_queries = tuple(
+        case["input"]["query"]
+        for case in recall_cases
+        if case["expected"]["memory_key"] == "mail-reminder"
     )
-    negative_queries = tuple(str(uuid4()) for _ in range(25))
-    negative_queries += tuple(f"{index:064x}" for index in range(25))
-    negative_queries += tuple(f"完全无关的量子花园散步问题第{index}号" for index in range(50))
+    negative_queries = tuple(
+        case["input"]["query"]
+        for case in recall_cases
+        if case["expected"]["memory_key"] is None
+    )
+    assert (len(positive_queries), len(negative_queries)) == (10, 100)
 
     with psycopg.connect(DATABASE_URL) as connection:
         connection.execute(
