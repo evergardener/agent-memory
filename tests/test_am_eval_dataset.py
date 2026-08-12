@@ -10,6 +10,7 @@ from agent_memory.am_eval_dataset import (
     load_dataset,
     load_jsonl,
     sha256_file,
+    validate_atomic_fact_case,
 )
 from agent_memory.unified_memory import (
     parse_date_range,
@@ -150,6 +151,8 @@ def test_manifest_loader_rejects_path_escape(tmp_path: Path) -> None:
         "dataset_id": "escape",
         "case_count": 1,
         "contains_production_data": False,
+        "contains_memory_text": True,
+        "external_data_sent": False,
         "files": [
             {
                 "path": "../outside.jsonl",
@@ -183,6 +186,8 @@ def test_open_manifest_cannot_expose_cases_as_blind(tmp_path: Path) -> None:
         "dataset_id": "exposed-blind",
         "case_count": 1,
         "contains_production_data": False,
+        "contains_memory_text": True,
+        "external_data_sent": False,
         "visibility": "open",
         "blind_cases": 1,
         "files": [
@@ -200,3 +205,71 @@ def test_open_manifest_cannot_expose_cases_as_blind(tmp_path: Path) -> None:
 
     with pytest.raises(DatasetError, match="open dataset cannot contain blind"):
         load_dataset(path)
+
+
+def test_private_manifest_can_hold_blind_production_derived_gold(tmp_path: Path) -> None:
+    case = {
+        "schema_version": "am-eval-case-v1",
+        "case_id": "private-blind",
+        "suite": "preference",
+        "split": "blind",
+        "input": {"text": "脱敏后的私有样本"},
+        "expected": {"selected": False},
+    }
+    dataset = tmp_path / "cases.jsonl"
+    dataset.write_text(json.dumps(case), encoding="utf-8")
+    manifest = {
+        "schema_version": "am-eval-dataset-manifest-v1",
+        "dataset_id": "private-blind",
+        "case_count": 1,
+        "contains_production_data": True,
+        "contains_memory_text": True,
+        "external_data_sent": False,
+        "visibility": "private",
+        "blind_cases": 1,
+        "files": [
+            {
+                "path": "cases.jsonl",
+                "sha256": sha256_file(dataset),
+                "case_count": 1,
+                "suites": ["preference"],
+            }
+        ],
+        "suite_counts": {"preference": 1},
+    }
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert load_dataset(path) == (case,)
+
+
+def test_atomic_fact_gold_rejects_non_verbatim_span() -> None:
+    case = {
+        "schema_version": "am-eval-case-v1",
+        "case_id": "bad-span",
+        "suite": "atomic_fact",
+        "split": "development",
+        "input": {
+            "evidence_ids": ["e1"],
+            "evidence": ["项目 Orchid 使用 PostgreSQL"],
+        },
+        "expected": {
+            "facts": [
+                {
+                    "fact_id": "f1",
+                    "statement": "Orchid 使用 PostgreSQL",
+                    "fact_type": "long_term",
+                    "memory_state": "active",
+                    "recallable": True,
+                    "evidence_index": 0,
+                    "span_start": 0,
+                    "span_end": 21,
+                    "entities": [],
+                }
+            ],
+            "recall_queries": [],
+        },
+    }
+
+    with pytest.raises(DatasetError, match="invalid exact span"):
+        validate_atomic_fact_case(case)

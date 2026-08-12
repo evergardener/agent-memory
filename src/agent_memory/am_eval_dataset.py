@@ -13,6 +13,7 @@ class DatasetError(ValueError):
 
 
 ALLOWED_CASE_SUITES = {
+    "atomic_fact",
     "date_range",
     "episode",
     "preference",
@@ -21,6 +22,8 @@ ALLOWED_CASE_SUITES = {
     "temporal_rule",
 }
 ALLOWED_SPLITS = {"development", "validation", "blind"}
+ATOMIC_FACT_TYPES = {"long_term", "stage", "current", "observed"}
+ATOMIC_MEMORY_STATES = {"active", "candidate", "evidence_only"}
 
 
 def sha256_file(path: Path) -> str:
@@ -67,6 +70,102 @@ def load_jsonl(path: Path) -> tuple[dict[str, Any], ...]:
     return tuple(cases)
 
 
+def validate_atomic_fact_case(case: dict[str, Any]) -> None:
+    """Validate exact-span gold used by construction and citation metrics."""
+    if case.get("suite") != "atomic_fact":
+        return
+    evidence = case["input"].get("evidence")
+    evidence_ids = case["input"].get("evidence_ids")
+    facts = case["expected"].get("facts")
+    recall_queries = case["expected"].get("recall_queries", [])
+    if (
+        not isinstance(evidence, list)
+        or not evidence
+        or not all(isinstance(item, str) and item for item in evidence)
+    ):
+        raise DatasetError(f"atomic fact case {case['case_id']} requires evidence strings")
+    if (
+        not isinstance(evidence_ids, list)
+        or len(evidence_ids) != len(evidence)
+        or not all(isinstance(item, str) and item for item in evidence_ids)
+        or len(set(evidence_ids)) != len(evidence_ids)
+    ):
+        raise DatasetError(f"atomic fact case {case['case_id']} requires unique evidence IDs")
+    if not isinstance(facts, list):
+        raise DatasetError(f"atomic fact case {case['case_id']} requires a facts array")
+    if not facts and not isinstance(case["expected"].get("no_memory_reason"), str):
+        raise DatasetError(
+            f"atomic fact case {case['case_id']} requires no_memory_reason when empty"
+        )
+    fact_ids: set[str] = set()
+    claim_spans: set[tuple[str, int]] = set()
+    for fact in facts:
+        if not isinstance(fact, dict):
+            raise DatasetError(f"atomic fact case {case['case_id']} has an invalid fact")
+        fact_id = str(fact.get("fact_id") or "")
+        statement = fact.get("statement")
+        evidence_index = fact.get("evidence_index")
+        span_start = fact.get("span_start")
+        span_end = fact.get("span_end")
+        entities = fact.get("entities", [])
+        if not fact_id or fact_id in fact_ids:
+            raise DatasetError(f"atomic fact case {case['case_id']} has duplicate fact_id")
+        if (
+            not isinstance(statement, str)
+            or not statement
+            or isinstance(evidence_index, bool)
+            or not isinstance(evidence_index, int)
+            or not 0 <= evidence_index < len(evidence)
+            or isinstance(span_start, bool)
+            or not isinstance(span_start, int)
+            or isinstance(span_end, bool)
+            or not isinstance(span_end, int)
+            or not 0 <= span_start < span_end <= len(evidence[evidence_index])
+            or evidence[evidence_index][span_start:span_end] != statement
+            or fact.get("fact_type") not in ATOMIC_FACT_TYPES
+            or fact.get("memory_state") not in ATOMIC_MEMORY_STATES
+            or not isinstance(fact.get("recallable"), bool)
+            or not isinstance(entities, list)
+        ):
+            raise DatasetError(f"atomic fact case {case['case_id']} has an invalid exact span")
+        claim_span = (statement, evidence_index)
+        if claim_span in claim_spans:
+            raise DatasetError(f"atomic fact case {case['case_id']} has a duplicate claim")
+        for entity in entities:
+            if (
+                not isinstance(entity, dict)
+                or not isinstance(entity.get("name"), str)
+                or not entity["name"]
+                or entity["name"] not in statement
+                or not isinstance(entity.get("type"), str)
+                or not entity["type"]
+                or not isinstance(entity.get("role"), str)
+                or not entity["role"]
+            ):
+                raise DatasetError(f"atomic fact case {case['case_id']} has an invalid entity")
+        fact_ids.add(fact_id)
+        claim_spans.add(claim_span)
+    if not isinstance(recall_queries, list):
+        raise DatasetError(f"atomic fact case {case['case_id']} has invalid recall queries")
+    query_ids: set[str] = set()
+    for query in recall_queries:
+        if not isinstance(query, dict):
+            raise DatasetError(f"atomic fact case {case['case_id']} has an invalid query")
+        query_id = str(query.get("query_id") or "")
+        expected_fact_ids = query.get("expected_fact_ids")
+        if (
+            not query_id
+            or query_id in query_ids
+            or not isinstance(query.get("query"), str)
+            or not query["query"]
+            or not isinstance(expected_fact_ids, list)
+            or not expected_fact_ids
+            or not all(item in fact_ids for item in expected_fact_ids)
+        ):
+            raise DatasetError(f"atomic fact case {case['case_id']} has an invalid query")
+        query_ids.add(query_id)
+
+
 def load_dataset(manifest_path: Path) -> tuple[dict[str, Any], ...]:
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -74,6 +173,12 @@ def load_dataset(manifest_path: Path) -> tuple[dict[str, Any], ...]:
         raise DatasetError(f"invalid dataset manifest: {manifest_path}") from error
     if manifest.get("schema_version") != "am-eval-dataset-manifest-v1":
         raise DatasetError("unsupported dataset manifest schema")
+    if not isinstance(manifest.get("dataset_id"), str) or not manifest["dataset_id"]:
+        raise DatasetError("dataset manifest requires dataset_id")
+    if not isinstance(manifest.get("contains_memory_text"), bool):
+        raise DatasetError("dataset manifest must declare contains_memory_text")
+    if manifest.get("external_data_sent") is not False:
+        raise DatasetError("dataset validation requires external_data_sent=false")
     files = manifest.get("files")
     if not isinstance(files, list) or not files:
         raise DatasetError("dataset manifest must declare at least one file")
@@ -98,6 +203,8 @@ def load_dataset(manifest_path: Path) -> tuple[dict[str, Any], ...]:
         if actual_sha256 != item.get("sha256"):
             raise DatasetError(f"dataset SHA-256 mismatch: {relative}")
         cases = load_jsonl(candidate)
+        for case in cases:
+            validate_atomic_fact_case(case)
         if len(cases) != int(item.get("case_count", -1)):
             raise DatasetError(f"dataset case count mismatch: {relative}")
         declared_suites = set(item.get("suites") or [])
@@ -117,12 +224,24 @@ def load_dataset(manifest_path: Path) -> tuple[dict[str, Any], ...]:
     actual_counts = Counter(str(case["suite"]) for case in all_cases)
     if declared_counts != dict(sorted(actual_counts.items())):
         raise DatasetError("dataset manifest suite counts mismatch")
-    if manifest.get("contains_production_data") is not False:
-        raise DatasetError("the public deterministic dataset must not contain production data")
+    contains_production_data = manifest.get("contains_production_data")
+    visibility = manifest.get("visibility")
+    if not isinstance(contains_production_data, bool):
+        raise DatasetError("dataset manifest must declare contains_production_data")
+    if visibility not in {"open", "private", "restricted"}:
+        raise DatasetError("dataset manifest requires a supported visibility")
+    if visibility == "open" and contains_production_data:
+        raise DatasetError("an open dataset cannot contain production data")
     blind_count = sum(case["split"] == "blind" for case in all_cases)
-    if blind_count != int(manifest.get("blind_cases", -1)):
+    declared_blind_count = manifest.get("blind_cases")
+    if (
+        isinstance(declared_blind_count, bool)
+        or not isinstance(declared_blind_count, int)
+        or declared_blind_count < 0
+        or blind_count != declared_blind_count
+    ):
         raise DatasetError("dataset manifest blind case count mismatch")
-    if manifest.get("visibility") == "open" and blind_count:
+    if visibility == "open" and blind_count:
         raise DatasetError("an open dataset cannot contain blind cases")
     return tuple(all_cases)
 

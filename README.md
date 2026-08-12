@@ -24,6 +24,7 @@ Agent Memory 是本地优先、证据驱动的 Hermes 长期记忆系统。生�
 - 长期记忆统一评估、外部系统对照与评分规则：[`docs/V1.0-AM-Eval长期记忆评估规范.md`](docs/V1.0-AM-Eval长期记忆评估规范.md)
 - AM-Eval 第一轮确定性基线、实际结果与覆盖缺口：[`docs/V1.0-AM-Eval第一轮基线评估报告.md`](docs/V1.0-AM-Eval第一轮基线评估报告.md)
 - AM-Eval 第二轮冻结数据集、隔离运行与恢复基线：[`docs/V1.0-AM-Eval第二轮隔离基线评估报告.md`](docs/V1.0-AM-Eval第二轮隔离基线评估报告.md)
+- AM-Eval 第三轮质量评分基础设施与真实运行边界：[`docs/V1.0-AM-Eval第三轮质量评测基础设施报告.md`](docs/V1.0-AM-Eval第三轮质量评测基础设施报告.md)
 
 ## 环境要求
 

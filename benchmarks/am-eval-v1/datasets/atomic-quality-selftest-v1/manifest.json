@@ -1,0 +1,25 @@
+{
+  "schema_version": "am-eval-dataset-manifest-v1",
+  "dataset_id": "agent-memory-atomic-quality-selftest-v1",
+  "frozen_at": "2026-08-12",
+  "case_count": 24,
+  "contains_production_data": false,
+  "contains_memory_text": true,
+  "external_data_sent": false,
+  "visibility": "open",
+  "blind_cases": 0,
+  "files": [
+    {
+      "path": "atomic-facts.jsonl",
+      "sha256": "6fa45c1cace4682603aa83a7f5650012aa2f17c9c7a88e5047db51a6ee446ba5",
+      "case_count": 24,
+      "suites": ["atomic_fact"]
+    }
+  ],
+  "suite_counts": {"atomic_fact": 24},
+  "notes": [
+    "Synthetic self-test fixtures only; no production or Hermes transcript was copied.",
+    "The oracle output validates scorer arithmetic and must not be reported as a model score.",
+    "Open development and validation cases do not qualify as a blind benchmark."
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "schema_version": "am-eval-measurement-readiness-v1",
+  "run_id": "agent-memory-1.0.0rc9-measurement-r3-20260812",
+  "system_revision": "TO_BE_PINNED",
+  "status": "MEASUREMENT_READY_REAL_RUN_PENDING",
+  "official_metrics_updated": false,
+  "datasets": [
+    {
+      "id": "agent-memory-atomic-quality-selftest-v1",
+      "manifest_sha256": "7e5e7f9401fafcf26882cf0d7b4c3518c3f7c39200b1e155a757da0e93686a6e",
+      "case_count": 24,
+      "development_count": 12,
+      "validation_count": 12,
+      "blind_count": 0,
+      "contains_production_data": false
+    }
+  ],
+  "verification": {
+    "targeted_tests": {"passed": 89, "failed": 0},
+    "non_integration_tests": {"passed": 327, "failed": 0, "deselected": 38},
+    "ruff": "PASS",
+    "frontend_tests": {"passed": 6, "failed": 0},
+    "frontend_build": "PASS",
+    "uv_lock_check": "PASS",
+    "dataset_validation": "PASS",
+    "diff_check": "PASS",
+    "database_api_gate": {
+      "status": "NOT_RERUN",
+      "reason": "local execution authorization unavailable; no runtime or database code changed"
+    }
+  },
+  "measurement_contracts": {
+    "M01": "atomic claim precision",
+    "M02": "atomic claim recall",
+    "M03": "exact evidence span accuracy",
+    "M07": "recall citation accuracy",
+    "M22": "manual review rate with fixed denominator",
+    "M23": "terminal model failure rate with zero unfinished jobs"
+  },
+  "boundaries": {
+    "model_called": false,
+    "external_data_sent": false,
+    "production_connected": false,
+    "production_modified": false,
+    "temporary_database_created": false,
+    "contains_private_memory_text": false
+  },
+  "remaining_requirements": [
+    "private 100-150 claim Hermes gold with blind split",
+    "isolated real model run with fixed prompt, policy, allowlist and budget",
+    "aggregate-only production shadow window if separately authorized"
+  ]
+}

@@ -53,6 +53,8 @@ agent-memory-candidate-governance = "agent_memory.candidate_governance:main"
 agent-memory-apply-candidate-governance = "agent_memory.candidate_governance:apply_main"
 agent-memory-benchmark = "agent_memory.am_eval:main"
 agent-memory-validate-benchmark-dataset = "agent_memory.am_eval_dataset:main"
+agent-memory-score-atomic-quality = "agent_memory.am_eval_quality:main"
+agent-memory-score-efficiency = "agent_memory.am_eval_efficiency:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_memory"]
