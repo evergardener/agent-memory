@@ -1,0 +1,86 @@
+{
+  "schema_version": "am-eval-execution-plan-gate-v1",
+  "run_id": "agent-memory-1.0.0rc9-execution-plan-gate-r8-20260812",
+  "system_revision": "2b445664014e9c8ce9f922d466076c4a0b7f25be",
+  "status": "EXECUTION_PLAN_PREFLIGHT_GATE_PASS_REAL_MODEL_PENDING",
+  "official_metrics_updated": false,
+  "verification": {
+    "non_integration_tests": {
+      "passed": 419,
+      "failed": 0,
+      "deselected_integration": 42
+    },
+    "loopback_atomic_runner_cli": {
+      "passed": 1,
+      "failed": 0,
+      "postgresql_binding": "127.0.0.1:55438",
+      "postgresql_compose_project": "agent-memory-release-f1-f7-09a2256",
+      "temporary_database_pattern": "am_eval_cli_*",
+      "temporary_database_residue": 0,
+      "model_endpoint": "127.0.0.1 ephemeral OpenAI-compatible server",
+      "loopback_model_calls": 2,
+      "supplier_calls": 0,
+      "external_data_sent": false,
+      "preflight_database_endpoint": "127.0.0.1:9 unreachable by design",
+      "preflight_database_connected": false,
+      "preflight_model_called": false,
+      "preflight_output_created": false,
+      "execution_plan_sha_chain": "PASS"
+    },
+    "cli_contract_help": {
+      "plan": "PASS",
+      "preflight": "PASS",
+      "runner": "PASS",
+      "quality_scorer": "PASS",
+      "efficiency_scorer": "PASS"
+    },
+    "ruff_check": "PASS",
+    "uv_lock_check": "PASS",
+    "diff_check": "PASS"
+  },
+  "implemented_gates": [
+    "a repository-outside 0600 execution plan binds dataset and manifest SHA",
+    "the plan binds namespace run identity Git revision system version model endpoint and exact call budget",
+    "the plan binds zero retries disabled backfill maximum fact count complete turn allowlist and the data confirmation phrase",
+    "preflight validates configuration and restricted files without database or model access",
+    "external synthetic runs are pinned to the official open 24-case dataset and manifest SHA",
+    "runner arguments cannot override frozen plan fields",
+    "atomic output quality result efficiency input efficiency result and terminal summary preserve one execution plan SHA",
+    "quality and isolated efficiency scoring require explicit confirmation of that execution plan SHA",
+    "API base values cannot contain credentials query parameters or fragments",
+    "evaluation keys must be bounded single-line whitespace-free values read through a restricted descriptor",
+    "the validated model profile is passed into worker execution without reopening the key path"
+  ],
+  "schemas": {
+    "execution_plan": "am-eval-atomic-execution-plan-v2",
+    "runner": "am-eval-atomic-runner-v2",
+    "atomic_output": "am-eval-atomic-output-v2"
+  },
+  "current_real_model_readiness": {
+    "model": "ocg/qwen3.7-plus",
+    "api_base": "https://9router.evergardenviolet.top/v1",
+    "public_synthetic_case_count": 24,
+    "maximum_supplier_calls": 24,
+    "nonproduction_key_file_present": false,
+    "external_data_confirmation_received": false,
+    "real_model_run_started": false
+  },
+  "boundaries": {
+    "production_data_read": false,
+    "production_api_or_database_connected": false,
+    "production_namespace_connected": false,
+    "production_container_inspected_or_modified": false,
+    "production_modified": false,
+    "external_model_called": false,
+    "external_data_sent": false,
+    "real_api_key_read": false,
+    "repository_contains_real_api_key": false
+  },
+  "remaining_requirements": [
+    "create a repository-outside 0700 evaluation secret directory and 0600 non-production key file",
+    "provide the exact SEND_SYNTHETIC_BENCHMARK_TO_EXTERNAL_MODEL confirmation",
+    "review and confirm the generated execution plan SHA before the real run",
+    "run the 24-case public synthetic shakedown in a fresh loopback am_eval_ database",
+    "score and review aggregate M01 M02 M03 M07 and M23 diagnostics without publishing model text"
+  ]
+}

@@ -29,6 +29,9 @@
 第七轮评测密钥文件安全门禁见
 [`round-7-model-key-gate-readiness.json`](round-7-model-key-gate-readiness.json) 及
 [`../../docs/V1.0-AM-Eval第七轮模型密钥门禁报告.md`](../../docs/V1.0-AM-Eval第七轮模型密钥门禁报告.md)。
+第八轮冻结 execution plan、零网络 preflight 和 plan SHA 证据链见
+[`round-8-execution-plan-gate.json`](round-8-execution-plan-gate.json) 及
+[`../../docs/V1.0-AM-Eval第八轮执行计划门禁报告.md`](../../docs/V1.0-AM-Eval第八轮执行计划门禁报告.md)。
 
 验证冻结数据集：
 
