@@ -1,0 +1,58 @@
+{
+  "schema_version": "am-eval-runner-readiness-v1",
+  "run_id": "agent-memory-1.0.0rc9-atomic-runner-r4-20260812",
+  "system_revision": "bbb1cb30821a05e3f5991565d799919c6faf8a8d",
+  "status": "RUNNER_READY_REAL_MODEL_PENDING",
+  "official_metrics_updated": false,
+  "runner": {
+    "version": "am-eval-atomic-runner-v1",
+    "dataset_id": "agent-memory-atomic-quality-selftest-v1",
+    "manifest_sha256": "7e5e7f9401fafcf26882cf0d7b4c3518c3f7c39200b1e155a757da0e93686a6e",
+    "case_count": 24,
+    "model_request_budget": 24,
+    "output_contains_memory_text": true,
+    "aggregate_contains_memory_text": false
+  },
+  "verification": {
+    "targeted_unit_tests": {"passed": 106, "failed": 0},
+    "non_integration_tests": {"passed": 349, "failed": 0},
+    "runner_database_integration": {
+      "status": "PASS",
+      "model_adapter": "fake-no-network",
+      "model_jobs_done": 2,
+      "model_jobs_failed": 0,
+      "metrics": {"M01": 1.0, "M02": 1.0, "M03": 1.0, "M07": 1.0, "M22": 0.0, "M23": 0.0}
+    },
+    "ruff": "PASS",
+    "uv_lock_check": "PASS",
+    "diff_check": "PASS",
+    "cleanup": {
+      "database": "am_eval_r4_atomic_runner_20260812",
+      "database_remaining": false,
+      "external_model_called": false
+    }
+  },
+  "safety_gates": [
+    "loopback database URL and am_eval_ database name",
+    "dedicated empty database",
+    "automated namespace and exact turn allowlist",
+    "manifest SHA, model and API endpoint pinning",
+    "model retry budget fixed to zero",
+    "automatic backfill disabled",
+    "distinct external-data confirmations for synthetic and production-derived datasets",
+    "memory-bearing output outside repository in 0700 directory and 0600 exclusive file",
+    "namespace-scoped event idempotency keys"
+  ],
+  "boundaries": {
+    "production_connected": false,
+    "production_modified": false,
+    "external_model_called": false,
+    "external_data_sent": false,
+    "contains_private_memory_text": false
+  },
+  "remaining_requirements": [
+    "configure a non-production external model key and run the 24-case synthetic shakedown",
+    "create a private 100-150 claim blind gold set after separate data authorization",
+    "run aggregate-only production shadow M22 after separate production authorization"
+  ]
+}
