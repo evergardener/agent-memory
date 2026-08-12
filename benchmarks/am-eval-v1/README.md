@@ -18,6 +18,8 @@
 完整 CLI、真实 LiteLLM 和回环 OpenAI 兼容端点 Gate 见
 [`round-4-atomic-runner-cli-gate.json`](round-4-atomic-runner-cli-gate.json) 及
 [`../../docs/V1.0-AM-Eval第四轮CLI端到端门禁报告.md`](../../docs/V1.0-AM-Eval第四轮CLI端到端门禁报告.md)。
+私有生产派生 gold 的仓库外初始化、复核、隐私扫描与冻结规则见
+[`../../docs/V1.0-AM-Eval私有盲测金标工作流.md`](../../docs/V1.0-AM-Eval私有盲测金标工作流.md)。
 
 验证冻结数据集：
 

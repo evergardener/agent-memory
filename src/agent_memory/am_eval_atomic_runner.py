@@ -14,6 +14,7 @@ from psycopg import Connection, connect
 from psycopg.conninfo import conninfo_to_dict
 
 from .am_eval_dataset import DatasetError, load_dataset, sha256_file
+from .am_eval_private_gold import validate_frozen_private_gold, validate_private_input
 from .config import Settings
 from .ids import stable_uuid
 from .model_adapter import ModelProfile
@@ -562,11 +563,16 @@ def plan_main() -> None:
     arguments = parser.parse_args()
     manifest_path = arguments.manifest.expanduser().resolve()
     manifest_sha256 = sha256_file(manifest_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("contains_production_data") is True:
+        manifest_path = validate_private_input(arguments.manifest)
     cases = tuple(
         case for case in load_dataset(manifest_path) if case["suite"] == "atomic_fact"
     )
     if not cases:
         parser.error("dataset has no atomic_fact cases")
+    if manifest.get("contains_production_data") is True:
+        validate_frozen_private_gold(manifest, cases)
     print(
         json.dumps(
             build_plan(
@@ -586,6 +592,8 @@ def main() -> None:
     if arguments.confirm_sha256.casefold() != manifest_sha256:
         raise SystemExit("--confirm-sha256 does not match the frozen manifest")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("contains_production_data") is True:
+        manifest_path = validate_private_input(arguments.manifest)
     required_confirmation = external_data_confirmation(manifest)
     if arguments.confirm_external_data != required_confirmation:
         raise SystemExit("explicit external-data confirmation is required")
@@ -599,6 +607,8 @@ def main() -> None:
     )
     if not cases:
         raise SystemExit("dataset has no atomic_fact cases")
+    if manifest.get("contains_production_data") is True:
+        validate_frozen_private_gold(manifest, cases)
     validate_model_call_budget(
         max_model_calls=arguments.max_model_calls,
         case_count=len(cases),

@@ -57,6 +57,9 @@ agent-memory-score-atomic-quality = "agent_memory.am_eval_quality:main"
 agent-memory-score-efficiency = "agent_memory.am_eval_efficiency:main"
 agent-memory-run-atomic-benchmark = "agent_memory.am_eval_atomic_runner:main"
 agent-memory-plan-atomic-benchmark = "agent_memory.am_eval_atomic_runner:plan_main"
+agent-memory-init-private-gold = "agent_memory.am_eval_private_gold:init_main"
+agent-memory-validate-private-gold = "agent_memory.am_eval_private_gold:validate_main"
+agent-memory-freeze-private-gold = "agent_memory.am_eval_private_gold:freeze_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_memory"]
