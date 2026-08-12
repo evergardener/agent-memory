@@ -17,6 +17,7 @@ from agent_memory.am_eval_efficiency import evaluate_efficiency
 from agent_memory.am_eval_quality import evaluate_atomic_quality
 from agent_memory.config import Settings
 from agent_memory.ids import stable_uuid
+from agent_memory.model_adapter import ModelProfile
 
 pytestmark = [
     pytest.mark.integration,
@@ -153,6 +154,7 @@ def test_runner_uses_real_worker_storage_and_recall_with_fake_model(monkeypatch)
             connection,
             prepared=prepared,
             namespace=NAMESPACE,
+            model_profile=ModelProfile.from_settings(settings),
         )
         output = build_private_output(
             connection,
@@ -160,6 +162,7 @@ def test_runner_uses_real_worker_storage_and_recall_with_fake_model(monkeypatch)
             namespace=NAMESPACE,
             dataset_id="runner-db-selftest",
             manifest_sha256=MANIFEST_SHA,
+            execution_plan_sha256=MANIFEST_SHA,
             run_id=RUN_ID,
             system_revision="c" * 40,
             system_version="test",
@@ -222,6 +225,7 @@ def test_timeout_is_one_call_per_case_and_preserves_evidence_without_facts(
             connection,
             prepared=prepared,
             namespace=failure_namespace,
+            model_profile=ModelProfile.from_settings(settings),
         )
         namespace_id = stable_uuid("namespace", failure_namespace)
         evidence_count = connection.execute(
@@ -245,6 +249,7 @@ def test_timeout_is_one_call_per_case_and_preserves_evidence_without_facts(
             namespace=failure_namespace,
             dataset_id="runner-timeout-selftest",
             manifest_sha256=MANIFEST_SHA,
+            execution_plan_sha256=MANIFEST_SHA,
             run_id=f"{RUN_ID}-timeout",
             system_revision="c" * 40,
             system_version="test",

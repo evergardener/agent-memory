@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import stat
@@ -8,6 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from psycopg import Connection, connect
@@ -27,11 +29,18 @@ from .worker import (
     select_turn_evidence,
 )
 
-RUNNER_VERSION = "am-eval-atomic-runner-v1"
-OUTPUT_SCHEMA_VERSION = "am-eval-atomic-output-v1"
+RUNNER_VERSION = "am-eval-atomic-runner-v2"
+OUTPUT_SCHEMA_VERSION = "am-eval-atomic-output-v2"
+PLAN_SCHEMA_VERSION = "am-eval-atomic-execution-plan-v2"
 DEFAULT_NAMESPACE = "hermes:automated-tests:am-eval-atomic"
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
 GIT_REVISION_LENGTH = 40
+MAX_API_KEY_BYTES = 16 * 1024
+MAX_EXECUTION_PLAN_BYTES = 1024 * 1024
+PUBLIC_SYNTHETIC_DATASET_ID = "agent-memory-atomic-quality-selftest-v1"
+PUBLIC_SYNTHETIC_MANIFEST_SHA256 = (
+    "7e5e7f9401fafcf26882cf0d7b4c3518c3f7c39200b1e155a757da0e93686a6e"
+)
 
 
 @dataclass(frozen=True)
@@ -42,7 +51,7 @@ class PreparedCase:
 
 
 def _validate_sha256(value: str, name: str) -> None:
-    if len(value) != 64 or any(
+    if not isinstance(value, str) or len(value) != 64 or any(
         character not in SHA256_CHARACTERS for character in value.casefold()
     ):
         raise DatasetError(f"{name} must be a 64-character SHA-256")
@@ -70,9 +79,9 @@ def validate_private_output(path: Path, *, forbidden_root: Path | None = None) -
 
 
 def validate_run_metadata(*, run_id: str, system_revision: str, system_version: str) -> None:
-    if not run_id.strip():
+    if not isinstance(run_id, str) or not run_id.strip():
         raise DatasetError("atomic runner requires a non-empty run ID")
-    if (
+    if not isinstance(system_revision, str) or (
         len(system_revision) != GIT_REVISION_LENGTH
         or any(
             character not in SHA256_CHARACTERS
@@ -80,8 +89,30 @@ def validate_run_metadata(*, run_id: str, system_revision: str, system_version: 
         )
     ):
         raise DatasetError("system revision must be a 40-character Git commit SHA")
-    if not system_version.strip():
+    if not isinstance(system_version, str) or not system_version.strip():
         raise DatasetError("atomic runner requires a non-empty system version")
+
+
+def validate_evaluation_api_base(api_base: str) -> str:
+    if not isinstance(api_base, str):
+        raise DatasetError("atomic benchmark API base is invalid")
+    value = api_base.strip().rstrip("/")
+    try:
+        parsed = urlsplit(value)
+    except ValueError as error:
+        raise DatasetError("atomic benchmark API base is invalid") from error
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise DatasetError(
+            "atomic benchmark API base requires HTTP(S) without credentials, query, or fragment"
+        )
+    return value
 
 
 def validate_isolated_database_url(database_url: str) -> dict[str, str]:
@@ -95,9 +126,47 @@ def validate_isolated_database_url(database_url: str) -> dict[str, str]:
     return values
 
 
-def validate_evaluation_api_key_file(
+def _read_restricted_file(
+    path: Path,
+    *,
+    expected_stat: os.stat_result,
+    maximum_bytes: int,
+    label: str,
+) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise DatasetError(f"{label} cannot be opened safely") from error
+    try:
+        opened_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(opened_stat.st_mode):
+            raise DatasetError(f"{label} must be a regular file")
+        if (opened_stat.st_dev, opened_stat.st_ino) != (
+            expected_stat.st_dev,
+            expected_stat.st_ino,
+        ):
+            raise DatasetError(f"{label} changed during validation")
+        if stat.S_IMODE(opened_stat.st_mode) & 0o077:
+            raise DatasetError(f"{label} must be mode 0600 or stricter")
+        if opened_stat.st_nlink != 1:
+            raise DatasetError(f"{label} cannot have multiple hard links")
+        payload = bytearray()
+        while len(payload) <= maximum_bytes:
+            chunk = os.read(descriptor, min(64 * 1024, maximum_bytes + 1 - len(payload)))
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if len(payload) > maximum_bytes:
+            raise DatasetError(f"{label} exceeds the size limit")
+        return bytes(payload)
+    finally:
+        os.close(descriptor)
+
+
+def load_evaluation_api_key_file(
     settings: Settings, *, forbidden_root: Path | None = None
-) -> Path:
+) -> tuple[Path, str]:
     if settings.model_api_key.get_secret_value():
         raise DatasetError(
             "atomic runner forbids AGENT_MEMORY_MODEL_API_KEY; use a private key file"
@@ -120,17 +189,67 @@ def validate_evaluation_api_key_file(
     parent_mode = stat.S_IMODE(resolved.parent.stat().st_mode)
     if parent_mode & 0o077:
         raise DatasetError("atomic runner API key directory must be mode 0700 or stricter")
-    file_stat = resolved.stat()
-    if stat.S_IMODE(file_stat.st_mode) & 0o077:
-        raise DatasetError("atomic runner API key file must be mode 0600 or stricter")
-    if file_stat.st_nlink != 1:
-        raise DatasetError("atomic runner API key file cannot have multiple hard links")
     try:
-        if not resolved.read_text(encoding="utf-8").strip():
-            raise DatasetError("atomic runner API key file is empty")
-    except (OSError, UnicodeError) as error:
+        file_stat = resolved.stat()
+        payload = _read_restricted_file(
+            resolved,
+            expected_stat=file_stat,
+            maximum_bytes=MAX_API_KEY_BYTES,
+            label="atomic runner API key file",
+        )
+        decoded = payload.decode("utf-8")
+    except UnicodeError as error:
         raise DatasetError("atomic runner API key file cannot be read") from error
-    return resolved
+    key = decoded.rstrip("\r\n")
+    if not key:
+        raise DatasetError("atomic runner API key file is empty")
+    if key != key.strip() or any(character.isspace() for character in key):
+        raise DatasetError("atomic runner API key file must contain one trimmed line")
+    return resolved, key
+
+
+def validate_evaluation_api_key_file(
+    settings: Settings, *, forbidden_root: Path | None = None
+) -> Path:
+    return load_evaluation_api_key_file(settings, forbidden_root=forbidden_root)[0]
+
+
+def load_evaluation_plan_file(path: Path, *, confirm_sha256: str) -> tuple[Path, str, bytes]:
+    _validate_sha256(confirm_sha256, "confirm_plan_sha256")
+    expanded = path.expanduser()
+    if any(candidate.is_symlink() for candidate in (expanded, *expanded.parents)):
+        raise DatasetError("atomic execution plan path cannot use a symlink")
+    resolved = expanded.resolve()
+    source_root = Path(__file__).parents[2].resolve()
+    try:
+        resolved.relative_to(source_root)
+    except ValueError:
+        pass
+    else:
+        raise DatasetError("atomic execution plan must be outside the source repository")
+    if not resolved.is_file():
+        raise DatasetError("atomic execution plan must be a regular file")
+    if stat.S_IMODE(resolved.parent.stat().st_mode) & 0o077:
+        raise DatasetError("atomic execution plan directory must be mode 0700 or stricter")
+    file_stat = resolved.stat()
+    payload = _read_restricted_file(
+        resolved,
+        expected_stat=file_stat,
+        maximum_bytes=MAX_EXECUTION_PLAN_BYTES,
+        label="atomic execution plan",
+    )
+    actual_sha256 = hashlib.sha256(payload).hexdigest()
+    if actual_sha256.casefold() != confirm_sha256.casefold():
+        raise DatasetError("atomic execution plan SHA does not match confirmation")
+    return resolved, actual_sha256, payload
+
+
+def validate_evaluation_plan_file(path: Path, *, confirm_sha256: str) -> tuple[Path, str]:
+    resolved, actual_sha256, _payload = load_evaluation_plan_file(
+        path,
+        confirm_sha256=confirm_sha256,
+    )
+    return resolved, actual_sha256
 
 
 def validate_runtime_settings(
@@ -149,7 +268,7 @@ def validate_runtime_settings(
     if not settings.model_evaluation_mode:
         raise DatasetError("AGENT_MEMORY_MODEL_EVALUATION_MODE must be enabled")
     if settings.model_evaluation_plan_sha.casefold() != plan_sha256.casefold():
-        raise DatasetError("configured evaluation plan SHA does not match the manifest")
+        raise DatasetError("configured evaluation plan SHA does not match the execution plan")
     if settings.worker_role != "model":
         raise DatasetError("atomic runner requires AGENT_MEMORY_WORKER_ROLE=model")
     if settings.model_auto_backfill_enabled:
@@ -158,8 +277,11 @@ def validate_runtime_settings(
         raise DatasetError("atomic runner requires model retries=0 for a fixed request budget")
     if not settings.model_allow_external_data:
         raise DatasetError("external model data authorization is required")
-    validate_evaluation_api_key_file(settings, forbidden_root=Path(__file__).parents[2])
-    profile = ModelProfile.from_settings(settings)
+    _key_path, api_key = load_evaluation_api_key_file(
+        settings,
+        forbidden_root=Path(__file__).parents[2],
+    )
+    profile = ModelProfile.from_settings(settings, api_key_override=api_key)
     if profile.model != expected_model:
         raise DatasetError("configured model differs from --expected-model")
     if (profile.api_base or "").rstrip("/") != expected_api_base.rstrip("/"):
@@ -167,6 +289,25 @@ def validate_runtime_settings(
     if not profile.api_key:
         raise DatasetError("model API key is required")
     return profile
+
+
+def validate_external_dataset_scope(
+    *,
+    manifest: dict[str, Any],
+    manifest_sha256: str,
+    profile: ModelProfile,
+) -> None:
+    if not profile.sends_data_externally or manifest.get("contains_production_data") is True:
+        return
+    if (
+        manifest.get("dataset_id") != PUBLIC_SYNTHETIC_DATASET_ID
+        or manifest_sha256.casefold() != PUBLIC_SYNTHETIC_MANIFEST_SHA256
+        or manifest.get("visibility") != "open"
+        or manifest.get("case_count") != 24
+    ):
+        raise DatasetError(
+            "external synthetic run requires the official pinned 24-case public dataset"
+        )
 
 
 def benchmark_turn_id(*, namespace: str, manifest_sha256: str, case_id: str) -> UUID:
@@ -190,11 +331,33 @@ def benchmark_idempotency_key(
 
 
 def build_plan(
-    *, cases: tuple[dict[str, Any], ...], namespace: str, manifest_sha256: str
+    *,
+    manifest: dict[str, Any],
+    cases: tuple[dict[str, Any], ...],
+    namespace: str,
+    manifest_sha256: str,
+    run_id: str,
+    system_revision: str,
+    system_version: str,
+    model: str,
+    api_base: str,
+    max_model_calls: int,
 ) -> dict[str, Any]:
     if not namespace.startswith("hermes:automated-tests:"):
         raise DatasetError("atomic benchmark plan requires an automated namespace")
     _validate_sha256(manifest_sha256, "manifest_sha256")
+    validate_run_metadata(
+        run_id=run_id,
+        system_revision=system_revision,
+        system_version=system_version,
+    )
+    if not isinstance(model, str) or not model.strip():
+        raise DatasetError("atomic benchmark plan requires a model")
+    normalized_api_base = validate_evaluation_api_base(api_base)
+    validate_model_call_budget(
+        max_model_calls=max_model_calls,
+        case_count=len(cases),
+    )
     turn_ids = tuple(
         benchmark_turn_id(
             namespace=namespace,
@@ -203,17 +366,155 @@ def build_plan(
         )
         for case in cases
     )
+    expected_fact_limit = max(len(case["expected"]["facts"]) for case in cases)
     return {
-        "schema_version": "am-eval-atomic-plan-v1",
+        "schema_version": PLAN_SCHEMA_VERSION,
+        "dataset": {
+            "id": manifest["dataset_id"],
+            "manifest_sha256": manifest_sha256,
+            "contains_production_data": manifest["contains_production_data"],
+            "visibility": manifest["visibility"],
+        },
         "namespace": namespace,
-        "manifest_sha256": manifest_sha256,
+        "run": {
+            "id": run_id,
+            "system_revision": system_revision,
+            "system_version": system_version,
+        },
+        "model": {
+            "name": model.strip(),
+            "api_base": normalized_api_base,
+            "max_calls": max_model_calls,
+            "max_retries": 0,
+            "automatic_backfill": False,
+        },
         "case_count": len(cases),
-        "model_call_budget": len(cases),
+        "expected_max_atomic_facts": expected_fact_limit,
         "turn_allowlist_csv": ",".join(str(turn_id) for turn_id in turn_ids),
+        "required_external_data_confirmation": external_data_confirmation(manifest),
         "contains_memory_text": False,
         "model_called": False,
         "external_data_sent": False,
     }
+
+
+def validate_execution_plan(
+    plan: dict[str, Any],
+    *,
+    manifest: dict[str, Any],
+    manifest_sha256: str,
+    cases: tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    required_keys = {
+        "schema_version",
+        "dataset",
+        "namespace",
+        "run",
+        "model",
+        "case_count",
+        "expected_max_atomic_facts",
+        "turn_allowlist_csv",
+        "required_external_data_confirmation",
+        "contains_memory_text",
+        "model_called",
+        "external_data_sent",
+    }
+    if (
+        not isinstance(plan, dict)
+        or set(plan) != required_keys
+        or plan.get("schema_version") != PLAN_SCHEMA_VERSION
+    ):
+        raise DatasetError("atomic execution plan has an invalid schema")
+    expected_dataset = {
+        "id": manifest["dataset_id"],
+        "manifest_sha256": manifest_sha256,
+        "contains_production_data": manifest["contains_production_data"],
+        "visibility": manifest["visibility"],
+    }
+    if plan.get("dataset") != expected_dataset:
+        raise DatasetError("atomic execution plan dataset binding mismatch")
+    namespace = plan.get("namespace")
+    if not isinstance(namespace, str) or not namespace.startswith("hermes:automated-tests:"):
+        raise DatasetError("atomic execution plan requires an automated namespace")
+    run = plan.get("run")
+    if not isinstance(run, dict) or set(run) != {
+        "id",
+        "system_revision",
+        "system_version",
+    }:
+        raise DatasetError("atomic execution plan has invalid run metadata")
+    if not all(isinstance(run[field], str) for field in run):
+        raise DatasetError("atomic execution plan has invalid run metadata")
+    validate_run_metadata(
+        run_id=run["id"],
+        system_revision=run["system_revision"],
+        system_version=run["system_version"],
+    )
+    model = plan.get("model")
+    if not isinstance(model, dict) or set(model) != {
+        "name",
+        "api_base",
+        "max_calls",
+        "max_retries",
+        "automatic_backfill",
+    }:
+        raise DatasetError("atomic execution plan has invalid model metadata")
+    if not isinstance(model["name"], str) or not model["name"].strip():
+        raise DatasetError("atomic execution plan requires a model")
+    if not isinstance(model["api_base"], str) or not model["api_base"].strip():
+        raise DatasetError("atomic execution plan requires an API base")
+    if validate_evaluation_api_base(model["api_base"]) != model["api_base"]:
+        raise DatasetError("atomic execution plan API base is not normalized")
+    if (
+        isinstance(model["max_calls"], bool)
+        or not isinstance(model["max_calls"], int)
+        or isinstance(model["max_retries"], bool)
+        or not isinstance(model["max_retries"], int)
+    ):
+        raise DatasetError("atomic execution plan has invalid model metadata")
+    if model["max_retries"] != 0 or model["automatic_backfill"] is not False:
+        raise DatasetError("atomic execution plan must disable retries and backfill")
+    validate_model_call_budget(
+        max_model_calls=model["max_calls"],
+        case_count=len(cases),
+    )
+    expected_ids = {
+        benchmark_turn_id(
+            namespace=namespace,
+            manifest_sha256=manifest_sha256,
+            case_id=str(case["case_id"]),
+        )
+        for case in cases
+    }
+    try:
+        planned_ids = {
+            UUID(item.strip()) for item in plan["turn_allowlist_csv"].split(",") if item.strip()
+        }
+    except (AttributeError, ValueError) as error:
+        raise DatasetError("atomic execution plan has an invalid turn allowlist") from error
+    expected_fact_limit = max(len(case["expected"]["facts"]) for case in cases)
+    if (
+        isinstance(plan["case_count"], bool)
+        or not isinstance(plan["case_count"], int)
+        or isinstance(plan["expected_max_atomic_facts"], bool)
+        or not isinstance(plan["expected_max_atomic_facts"], int)
+        or plan["case_count"] != len(cases)
+        or plan["expected_max_atomic_facts"] != expected_fact_limit
+        or planned_ids != expected_ids
+    ):
+        raise DatasetError("atomic execution plan case binding mismatch")
+    if (
+        not isinstance(plan["required_external_data_confirmation"], str)
+        or plan["required_external_data_confirmation"]
+        != external_data_confirmation(manifest)
+    ):
+        raise DatasetError("atomic execution plan confirmation binding mismatch")
+    if any(
+        plan[field] is not False
+        for field in ("contains_memory_text", "model_called", "external_data_sent")
+    ):
+        raise DatasetError("atomic execution plan must remain metadata-only")
+    return {**plan, "expected_turn_ids": expected_ids}
 
 
 def prepare_cases(
@@ -318,6 +619,7 @@ def process_model_jobs(
     *,
     prepared: tuple[PreparedCase, ...],
     namespace: str,
+    model_profile: ModelProfile,
 ) -> dict[str, int]:
     namespace_id = stable_uuid("namespace", namespace)
     for item in prepared:
@@ -331,7 +633,7 @@ def process_model_jobs(
         ).fetchone()
         if row is None:
             raise DatasetError(f"missing pending model job for {item.case['case_id']}")
-        process_one(connection, row)
+        process_one(connection, row, model_profile=model_profile)
         connection.execute(
             """UPDATE ops.jobs SET status='failed',run_after=now(),lease_until=NULL,
                      updated_at=now()
@@ -392,6 +694,7 @@ def build_private_output(
     namespace: str,
     dataset_id: str,
     manifest_sha256: str,
+    execution_plan_sha256: str,
     run_id: str,
     system_revision: str,
     system_version: str,
@@ -401,6 +704,7 @@ def build_private_output(
     model_called: bool,
     external_data_sent: bool,
 ) -> dict[str, Any]:
+    _validate_sha256(execution_plan_sha256, "execution_plan_sha256")
     output_cases: list[dict[str, Any]] = []
     for item in prepared:
         predictions = _fact_rows(connection, namespace=namespace, turn_id=item.turn_id)
@@ -453,6 +757,7 @@ def build_private_output(
         "runner_version": RUNNER_VERSION,
         "dataset_id": dataset_id,
         "dataset_manifest_sha256": manifest_sha256,
+        "execution_plan_sha256": execution_plan_sha256,
         "run_id": run_id,
         "system": {
             "name": "agent-memory",
@@ -511,6 +816,7 @@ def build_efficiency_input(
         "window_start": window_start.isoformat(),
         "window_end": window_end.isoformat(),
         "system_revision": output["system"]["revision"],
+        "execution_plan_sha256": output["execution_plan_sha256"],
         "policy_version": output["policy_version"],
         "counts": {
             "auto_admitted_count": active,
@@ -530,7 +836,12 @@ def benchmark_run_complete(*, job_statuses: dict[str, int], case_count: int) -> 
 
 
 def validate_model_call_budget(*, max_model_calls: int, case_count: int) -> None:
-    if max_model_calls <= 0 or max_model_calls != case_count:
+    if (
+        isinstance(max_model_calls, bool)
+        or not isinstance(max_model_calls, int)
+        or max_model_calls <= 0
+        or max_model_calls != case_count
+    ):
         raise DatasetError(
             "model call budget must exactly match the frozen atomic case count"
         )
@@ -544,6 +855,7 @@ def emit_run_summary(
     output_path: Path,
     efficiency_output_path: Path,
     external_data_sent: bool,
+    execution_plan_sha256: str,
 ) -> None:
     complete = benchmark_run_complete(
         job_statuses=job_statuses,
@@ -554,6 +866,7 @@ def emit_run_summary(
             {
                 "status": "COMPLETE" if complete else "FAILED",
                 "run_id": run_id,
+                "execution_plan_sha256": execution_plan_sha256,
                 "case_count": case_count,
                 "job_statuses": job_statuses,
                 "output": str(output_path),
@@ -574,31 +887,37 @@ def external_data_confirmation(manifest: dict[str, Any]) -> str:
     return "SEND_SYNTHETIC_BENCHMARK_TO_EXTERNAL_MODEL"
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, preflight: bool = False) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run a frozen atomic-fact benchmark in an isolated database."
+        description=(
+            "Validate a frozen atomic benchmark execution plan without network or database access."
+            if preflight
+            else "Run a frozen atomic-fact benchmark in an isolated database."
+        )
     )
     parser.add_argument("manifest", type=Path)
+    parser.add_argument("--plan", required=True, type=Path)
+    parser.add_argument("--confirm-plan-sha256", required=True)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--efficiency-output", required=True, type=Path)
-    parser.add_argument("--namespace", default=DEFAULT_NAMESPACE)
-    parser.add_argument("--run-id", required=True)
-    parser.add_argument("--system-revision", required=True)
-    parser.add_argument("--system-version", required=True)
-    parser.add_argument("--expected-model", required=True)
-    parser.add_argument("--expected-api-base", required=True)
-    parser.add_argument("--max-model-calls", required=True, type=int)
-    parser.add_argument("--confirm-sha256", required=True)
-    parser.add_argument("--confirm-external-data", required=True)
+    if not preflight:
+        parser.add_argument("--confirm-external-data", required=True)
     return parser
 
 
 def plan_main() -> None:
     parser = argparse.ArgumentParser(
-        description="Build a metadata-only allowlist for the atomic benchmark runner."
+        description="Write a frozen metadata-only execution plan for the atomic runner."
     )
     parser.add_argument("manifest", type=Path)
+    parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--namespace", default=DEFAULT_NAMESPACE)
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--system-revision", required=True)
+    parser.add_argument("--system-version", required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--api-base", required=True)
+    parser.add_argument("--max-model-calls", required=True, type=int)
     arguments = parser.parse_args()
     manifest_path = arguments.manifest.expanduser().resolve()
     manifest_sha256 = sha256_file(manifest_path)
@@ -612,78 +931,161 @@ def plan_main() -> None:
         parser.error("dataset has no atomic_fact cases")
     if manifest.get("contains_production_data") is True:
         validate_frozen_private_gold(manifest, cases)
+    plan = build_plan(
+        manifest=manifest,
+        cases=cases,
+        namespace=arguments.namespace,
+        manifest_sha256=manifest_sha256,
+        run_id=arguments.run_id,
+        system_revision=arguments.system_revision,
+        system_version=arguments.system_version,
+        model=arguments.model,
+        api_base=arguments.api_base,
+        max_model_calls=arguments.max_model_calls,
+    )
+    output_path = validate_private_output(
+        arguments.output,
+        forbidden_root=Path(__file__).parents[2],
+    )
+    write_private_json(output_path, plan)
+    plan_sha256 = sha256_file(output_path)
     print(
         json.dumps(
-            build_plan(
-                cases=cases,
-                namespace=arguments.namespace,
-                manifest_sha256=manifest_sha256,
-            ),
+            {
+                "status": "EXECUTION_PLAN_CREATED",
+                "plan": str(output_path),
+                "plan_sha256": plan_sha256,
+                "manifest_sha256": manifest_sha256,
+                "case_count": len(cases),
+                "model_call_budget": arguments.max_model_calls,
+                "contains_memory_text": False,
+                "model_called": False,
+                "external_data_sent": False,
+            },
+            sort_keys=True,
+        )
+    )
+
+
+@dataclass(frozen=True)
+class ValidatedRun:
+    manifest: dict[str, Any]
+    manifest_sha256: str
+    cases: tuple[dict[str, Any], ...]
+    plan: dict[str, Any]
+    plan_sha256: str
+    settings: Settings
+    profile: ModelProfile
+    output_path: Path
+    efficiency_output_path: Path
+
+
+def validate_run_preflight(
+    arguments: argparse.Namespace, *, require_external_confirmation: bool
+) -> ValidatedRun:
+    manifest_path = arguments.manifest.expanduser().resolve()
+    manifest_sha256 = sha256_file(manifest_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("contains_production_data") is True:
+        manifest_path = validate_private_input(arguments.manifest)
+    cases = tuple(
+        case for case in load_dataset(manifest_path) if case["suite"] == "atomic_fact"
+    )
+    if not cases:
+        raise DatasetError("dataset has no atomic_fact cases")
+    if manifest.get("contains_production_data") is True:
+        validate_frozen_private_gold(manifest, cases)
+    _plan_path, plan_sha256, plan_payload = load_evaluation_plan_file(
+        arguments.plan,
+        confirm_sha256=arguments.confirm_plan_sha256,
+    )
+    try:
+        plan = json.loads(plan_payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise DatasetError("atomic execution plan is not valid JSON") from error
+    plan = validate_execution_plan(
+        plan,
+        manifest=manifest,
+        manifest_sha256=manifest_sha256,
+        cases=cases,
+    )
+    if require_external_confirmation and (
+        arguments.confirm_external_data != plan["required_external_data_confirmation"]
+    ):
+        raise DatasetError("explicit external-data confirmation is required")
+    settings = Settings()
+    validate_isolated_database_url(settings.database_url)
+    profile = validate_runtime_settings(
+        settings,
+        namespace=plan["namespace"],
+        plan_sha256=plan_sha256,
+        expected_model=plan["model"]["name"],
+        expected_api_base=plan["model"]["api_base"],
+    )
+    validate_external_dataset_scope(
+        manifest=manifest,
+        manifest_sha256=manifest_sha256,
+        profile=profile,
+    )
+    if set(settings.model_evaluation_turn_ids) != plan["expected_turn_ids"]:
+        raise DatasetError("AGENT_MEMORY_MODEL_EVALUATION_TURN_ALLOWLIST mismatch")
+    if settings.model_max_atomic_facts < plan["expected_max_atomic_facts"]:
+        raise DatasetError("AGENT_MEMORY_MODEL_MAX_ATOMIC_FACTS is below the plan requirement")
+    source_root = Path(__file__).parents[2]
+    output_path = validate_private_output(arguments.output, forbidden_root=source_root)
+    efficiency_output_path = validate_private_output(
+        arguments.efficiency_output,
+        forbidden_root=source_root,
+    )
+    if output_path == efficiency_output_path:
+        raise DatasetError("private and efficiency outputs must differ")
+    return ValidatedRun(
+        manifest=manifest,
+        manifest_sha256=manifest_sha256,
+        cases=cases,
+        plan=plan,
+        plan_sha256=plan_sha256,
+        settings=settings,
+        profile=profile,
+        output_path=output_path,
+        efficiency_output_path=efficiency_output_path,
+    )
+
+
+def preflight_main() -> None:
+    validated = validate_run_preflight(
+        build_parser(preflight=True).parse_args(),
+        require_external_confirmation=False,
+    )
+    print(
+        json.dumps(
+            {
+                "status": "PREFLIGHT_PASS",
+                "run_id": validated.plan["run"]["id"],
+                "plan_sha256": validated.plan_sha256,
+                "manifest_sha256": validated.manifest_sha256,
+                "case_count": len(validated.cases),
+                "model": validated.profile.model,
+                "model_call_budget": validated.plan["model"]["max_calls"],
+                "contains_memory_text": False,
+                "database_connected": False,
+                "model_called": False,
+                "external_data_sent": False,
+            },
             sort_keys=True,
         )
     )
 
 
 def main() -> None:
-    arguments = build_parser().parse_args()
-    manifest_path = arguments.manifest.expanduser().resolve()
-    manifest_sha256 = sha256_file(manifest_path)
-    if arguments.confirm_sha256.casefold() != manifest_sha256:
-        raise SystemExit("--confirm-sha256 does not match the frozen manifest")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("contains_production_data") is True:
-        manifest_path = validate_private_input(arguments.manifest)
-    required_confirmation = external_data_confirmation(manifest)
-    if arguments.confirm_external_data != required_confirmation:
-        raise SystemExit("explicit external-data confirmation is required")
-    validate_run_metadata(
-        run_id=arguments.run_id,
-        system_revision=arguments.system_revision,
-        system_version=arguments.system_version,
+    validated = validate_run_preflight(
+        build_parser().parse_args(),
+        require_external_confirmation=True,
     )
-    cases = tuple(
-        case for case in load_dataset(manifest_path) if case["suite"] == "atomic_fact"
-    )
-    if not cases:
-        raise SystemExit("dataset has no atomic_fact cases")
-    if manifest.get("contains_production_data") is True:
-        validate_frozen_private_gold(manifest, cases)
-    validate_model_call_budget(
-        max_model_calls=arguments.max_model_calls,
-        case_count=len(cases),
-    )
-    settings = Settings()
-    validate_isolated_database_url(settings.database_url)
-    profile = validate_runtime_settings(
-        settings,
-        namespace=arguments.namespace,
-        plan_sha256=manifest_sha256,
-        expected_model=arguments.expected_model,
-        expected_api_base=arguments.expected_api_base,
-    )
-    configured_ids = set(settings.model_evaluation_turn_ids)
-    expected_ids = {
-        benchmark_turn_id(
-            namespace=arguments.namespace,
-            manifest_sha256=manifest_sha256,
-            case_id=str(case["case_id"]),
-        )
-        for case in cases
-    }
-    if configured_ids != expected_ids:
-        raise SystemExit("AGENT_MEMORY_MODEL_EVALUATION_TURN_ALLOWLIST mismatch")
-    expected_fact_limit = max(len(case["expected"]["facts"]) for case in cases)
-    if settings.model_max_atomic_facts < expected_fact_limit:
-        raise SystemExit("AGENT_MEMORY_MODEL_MAX_ATOMIC_FACTS is below the gold case maximum")
-    source_root = Path(__file__).parents[2]
-    output_path = validate_private_output(arguments.output, forbidden_root=source_root)
-    efficiency_output_path = validate_private_output(
-        arguments.efficiency_output, forbidden_root=source_root
-    )
-    if output_path == efficiency_output_path:
-        raise SystemExit("private and efficiency outputs must differ")
+    plan = validated.plan
+    cases = validated.cases
     started_at = datetime.now(UTC)
-    with connect(settings.database_url) as connection:
+    with connect(validated.settings.database_url) as connection:
         namespace_rows = connection.execute(
             "SELECT count(*) FROM core.namespaces"
         ).fetchone()[0]
@@ -692,47 +1094,52 @@ def main() -> None:
         prepared = prepare_cases(
             connection,
             cases=cases,
-            namespace=arguments.namespace,
-            manifest_sha256=manifest_sha256,
+            namespace=plan["namespace"],
+            manifest_sha256=validated.manifest_sha256,
             occurred_at=datetime.now(UTC),
-            allowed_tool_names=settings.trusted_observation_tools,
+            allowed_tool_names=validated.settings.trusted_observation_tools,
         )
-        if {item.turn_id for item in prepared} != expected_ids:
+        if {item.turn_id for item in prepared} != plan["expected_turn_ids"]:
             raise SystemExit("atomic runner generated an unexpected turn ID")
         job_statuses = process_model_jobs(
-            connection, prepared=prepared, namespace=arguments.namespace
+            connection,
+            prepared=prepared,
+            namespace=plan["namespace"],
+            model_profile=validated.profile,
         )
         payload = build_private_output(
             connection,
             prepared=prepared,
-            namespace=arguments.namespace,
-            dataset_id=manifest["dataset_id"],
-            manifest_sha256=manifest_sha256,
-            run_id=arguments.run_id,
-            system_revision=arguments.system_revision,
-            system_version=arguments.system_version,
-            model=profile.model,
-            contains_production_data=manifest["contains_production_data"],
-            dataset_visibility=manifest["visibility"],
+            namespace=plan["namespace"],
+            dataset_id=validated.manifest["dataset_id"],
+            manifest_sha256=validated.manifest_sha256,
+            execution_plan_sha256=validated.plan_sha256,
+            run_id=plan["run"]["id"],
+            system_revision=plan["run"]["system_revision"],
+            system_version=plan["run"]["system_version"],
+            model=validated.profile.model,
+            contains_production_data=validated.manifest["contains_production_data"],
+            dataset_visibility=validated.manifest["visibility"],
             model_called=True,
-            external_data_sent=profile.sends_data_externally,
+            external_data_sent=validated.profile.sends_data_externally,
         )
     payload["job_statuses"] = job_statuses
-    write_private_json(output_path, payload)
+    write_private_json(validated.output_path, payload)
     efficiency_payload = build_efficiency_input(
         output=payload,
         job_statuses=job_statuses,
         window_start=started_at,
         window_end=datetime.now(UTC),
     )
-    write_private_json(efficiency_output_path, efficiency_payload)
+    write_private_json(validated.efficiency_output_path, efficiency_payload)
     emit_run_summary(
-        run_id=arguments.run_id,
+        run_id=plan["run"]["id"],
         case_count=len(cases),
         job_statuses=job_statuses,
-        output_path=output_path,
-        efficiency_output_path=efficiency_output_path,
+        output_path=validated.output_path,
+        efficiency_output_path=validated.efficiency_output_path,
         external_data_sent=payload["external_data_sent"],
+        execution_plan_sha256=validated.plan_sha256,
     )
 
 

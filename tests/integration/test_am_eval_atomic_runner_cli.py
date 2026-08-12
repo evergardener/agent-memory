@@ -14,10 +14,21 @@ import psycopg
 import pytest
 from psycopg import sql
 
-from agent_memory.am_eval_atomic_runner import build_plan
+from agent_memory.am_eval_atomic_runner import build_plan, write_private_json
 from agent_memory.am_eval_dataset import sha256_file
-from agent_memory.am_eval_efficiency import evaluate_efficiency
-from agent_memory.am_eval_quality import evaluate_atomic_quality, load_atomic_output
+from agent_memory.am_eval_efficiency import (
+    evaluate_efficiency,
+)
+from agent_memory.am_eval_efficiency import (
+    validate_execution_plan_confirmation as validate_efficiency_plan,
+)
+from agent_memory.am_eval_quality import (
+    evaluate_atomic_quality,
+    load_atomic_output,
+)
+from agent_memory.am_eval_quality import (
+    validate_execution_plan_confirmation as validate_quality_plan,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -222,17 +233,26 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
     key_path = private_root / "model-api-key"
     key_path.write_text("loopback-test-key\n", encoding="utf-8")
     key_path.chmod(0o600)
-    plan = build_plan(
-        cases=CASES,
-        namespace=namespace,
-        manifest_sha256=manifest_sha,
-    )
-
     with psycopg.connect(admin_url, autocommit=True) as admin:
         admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database)))
     try:
         _migrate(test_url)
         with _model_server() as api_base:
+            plan = build_plan(
+                manifest=json.loads(manifest_path.read_text(encoding="utf-8")),
+                cases=CASES,
+                namespace=namespace,
+                manifest_sha256=manifest_sha,
+                run_id="atomic-cli-selftest",
+                system_revision="d" * 40,
+                system_version="test",
+                model="openai/test-model",
+                api_base=api_base,
+                max_model_calls=len(CASES),
+            )
+            plan_path = private_root / "execution-plan.json"
+            write_private_json(plan_path, plan)
+            plan_sha = sha256_file(plan_path)
             environment = _environment(test_url)
             environment.update(
                 {
@@ -245,7 +265,7 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
                     "AGENT_MEMORY_MODEL_API_KEY_FILE": str(key_path),
                     "AGENT_MEMORY_MODEL_ALLOW_EXTERNAL_DATA": "true",
                     "AGENT_MEMORY_MODEL_EVALUATION_MODE": "true",
-                    "AGENT_MEMORY_MODEL_EVALUATION_PLAN_SHA": manifest_sha,
+                    "AGENT_MEMORY_MODEL_EVALUATION_PLAN_SHA": plan_sha,
                     "AGENT_MEMORY_MODEL_EVALUATION_TURN_ALLOWLIST": plan[
                         "turn_allowlist_csv"
                     ],
@@ -253,32 +273,58 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
                     "AGENT_MEMORY_MODEL_AUTO_BACKFILL_ENABLED": "false",
                 }
             )
+            preflight_environment = environment.copy()
+            preflight_environment["AGENT_MEMORY_DATABASE_URL"] = (
+                "postgresql://agent_memory:test@127.0.0.1:9/am_eval_preflight_unreachable"
+            )
+            preflight = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "from agent_memory.am_eval_atomic_runner import preflight_main; "
+                        "preflight_main()"
+                    ),
+                    str(manifest_path),
+                    "--plan",
+                    str(plan_path),
+                    "--confirm-plan-sha256",
+                    plan_sha,
+                    "--output",
+                    str(output_path),
+                    "--efficiency-output",
+                    str(efficiency_path),
+                ],
+                cwd=ROOT,
+                env=preflight_environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert preflight.returncode == 0, preflight.stderr
+            preflight_summary = json.loads(preflight.stdout)
+            assert preflight_summary["status"] == "PREFLIGHT_PASS"
+            assert preflight_summary["database_connected"] is False
+            assert preflight_summary["model_called"] is False
+            assert preflight_summary["external_data_sent"] is False
+            assert OpenAICompatibleHandler.calls == 0
+            assert not output_path.exists()
+            assert not efficiency_path.exists()
             completed = subprocess.run(
                 [
                     sys.executable,
                     "-m",
                     "agent_memory.am_eval_atomic_runner",
                     str(manifest_path),
+                    "--plan",
+                    str(plan_path),
+                    "--confirm-plan-sha256",
+                    plan_sha,
                     "--output",
                     str(output_path),
                     "--efficiency-output",
                     str(efficiency_path),
-                    "--namespace",
-                    namespace,
-                    "--run-id",
-                    "atomic-cli-selftest",
-                    "--system-revision",
-                    "d" * 40,
-                    "--system-version",
-                    "test",
-                    "--expected-model",
-                    "openai/test-model",
-                    "--expected-api-base",
-                    api_base,
-                    "--max-model-calls",
-                    str(len(CASES)),
-                    "--confirm-sha256",
-                    manifest_sha,
                     "--confirm-external-data",
                     "SEND_SYNTHETIC_BENCHMARK_TO_EXTERNAL_MODEL",
                 ],
@@ -295,6 +341,7 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
         assert summary["status"] == "COMPLETE"
         assert summary["job_statuses"] == {"done": 2}
         assert summary["external_data_sent"] is False
+        assert summary["execution_plan_sha256"] == plan_sha
         assert OpenAICompatibleHandler.calls == len(CASES)
         assert stat.S_IMODE(output_path.stat().st_mode) == 0o600
         assert stat.S_IMODE(efficiency_path.stat().st_mode) == 0o600
@@ -310,14 +357,22 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
         )
         assert output["model_called"] is True
         assert output["external_data_sent"] is False
+        validate_quality_plan(output, confirm_plan_sha256=plan_sha)
         quality = evaluate_atomic_quality(CASES, output)
+        assert quality["execution_plan_sha256"] == plan_sha
         assert {key: value["value"] for key, value in quality["metrics"].items()} == {
             "M01": 1.0,
             "M02": 1.0,
             "M03": 1.0,
             "M07": 1.0,
         }
-        efficiency = evaluate_efficiency(json.loads(efficiency_path.read_text()))
+        efficiency_input = json.loads(efficiency_path.read_text())
+        validate_efficiency_plan(
+            efficiency_input,
+            confirm_plan_sha256=plan_sha,
+        )
+        efficiency = evaluate_efficiency(efficiency_input)
+        assert efficiency["execution_plan_sha256"] == plan_sha
         assert efficiency["metrics"] == {
             "M22": {"value": 0.0, "sample_count": 1},
             "M23": {"value": 0.0, "sample_count": 2},

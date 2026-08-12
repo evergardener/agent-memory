@@ -19,6 +19,33 @@ def test_failed_job_rolls_back_savepoint_before_recording_retry():
     assert connection.execute.call_count == 3
 
 
+def test_process_one_forwards_validated_model_profile(monkeypatch):
+    from agent_memory import worker
+
+    connection = MagicMock()
+    model_profile = MagicMock()
+    prepared = MagicMock(return_value=None)
+    applied = MagicMock()
+    monkeypatch.setattr(worker, "prepare_atomic_fact_extraction", prepared)
+    monkeypatch.setattr(worker, "process_atomic_extraction", applied)
+    job = (
+        "00000000-0000-0000-0000-000000000001",
+        None,
+        "extract_atomic_turn",
+        "00000000-0000-0000-0000-000000000002",
+        1,
+    )
+
+    process_one(connection, job, model_profile=model_profile)
+
+    prepared.assert_called_once_with(
+        connection,
+        job,
+        model_profile=model_profile,
+    )
+    applied.assert_called_once_with(connection, job, None)
+
+
 def test_worker_claim_is_scoped_to_configured_namespace():
     connection = MagicMock()
     connection.execute.return_value.fetchone.return_value = None

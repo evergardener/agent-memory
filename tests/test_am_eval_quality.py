@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 
 from agent_memory.am_eval_dataset import DatasetError, load_dataset, sha256_file
-from agent_memory.am_eval_quality import evaluate_atomic_quality, load_atomic_output
+from agent_memory.am_eval_quality import (
+    evaluate_atomic_quality,
+    load_atomic_output,
+    validate_execution_plan_confirmation,
+)
 
 MANIFEST = (
     Path(__file__).parents[1]
@@ -53,10 +57,11 @@ def _oracle_output() -> dict:
         ]
         output_cases.append({"case_id": case["case_id"], "facts": facts, "recalls": recalls})
     return {
-        "schema_version": "am-eval-atomic-output-v1",
+        "schema_version": "am-eval-atomic-output-v2",
         "dataset_id": "agent-memory-atomic-quality-selftest-v1",
         "run_id": "oracle-selftest",
         "dataset_manifest_sha256": sha256_file(MANIFEST),
+        "execution_plan_sha256": "a" * 64,
         "system": {"name": "fixture-oracle", "version": "1", "revision": "test"},
         "contains_memory_text": True,
         "contains_production_data": False,
@@ -148,6 +153,30 @@ def test_atomic_output_loader_requires_dataset_sha(tmp_path: Path) -> None:
 
     with pytest.raises(DatasetError, match="manifest SHA-256"):
         load_atomic_output(path, case_ids={case["case_id"] for case in CASES})
+
+
+def test_atomic_output_loader_requires_execution_plan_sha(tmp_path: Path) -> None:
+    output = _oracle_output()
+    output["execution_plan_sha256"] = "not-a-sha"
+    path = tmp_path / "output.json"
+    path.write_text(json.dumps(output), encoding="utf-8")
+
+    with pytest.raises(DatasetError, match="execution plan SHA-256"):
+        load_atomic_output(path, case_ids={case["case_id"] for case in CASES})
+
+
+def test_quality_scoring_requires_the_exact_execution_plan_sha() -> None:
+    output = _oracle_output()
+    validate_execution_plan_confirmation(
+        output,
+        confirm_plan_sha256="a" * 64,
+    )
+
+    with pytest.raises(DatasetError, match="confirmation mismatch"):
+        validate_execution_plan_confirmation(
+            output,
+            confirm_plan_sha256="b" * 64,
+        )
 
 
 def test_atomic_quality_rejects_unknown_recall_query() -> None:

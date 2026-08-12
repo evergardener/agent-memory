@@ -13,7 +13,7 @@ from agent_memory.am_eval_atomic_runner import (
 from agent_memory.am_eval_atomic_runner import (
     plan_main as atomic_runner_plan_main,
 )
-from agent_memory.am_eval_dataset import DatasetError, load_dataset, sha256_file
+from agent_memory.am_eval_dataset import DatasetError, load_dataset
 from agent_memory.am_eval_private_gold import (
     ANNOTATION_SCHEMA_VERSION,
     FREEZE_CONFIRMATION,
@@ -352,24 +352,14 @@ def test_atomic_runner_rejects_tampered_private_contract_before_settings(
         [
             "agent-memory-run-atomic-benchmark",
             str(manifest_path),
+            "--plan",
+            str(workspace / "not-created-plan.json"),
+            "--confirm-plan-sha256",
+            "0" * 64,
             "--output",
             str(workspace / "private-output.json"),
             "--efficiency-output",
             str(workspace / "efficiency-output.json"),
-            "--run-id",
-            "private-contract-tamper-test",
-            "--system-revision",
-            "d" * 40,
-            "--system-version",
-            "test",
-            "--expected-model",
-            "must-not-be-read",
-            "--expected-api-base",
-            "https://example.invalid/v1",
-            "--max-model-calls",
-            "200",
-            "--confirm-sha256",
-            sha256_file(manifest_path),
             "--confirm-external-data",
             "SEND_REDACTED_PRODUCTION_DERIVED_BENCHMARK_TO_EXTERNAL_MODEL",
         ],
@@ -393,7 +383,24 @@ def test_atomic_runner_plan_rejects_tampered_private_contract(tmp_path: Path, mo
     monkeypatch.setattr(
         sys,
         "argv",
-        ["agent-memory-plan-atomic-benchmark", str(manifest_path)],
+        [
+            "agent-memory-plan-atomic-benchmark",
+            str(manifest_path),
+            "--output",
+            str(workspace / "not-created-plan.json"),
+            "--run-id",
+            "private-plan-tamper-test",
+            "--system-revision",
+            "d" * 40,
+            "--system-version",
+            "test",
+            "--model",
+            "must-not-be-read",
+            "--api-base",
+            "https://example.invalid/v1",
+            "--max-model-calls",
+            "200",
+        ],
     )
 
     with pytest.raises(DatasetError, match="manifest mismatch: scenario_count"):

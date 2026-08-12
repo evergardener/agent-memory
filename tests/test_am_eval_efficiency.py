@@ -1,7 +1,10 @@
 import pytest
 
 from agent_memory.am_eval_dataset import DatasetError
-from agent_memory.am_eval_efficiency import evaluate_efficiency
+from agent_memory.am_eval_efficiency import (
+    evaluate_efficiency,
+    validate_execution_plan_confirmation,
+)
 
 
 def _input(**count_overrides) -> dict:
@@ -16,6 +19,7 @@ def _input(**count_overrides) -> dict:
     return {
         "schema_version": "am-eval-efficiency-input-v1",
         "run_id": "isolated-efficiency-test",
+        "execution_plan_sha256": "b" * 64,
         "scope": "isolated",
         "window_start": "2026-08-01T00:00:00+08:00",
         "window_end": "2026-08-08T00:00:00+08:00",
@@ -39,6 +43,7 @@ def test_efficiency_metrics_have_frozen_denominators() -> None:
     assert result["contains_memory_text"] is False
     assert result["system_revision"] == "a" * 40
     assert result["policy_version"] == "atomic-admission-v3"
+    assert result["execution_plan_sha256"] == "b" * 64
 
 
 def test_unfinished_jobs_keep_terminal_failure_rate_unmeasured() -> None:
@@ -79,6 +84,11 @@ def test_efficiency_input_rejects_memory_text_or_bad_counts() -> None:
     with pytest.raises(DatasetError, match="declare external_data_sent"):
         evaluate_efficiency(payload)
 
+    payload = _input()
+    payload["execution_plan_sha256"] = "not-a-sha"
+    with pytest.raises(DatasetError, match="execution plan SHA-256"):
+        evaluate_efficiency(payload)
+
 
 def test_external_model_run_preserves_truthful_data_transfer_flag() -> None:
     payload = _input()
@@ -87,3 +97,25 @@ def test_external_model_run_preserves_truthful_data_transfer_flag() -> None:
     result = evaluate_efficiency(payload)
 
     assert result["external_data_sent"] is True
+
+
+def test_isolated_efficiency_scoring_requires_the_exact_execution_plan_sha() -> None:
+    payload = _input()
+    validate_execution_plan_confirmation(
+        payload,
+        confirm_plan_sha256="b" * 64,
+    )
+
+    with pytest.raises(DatasetError, match="confirmation mismatch"):
+        validate_execution_plan_confirmation(
+            payload,
+            confirm_plan_sha256=None,
+        )
+
+    production_shadow = _input()
+    production_shadow["scope"] = "production-shadow"
+    production_shadow.pop("execution_plan_sha256")
+    validate_execution_plan_confirmation(
+        production_shadow,
+        confirm_plan_sha256=None,
+    )

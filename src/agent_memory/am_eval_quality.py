@@ -8,7 +8,7 @@ from typing import Any
 
 from .am_eval_dataset import DatasetError, load_dataset, sha256_file
 
-OUTPUT_SCHEMA_VERSION = "am-eval-atomic-output-v1"
+OUTPUT_SCHEMA_VERSION = "am-eval-atomic-output-v2"
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
 
 
@@ -20,6 +20,20 @@ class ClaimKey:
 
 def _safe_divide(numerator: int, denominator: int) -> float:
     return numerator / denominator if denominator else 0.0
+
+
+def validate_execution_plan_confirmation(
+    output: dict[str, Any], *, confirm_plan_sha256: str
+) -> None:
+    value = confirm_plan_sha256.casefold()
+    output_value = output.get("execution_plan_sha256")
+    if (
+        len(value) != 64
+        or any(character not in SHA256_CHARACTERS for character in value)
+        or not isinstance(output_value, str)
+        or output_value.casefold() != value
+    ):
+        raise DatasetError("atomic output execution plan SHA-256 confirmation mismatch")
 
 
 def load_atomic_output(path: Path, *, case_ids: set[str]) -> dict[str, Any]:
@@ -50,6 +64,16 @@ def load_atomic_output(path: Path, *, case_ids: set[str]) -> dict[str, Any]:
         or any(character not in SHA256_CHARACTERS for character in dataset_sha.casefold())
     ):
         raise DatasetError("atomic evaluation output requires dataset manifest SHA-256")
+    execution_plan_sha = output.get("execution_plan_sha256")
+    if (
+        not isinstance(execution_plan_sha, str)
+        or len(execution_plan_sha) != 64
+        or any(
+            character not in SHA256_CHARACTERS
+            for character in execution_plan_sha.casefold()
+        )
+    ):
+        raise DatasetError("atomic evaluation output requires execution plan SHA-256")
     system = output.get("system")
     if (
         not isinstance(system, dict)
@@ -239,6 +263,7 @@ def evaluate_atomic_quality(
         "run_id": output["run_id"],
         "system": output["system"],
         "dataset_manifest_sha256": output["dataset_manifest_sha256"],
+        "execution_plan_sha256": output["execution_plan_sha256"],
         "model_called": output["model_called"],
         "contains_production_data": output["contains_production_data"],
         "external_data_sent": output["external_data_sent"],
@@ -261,6 +286,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Score AM-Eval atomic facts and citations.")
     parser.add_argument("manifest", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--confirm-plan-sha256", required=True)
     arguments = parser.parse_args()
     manifest = json.loads(arguments.manifest.read_text(encoding="utf-8"))
     cases = tuple(
@@ -271,6 +297,13 @@ def main() -> None:
     if not cases:
         parser.error("dataset has no atomic_fact cases")
     output = load_atomic_output(arguments.output, case_ids={case["case_id"] for case in cases})
+    try:
+        validate_execution_plan_confirmation(
+            output,
+            confirm_plan_sha256=arguments.confirm_plan_sha256,
+        )
+    except DatasetError as error:
+        parser.error(str(error))
     manifest_sha256 = sha256_file(arguments.manifest)
     if output["dataset_id"] != manifest.get("dataset_id"):
         parser.error("atomic output dataset_id does not match the manifest")

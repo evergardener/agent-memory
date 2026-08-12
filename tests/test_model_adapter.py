@@ -59,6 +59,16 @@ def test_model_api_key_can_be_loaded_from_a_secret_file(tmp_path):
     assert profile.api_key == "file-only-key"
 
 
+def test_validated_api_key_override_does_not_reopen_the_configured_path(tmp_path):
+    missing = tmp_path / "removed-after-validation"
+    profile = ModelProfile.from_settings(
+        settings(model_api_key=SecretStr(""), model_api_key_file=str(missing)),
+        api_key_override="descriptor-validated-key",
+    )
+
+    assert profile.api_key == "descriptor-validated-key"
+
+
 def test_disabled_or_invalid_model_configuration_fails_closed():
     with pytest.raises(ValueError, match="MODEL_DISABLED"):
         ModelProfile.from_settings(settings(model_enabled=False))

@@ -120,7 +120,9 @@ class ModelProfile:
         return not _is_local_model_endpoint(self.api_base)
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> "ModelProfile":
+    def from_settings(
+        cls, settings: Settings, *, api_key_override: str | None = None
+    ) -> "ModelProfile":
         if not settings.model_enabled:
             raise ValueError("MODEL_DISABLED")
         if not settings.model_name.strip():
@@ -141,7 +143,11 @@ class ModelProfile:
         return cls(
             model=settings.model_name,
             api_base=api_base,
-            api_key=settings.model_api_key_value or None,
+            api_key=(
+                api_key_override
+                if api_key_override is not None
+                else settings.model_api_key_value or None
+            ),
             timeout_seconds=settings.model_timeout_seconds,
             max_retries=settings.model_max_retries,
         )

@@ -163,7 +163,12 @@ def _enqueue_unified_rebuild(connection: Connection, namespace_id, turn_id) -> N
     )
 
 
-def prepare_atomic_fact_extraction(connection: Connection, job) -> ExtractAtomicFacts | None:
+def prepare_atomic_fact_extraction(
+    connection: Connection,
+    job,
+    *,
+    model_profile: ModelProfile | None = None,
+) -> ExtractAtomicFacts | None:
     settings = get_settings()
     if not settings.model_enabled:
         return None
@@ -208,7 +213,8 @@ def prepare_atomic_fact_extraction(connection: Connection, job) -> ExtractAtomic
         f"{model_evidence[index]}\n</EVIDENCE>"
         for index, item in enumerate(evidence)
     )
-    result, audit = LiteLLMModelAdapter(ModelProfile.from_settings(settings)).complete_json(
+    profile = model_profile or ModelProfile.from_settings(settings)
+    result, audit = LiteLLMModelAdapter(profile).complete_json(
         task=(
             "Extract zero to eight atomic memory facts from Evidence. Return exactly "
             '{"facts":[{"evidence_index":0,'
@@ -256,7 +262,12 @@ def prepare_atomic_fact_extraction(connection: Connection, job) -> ExtractAtomic
     )
 
 
-def prepare_fact_model_enhancement(connection: Connection, job) -> ExtractModelEnhancement | None:
+def prepare_fact_model_enhancement(
+    connection: Connection,
+    job,
+    *,
+    model_profile: ModelProfile | None = None,
+) -> ExtractModelEnhancement | None:
     settings = get_settings()
     if not settings.model_enabled:
         return None
@@ -275,7 +286,8 @@ def prepare_fact_model_enhancement(connection: Connection, job) -> ExtractModelE
     if not content or not content.strip():
         return None
     connection.commit()
-    result, audit = LiteLLMModelAdapter(ModelProfile.from_settings(settings)).complete_json(
+    profile = model_profile or ModelProfile.from_settings(settings)
+    result, audit = LiteLLMModelAdapter(profile).complete_json(
         task=(
             "Verify whether Evidence contains one explicit fact. Return exactly "
             '{"candidate": null} or '
@@ -1229,7 +1241,12 @@ def enqueue_model_backfill(connection: Connection, allowed_turn_ids: tuple | Non
     return len(rows)
 
 
-def process_one(connection: Connection, job) -> None:
+def process_one(
+    connection: Connection,
+    job,
+    *,
+    model_profile: ModelProfile | None = None,
+) -> None:
     job_id = job[0]
     attempt_id = new_uuid()
     correlation_id = new_uuid()
@@ -1241,9 +1258,17 @@ def process_one(connection: Connection, job) -> None:
         model_enhancement = None
         atomic_extraction = None
         if job[2] == "enhance_fact":
-            model_enhancement = prepare_fact_model_enhancement(connection, job)
+            model_enhancement = prepare_fact_model_enhancement(
+                connection,
+                job,
+                model_profile=model_profile,
+            )
         elif job[2] == "extract_atomic_turn":
-            atomic_extraction = prepare_atomic_fact_extraction(connection, job)
+            atomic_extraction = prepare_atomic_fact_extraction(
+                connection,
+                job,
+                model_profile=model_profile,
+            )
         with connection.transaction():
             if job[2] == "extract_facts":
                 process_extract(connection, job)
