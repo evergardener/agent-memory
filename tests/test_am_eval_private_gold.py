@@ -402,6 +402,14 @@ def test_atomic_runner_plan_rejects_tampered_private_contract(tmp_path: Path, mo
             "200",
             "--max-atomic-facts",
             "8",
+            "--model-timeout-seconds",
+            "30",
+            "--current-state-days",
+            "7",
+            "--weather-state-hours",
+            "24",
+            "--trusted-observation-tools",
+            "terminal,exec,execute_code,shell,health_probe",
         ],
     )
 

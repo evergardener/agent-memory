@@ -29,9 +29,9 @@ from .worker import (
     select_turn_evidence,
 )
 
-RUNNER_VERSION = "am-eval-atomic-runner-v3"
+RUNNER_VERSION = "am-eval-atomic-runner-v4"
 OUTPUT_SCHEMA_VERSION = "am-eval-atomic-output-v2"
-PLAN_SCHEMA_VERSION = "am-eval-atomic-execution-plan-v3"
+PLAN_SCHEMA_VERSION = "am-eval-atomic-execution-plan-v4"
 DEFAULT_NAMESPACE = "hermes:automated-tests:am-eval-atomic"
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
 GIT_REVISION_LENGTH = 40
@@ -41,6 +41,7 @@ PUBLIC_SYNTHETIC_DATASET_ID = "agent-memory-atomic-quality-selftest-v1"
 PUBLIC_SYNTHETIC_MANIFEST_SHA256 = (
     "7e5e7f9401fafcf26882cf0d7b4c3518c3f7c39200b1e155a757da0e93686a6e"
 )
+DATABASE_SCHEMA_REVISION = "0019_review_queue_indexes"
 
 
 @dataclass(frozen=True)
@@ -343,6 +344,10 @@ def build_plan(
     api_base: str,
     max_model_calls: int,
     max_atomic_facts: int,
+    model_timeout_seconds: float,
+    current_state_days: int,
+    weather_state_hours: int,
+    trusted_observation_tools: frozenset[str],
 ) -> dict[str, Any]:
     if not namespace.startswith("hermes:automated-tests:"):
         raise DatasetError("atomic benchmark plan requires an automated namespace")
@@ -376,6 +381,35 @@ def build_plan(
     expected_fact_limit = max(len(case["expected"]["facts"]) for case in cases)
     if max_atomic_facts < expected_fact_limit:
         raise DatasetError("atomic benchmark fact limit is below the gold case maximum")
+    if (
+        isinstance(model_timeout_seconds, bool)
+        or not isinstance(model_timeout_seconds, (int, float))
+        or not 0 < model_timeout_seconds <= 300
+    ):
+        raise DatasetError(
+            "atomic benchmark model timeout must be greater than 0 and at most 300 seconds"
+        )
+    if (
+        isinstance(current_state_days, bool)
+        or not isinstance(current_state_days, int)
+        or not 1 <= current_state_days <= 365
+    ):
+        raise DatasetError("atomic benchmark current-state window must be from 1 to 365 days")
+    if (
+        isinstance(weather_state_hours, bool)
+        or not isinstance(weather_state_hours, int)
+        or not 1 <= weather_state_hours <= 720
+    ):
+        raise DatasetError("atomic benchmark weather window must be from 1 to 720 hours")
+    normalized_tools = sorted(
+        {
+            item.strip().casefold()
+            for item in trusted_observation_tools
+            if isinstance(item, str) and item.strip()
+        }
+    )
+    if not normalized_tools:
+        raise DatasetError("atomic benchmark requires trusted observation tools")
     return {
         "schema_version": PLAN_SCHEMA_VERSION,
         "dataset": {
@@ -384,6 +418,7 @@ def build_plan(
             "contains_production_data": manifest["contains_production_data"],
             "visibility": manifest["visibility"],
         },
+        "database": {"schema_revision": DATABASE_SCHEMA_REVISION},
         "namespace": namespace,
         "run": {
             "id": run_id,
@@ -395,8 +430,15 @@ def build_plan(
             "api_base": normalized_api_base,
             "max_calls": max_model_calls,
             "max_atomic_facts": max_atomic_facts,
+            "timeout_seconds": float(model_timeout_seconds),
             "max_retries": 0,
             "automatic_backfill": False,
+        },
+        "policy": {
+            "atomic_extraction_version": ATOMIC_EXTRACTION_VERSION,
+            "current_state_days": current_state_days,
+            "weather_state_hours": weather_state_hours,
+            "trusted_observation_tools": normalized_tools,
         },
         "case_count": len(cases),
         "turn_allowlist_csv": ",".join(str(turn_id) for turn_id in turn_ids),
@@ -417,9 +459,11 @@ def validate_execution_plan(
     required_keys = {
         "schema_version",
         "dataset",
+        "database",
         "namespace",
         "run",
         "model",
+        "policy",
         "case_count",
         "turn_allowlist_csv",
         "required_external_data_confirmation",
@@ -441,6 +485,8 @@ def validate_execution_plan(
     }
     if plan.get("dataset") != expected_dataset:
         raise DatasetError("atomic execution plan dataset binding mismatch")
+    if plan.get("database") != {"schema_revision": DATABASE_SCHEMA_REVISION}:
+        raise DatasetError("atomic execution plan database schema binding mismatch")
     namespace = plan.get("namespace")
     if not isinstance(namespace, str) or not namespace.startswith("hermes:automated-tests:"):
         raise DatasetError("atomic execution plan requires an automated namespace")
@@ -464,6 +510,7 @@ def validate_execution_plan(
         "api_base",
         "max_calls",
         "max_atomic_facts",
+        "timeout_seconds",
         "max_retries",
         "automatic_backfill",
     }:
@@ -481,10 +528,37 @@ def validate_execution_plan(
         or not isinstance(model["max_atomic_facts"], int)
         or isinstance(model["max_retries"], bool)
         or not isinstance(model["max_retries"], int)
+        or isinstance(model["timeout_seconds"], bool)
+        or not isinstance(model["timeout_seconds"], (int, float))
+        or not 0 < model["timeout_seconds"] <= 300
     ):
         raise DatasetError("atomic execution plan has invalid model metadata")
     if model["max_retries"] != 0 or model["automatic_backfill"] is not False:
         raise DatasetError("atomic execution plan must disable retries and backfill")
+    policy = plan.get("policy")
+    if not isinstance(policy, dict) or set(policy) != {
+        "atomic_extraction_version",
+        "current_state_days",
+        "weather_state_hours",
+        "trusted_observation_tools",
+    }:
+        raise DatasetError("atomic execution plan has invalid policy metadata")
+    tools = policy["trusted_observation_tools"]
+    if (
+        policy["atomic_extraction_version"] != ATOMIC_EXTRACTION_VERSION
+        or isinstance(policy["current_state_days"], bool)
+        or not isinstance(policy["current_state_days"], int)
+        or not 1 <= policy["current_state_days"] <= 365
+        or isinstance(policy["weather_state_hours"], bool)
+        or not isinstance(policy["weather_state_hours"], int)
+        or not 1 <= policy["weather_state_hours"] <= 720
+        or not isinstance(tools, list)
+        or not tools
+        or not all(isinstance(item, str) and item for item in tools)
+        or tools != sorted(set(tools))
+        or any(item != item.casefold().strip() for item in tools)
+    ):
+        raise DatasetError("atomic execution plan has invalid policy metadata")
     validate_model_call_budget(
         max_model_calls=model["max_calls"],
         case_count=len(cases),
@@ -929,6 +1003,10 @@ def plan_main() -> None:
     parser.add_argument("--api-base", required=True)
     parser.add_argument("--max-model-calls", required=True, type=int)
     parser.add_argument("--max-atomic-facts", required=True, type=int)
+    parser.add_argument("--model-timeout-seconds", required=True, type=float)
+    parser.add_argument("--current-state-days", required=True, type=int)
+    parser.add_argument("--weather-state-hours", required=True, type=int)
+    parser.add_argument("--trusted-observation-tools", required=True)
     arguments = parser.parse_args()
     manifest_path = arguments.manifest.expanduser().resolve()
     manifest_sha256 = sha256_file(manifest_path)
@@ -954,6 +1032,10 @@ def plan_main() -> None:
         api_base=arguments.api_base,
         max_model_calls=arguments.max_model_calls,
         max_atomic_facts=arguments.max_atomic_facts,
+        model_timeout_seconds=arguments.model_timeout_seconds,
+        current_state_days=arguments.current_state_days,
+        weather_state_hours=arguments.weather_state_hours,
+        trusted_observation_tools=frozenset(arguments.trusted_observation_tools.split(",")),
     )
     output_path = validate_private_output(
         arguments.output,
@@ -971,6 +1053,8 @@ def plan_main() -> None:
                 "case_count": len(cases),
                 "model_call_budget": arguments.max_model_calls,
                 "max_atomic_facts": arguments.max_atomic_facts,
+                "model_timeout_seconds": arguments.model_timeout_seconds,
+                "database_schema_revision": DATABASE_SCHEMA_REVISION,
                 "contains_memory_text": False,
                 "model_called": False,
                 "external_data_sent": False,
@@ -1044,6 +1128,16 @@ def validate_run_preflight(
         raise DatasetError("AGENT_MEMORY_MODEL_EVALUATION_TURN_ALLOWLIST mismatch")
     if settings.model_max_atomic_facts != plan["model"]["max_atomic_facts"]:
         raise DatasetError("AGENT_MEMORY_MODEL_MAX_ATOMIC_FACTS differs from the plan")
+    if settings.model_timeout_seconds != plan["model"]["timeout_seconds"]:
+        raise DatasetError("AGENT_MEMORY_MODEL_TIMEOUT_SECONDS differs from the plan")
+    if settings.current_state_days != plan["policy"]["current_state_days"]:
+        raise DatasetError("AGENT_MEMORY_CURRENT_STATE_DAYS differs from the plan")
+    if settings.weather_state_hours != plan["policy"]["weather_state_hours"]:
+        raise DatasetError("AGENT_MEMORY_WEATHER_STATE_HOURS differs from the plan")
+    if settings.trusted_observation_tools != frozenset(
+        plan["policy"]["trusted_observation_tools"]
+    ):
+        raise DatasetError("AGENT_MEMORY_TRUSTED_OBSERVATION_TOOL_ALLOWLIST differs from the plan")
     source_root = Path(__file__).parents[2]
     output_path = validate_private_output(arguments.output, forbidden_root=source_root)
     efficiency_output_path = validate_private_output(
@@ -1081,6 +1175,8 @@ def preflight_main() -> None:
                 "model": validated.profile.model,
                 "model_call_budget": validated.plan["model"]["max_calls"],
                 "max_atomic_facts": validated.plan["model"]["max_atomic_facts"],
+                "model_timeout_seconds": validated.plan["model"]["timeout_seconds"],
+                "database_schema_revision": validated.plan["database"]["schema_revision"],
                 "contains_memory_text": False,
                 "database_connected": False,
                 "model_called": False,
@@ -1100,6 +1196,11 @@ def main() -> None:
     cases = validated.cases
     started_at = datetime.now(UTC)
     with connect(validated.settings.database_url) as connection:
+        schema_revisions = {
+            str(row[0]) for row in connection.execute("SELECT version_num FROM alembic_version")
+        }
+        if schema_revisions != {plan["database"]["schema_revision"]}:
+            raise SystemExit("atomic runner database schema differs from the execution plan")
         namespace_rows = connection.execute(
             "SELECT count(*) FROM core.namespaces"
         ).fetchone()[0]

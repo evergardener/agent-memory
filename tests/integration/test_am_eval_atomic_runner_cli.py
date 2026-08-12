@@ -43,6 +43,7 @@ BASE_DATABASE_URL = os.getenv("AGENT_MEMORY_DATABASE_URL", "")
 STATEMENT = "每周六去青岛跑步"
 EVIDENCE = f"我明确决定{STATEMENT}。"
 SPAN_START = EVIDENCE.index(STATEMENT)
+TRUSTED_TOOLS = frozenset({"terminal", "exec", "execute_code", "shell", "health_probe"})
 CASES = (
     {
         "schema_version": "am-eval-case-v1",
@@ -253,6 +254,10 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
                 api_base=api_base,
                 max_model_calls=len(CASES),
                 max_atomic_facts=8,
+                model_timeout_seconds=30,
+                current_state_days=7,
+                weather_state_hours=24,
+                trusted_observation_tools=TRUSTED_TOOLS,
             )
             plan_path = private_root / "execution-plan.json"
             write_private_json(plan_path, plan)
@@ -275,6 +280,12 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
                     ],
                     "AGENT_MEMORY_MODEL_MAX_RETRIES": "0",
                     "AGENT_MEMORY_MODEL_MAX_ATOMIC_FACTS": "8",
+                    "AGENT_MEMORY_MODEL_TIMEOUT_SECONDS": "30",
+                    "AGENT_MEMORY_CURRENT_STATE_DAYS": "7",
+                    "AGENT_MEMORY_WEATHER_STATE_HOURS": "24",
+                    "AGENT_MEMORY_TRUSTED_OBSERVATION_TOOL_ALLOWLIST": ",".join(
+                        sorted(TRUSTED_TOOLS)
+                    ),
                     "AGENT_MEMORY_MODEL_AUTO_BACKFILL_ENABLED": "false",
                 }
             )

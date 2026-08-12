@@ -7,9 +7,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from pydantic import SecretStr
 
 from agent_memory.am_eval_atomic_runner import (
+    DATABASE_SCHEMA_REVISION,
     MAX_API_KEY_BYTES,
     MAX_EXECUTION_PLAN_BYTES,
     benchmark_idempotency_key,
@@ -39,6 +42,7 @@ from agent_memory.model_adapter import ModelProfile
 
 MANIFEST_SHA = "a" * 64
 NAMESPACE = "hermes:automated-tests:atomic-runner"
+TRUSTED_TOOLS = frozenset({"terminal", "exec", "execute_code", "shell", "health_probe"})
 ROOT = Path(__file__).parents[1]
 PUBLIC_MANIFEST = ROOT / "benchmarks/am-eval-v1/datasets/atomic-quality-selftest-v1/manifest.json"
 
@@ -109,6 +113,10 @@ def test_plan_is_metadata_only_and_turn_ids_are_deterministic() -> None:
         api_base="https://models.example.com/v1/",
         max_model_calls=2,
         max_atomic_facts=8,
+        model_timeout_seconds=30,
+        current_state_days=7,
+        weather_state_hours=24,
+        trusted_observation_tools=TRUSTED_TOOLS,
     )
 
     expected = [
@@ -122,6 +130,9 @@ def test_plan_is_metadata_only_and_turn_ids_are_deterministic() -> None:
     assert plan["model"]["api_base"] == "https://models.example.com/v1"
     assert plan["run"]["system_revision"] == "d" * 40
     assert plan["model"]["max_atomic_facts"] == 8
+    assert plan["model"]["timeout_seconds"] == 30.0
+    assert plan["policy"]["trusted_observation_tools"] == sorted(TRUSTED_TOOLS)
+    assert plan["database"]["schema_revision"] == DATABASE_SCHEMA_REVISION
     assert plan["contains_memory_text"] is False
     assert plan["model_called"] is False
     assert plan["external_data_sent"] is False
@@ -141,6 +152,10 @@ def test_execution_plan_rejects_dataset_model_and_allowlist_drift() -> None:
         api_base="https://models.example.com/v1",
         max_model_calls=2,
         max_atomic_facts=8,
+        model_timeout_seconds=30,
+        current_state_days=7,
+        weather_state_hours=24,
+        trusted_observation_tools=TRUSTED_TOOLS,
     )
     validated = validate_execution_plan(
         plan,
@@ -160,6 +175,16 @@ def test_execution_plan_rejects_dataset_model_and_allowlist_drift() -> None:
     tampered = json.loads(json.dumps(plan))
     tampered["dataset"]["manifest_sha256"] = "b" * 64
     with pytest.raises(DatasetError, match="dataset binding"):
+        validate_execution_plan(
+            tampered,
+            manifest=_manifest(),
+            manifest_sha256=MANIFEST_SHA,
+            cases=cases,
+        )
+
+    tampered = json.loads(json.dumps(plan))
+    tampered["database"]["schema_revision"] = "outdated"
+    with pytest.raises(DatasetError, match="database schema binding"):
         validate_execution_plan(
             tampered,
             manifest=_manifest(),
@@ -216,6 +241,16 @@ def test_execution_plan_rejects_dataset_model_and_allowlist_drift() -> None:
         )
 
     tampered = json.loads(json.dumps(plan))
+    tampered["policy"]["current_state_days"] = 0
+    with pytest.raises(DatasetError, match="invalid policy metadata"):
+        validate_execution_plan(
+            tampered,
+            manifest=_manifest(),
+            manifest_sha256=MANIFEST_SHA,
+            cases=cases,
+        )
+
+    tampered = json.loads(json.dumps(plan))
     tampered["run"]["id"] = 1
     with pytest.raises(DatasetError, match="invalid run metadata"):
         validate_execution_plan(
@@ -247,7 +282,18 @@ def test_plan_fact_limit_cannot_truncate_a_gold_case() -> None:
             api_base="https://models.example.com/v1",
             max_model_calls=1,
             max_atomic_facts=1,
+            model_timeout_seconds=30,
+            current_state_days=7,
+            weather_state_hours=24,
+            trusted_observation_tools=TRUSTED_TOOLS,
         )
+
+
+def test_runner_database_schema_constant_matches_the_source_migration_head() -> None:
+    configuration = Config()
+    configuration.set_main_option("script_location", str(ROOT / "migrations"))
+
+    assert ScriptDirectory.from_config(configuration).get_current_head() == DATABASE_SCHEMA_REVISION
 
 
 def test_external_synthetic_run_requires_official_pinned_dataset() -> None:
@@ -639,6 +685,14 @@ def test_plan_and_preflight_cli_bind_configuration_without_database_or_model_acc
             "24",
             "--max-atomic-facts",
             "8",
+            "--model-timeout-seconds",
+            "30",
+            "--current-state-days",
+            "7",
+            "--weather-state-hours",
+            "24",
+            "--trusted-observation-tools",
+            ",".join(sorted(TRUSTED_TOOLS)),
         ],
     )
     plan_main()
@@ -647,6 +701,7 @@ def test_plan_and_preflight_cli_bind_configuration_without_database_or_model_acc
     assert plan_summary["status"] == "EXECUTION_PLAN_CREATED"
     assert plan_summary["plan_sha256"] == hashlib.sha256(plan_path.read_bytes()).hexdigest()
     assert plan_summary["max_atomic_facts"] == 8
+    assert plan_summary["database_schema_revision"] == DATABASE_SCHEMA_REVISION
     assert stat.S_IMODE(plan_path.stat().st_mode) == 0o600
 
     environment = {
@@ -668,6 +723,12 @@ def test_plan_and_preflight_cli_bind_configuration_without_database_or_model_acc
         "AGENT_MEMORY_MODEL_EVALUATION_TURN_ALLOWLIST": plan["turn_allowlist_csv"],
         "AGENT_MEMORY_MODEL_MAX_RETRIES": "0",
         "AGENT_MEMORY_MODEL_MAX_ATOMIC_FACTS": "8",
+        "AGENT_MEMORY_MODEL_TIMEOUT_SECONDS": "30",
+        "AGENT_MEMORY_CURRENT_STATE_DAYS": "7",
+        "AGENT_MEMORY_WEATHER_STATE_HOURS": "24",
+        "AGENT_MEMORY_TRUSTED_OBSERVATION_TOOL_ALLOWLIST": ",".join(
+            sorted(TRUSTED_TOOLS)
+        ),
         "AGENT_MEMORY_MODEL_AUTO_BACKFILL_ENABLED": "false",
     }
     for name, value in environment.items():
@@ -695,6 +756,8 @@ def test_plan_and_preflight_cli_bind_configuration_without_database_or_model_acc
     assert summary["case_count"] == 24
     assert summary["model_call_budget"] == 24
     assert summary["max_atomic_facts"] == 8
+    assert summary["model_timeout_seconds"] == 30.0
+    assert summary["database_schema_revision"] == DATABASE_SCHEMA_REVISION
     assert summary["database_connected"] is False
     assert summary["model_called"] is False
     assert summary["external_data_sent"] is False
@@ -704,6 +767,24 @@ def test_plan_and_preflight_cli_bind_configuration_without_database_or_model_acc
     monkeypatch.setenv("AGENT_MEMORY_MODEL_MAX_ATOMIC_FACTS", "9")
     with pytest.raises(DatasetError, match="MAX_ATOMIC_FACTS differs"):
         preflight_main()
+
+    monkeypatch.setenv("AGENT_MEMORY_MODEL_MAX_ATOMIC_FACTS", "8")
+    drift_cases = (
+        ("AGENT_MEMORY_MODEL_TIMEOUT_SECONDS", "31", "MODEL_TIMEOUT_SECONDS differs"),
+        ("AGENT_MEMORY_CURRENT_STATE_DAYS", "8", "CURRENT_STATE_DAYS differs"),
+        ("AGENT_MEMORY_WEATHER_STATE_HOURS", "25", "WEATHER_STATE_HOURS differs"),
+        (
+            "AGENT_MEMORY_TRUSTED_OBSERVATION_TOOL_ALLOWLIST",
+            "terminal,exec",
+            "TRUSTED_OBSERVATION_TOOL_ALLOWLIST differs",
+        ),
+    )
+    for name, value, message in drift_cases:
+        original = environment[name]
+        monkeypatch.setenv(name, value)
+        with pytest.raises(DatasetError, match=message):
+            preflight_main()
+        monkeypatch.setenv(name, original)
 
 
 def test_database_must_be_loopback_and_explicitly_named_for_evaluation() -> None:
