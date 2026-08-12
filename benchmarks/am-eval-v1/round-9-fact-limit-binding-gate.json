@@ -1,0 +1,77 @@
+{
+  "schema_version": "am-eval-fact-limit-binding-gate-v1",
+  "run_id": "agent-memory-1.0.0rc9-fact-limit-binding-r9-20260812",
+  "system_revision": "fdc20f51ccbfe9f9a98f13f3c0c6c7b57b59c1a7",
+  "status": "FACT_LIMIT_BINDING_GATE_PASS_REAL_MODEL_PENDING",
+  "official_metrics_updated": false,
+  "verification": {
+    "non_integration_tests": {
+      "passed": 420,
+      "failed": 0,
+      "deselected_integration": 42
+    },
+    "loopback_atomic_runner_cli": {
+      "passed": 1,
+      "failed": 0,
+      "postgresql_binding": "127.0.0.1:55438",
+      "temporary_database_pattern": "am_eval_cli_*",
+      "temporary_database_residue": 0,
+      "model_endpoint": "127.0.0.1 ephemeral OpenAI-compatible server",
+      "loopback_model_calls": 2,
+      "supplier_calls": 0,
+      "external_data_sent": false,
+      "planned_max_atomic_facts": 8,
+      "worker_prompt_limit": 8,
+      "prompt_limit_matches_plan": true
+    },
+    "drift_failures": {
+      "environment_limit_differs_from_plan": "PASS_FAIL_CLOSED",
+      "plan_limit_below_gold_case_maximum": "PASS_FAIL_CLOSED",
+      "boolean_or_out_of_range_plan_limit": "PASS_FAIL_CLOSED"
+    },
+    "ruff_check": "PASS",
+    "uv_lock_check": "PASS",
+    "diff_check": "PASS"
+  },
+  "implemented_gates": [
+    "execution plan v3 binds the actual worker max_atomic_facts value",
+    "preflight requires AGENT_MEMORY_MODEL_MAX_ATOMIC_FACTS to equal the plan exactly",
+    "the plan fact limit cannot be lower than the largest gold case",
+    "the plan fact limit must be an integer from 1 to 20 and cannot be a boolean",
+    "the worker prompt and candidate validator use the same configured fact limit",
+    "plan and preflight summaries expose max_atomic_facts for human review"
+  ],
+  "schemas": {
+    "execution_plan": "am-eval-atomic-execution-plan-v3",
+    "runner": "am-eval-atomic-runner-v3",
+    "atomic_output": "am-eval-atomic-output-v2"
+  },
+  "current_real_model_readiness": {
+    "model": "ocg/qwen3.7-plus",
+    "api_base": "https://9router.evergardenviolet.top/v1",
+    "public_synthetic_case_count": 24,
+    "maximum_supplier_calls": 24,
+    "max_atomic_facts_per_turn": 8,
+    "nonproduction_key_file_present": false,
+    "external_data_confirmation_received": false,
+    "real_model_run_started": false
+  },
+  "boundaries": {
+    "production_data_read": false,
+    "production_api_or_database_connected": false,
+    "production_namespace_connected": false,
+    "production_container_inspected_or_modified": false,
+    "production_modified": false,
+    "external_model_called": false,
+    "external_data_sent": false,
+    "real_api_key_read": false,
+    "repository_contains_real_api_key": false
+  },
+  "remaining_requirements": [
+    "create a repository-outside 0700 evaluation secret directory and 0600 non-production key file",
+    "provide the exact SEND_SYNTHETIC_BENCHMARK_TO_EXTERNAL_MODEL confirmation",
+    "review and confirm the generated execution plan v3 SHA before the real run",
+    "run the 24-case public synthetic shakedown in a fresh loopback am_eval_ database",
+    "score and review aggregate M01 M02 M03 M07 and M23 diagnostics without publishing model text"
+  ]
+}

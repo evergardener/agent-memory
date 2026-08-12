@@ -32,6 +32,9 @@
 第八轮冻结 execution plan、零网络 preflight 和 plan SHA 证据链见
 [`round-8-execution-plan-gate.json`](round-8-execution-plan-gate.json) 及
 [`../../docs/V1.0-AM-Eval第八轮执行计划门禁报告.md`](../../docs/V1.0-AM-Eval第八轮执行计划门禁报告.md)。
+第九轮将实际事实提取上限冻结到 execution plan v3，证据见
+[`round-9-fact-limit-binding-gate.json`](round-9-fact-limit-binding-gate.json) 及
+[`../../docs/V1.0-AM-Eval第九轮提取上限绑定门禁报告.md`](../../docs/V1.0-AM-Eval第九轮提取上限绑定门禁报告.md)。
 
 验证冻结数据集：
 
