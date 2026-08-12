@@ -219,6 +219,9 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
     manifest_path, manifest_sha = _write_dataset(private_root)
     output_path = private_root / "atomic-output.json"
     efficiency_path = private_root / "efficiency-input.json"
+    key_path = private_root / "model-api-key"
+    key_path.write_text("loopback-test-key\n", encoding="utf-8")
+    key_path.chmod(0o600)
     plan = build_plan(
         cases=CASES,
         namespace=namespace,
@@ -238,7 +241,8 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
                     "AGENT_MEMORY_MODEL_ENABLED": "true",
                     "AGENT_MEMORY_MODEL_NAME": "openai/test-model",
                     "AGENT_MEMORY_MODEL_API_BASE": api_base,
-                    "AGENT_MEMORY_MODEL_API_KEY": "loopback-test-key",
+                    "AGENT_MEMORY_MODEL_API_KEY": "",
+                    "AGENT_MEMORY_MODEL_API_KEY_FILE": str(key_path),
                     "AGENT_MEMORY_MODEL_ALLOW_EXTERNAL_DATA": "true",
                     "AGENT_MEMORY_MODEL_EVALUATION_MODE": "true",
                     "AGENT_MEMORY_MODEL_EVALUATION_PLAN_SHA": manifest_sha,
@@ -294,6 +298,11 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
         assert OpenAICompatibleHandler.calls == len(CASES)
         assert stat.S_IMODE(output_path.stat().st_mode) == 0o600
         assert stat.S_IMODE(efficiency_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+        assert "loopback-test-key" not in completed.stdout
+        assert "loopback-test-key" not in completed.stderr
+        assert "loopback-test-key" not in output_path.read_text(encoding="utf-8")
+        assert "loopback-test-key" not in efficiency_path.read_text(encoding="utf-8")
 
         output = load_atomic_output(
             output_path,

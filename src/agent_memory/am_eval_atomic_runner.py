@@ -95,6 +95,44 @@ def validate_isolated_database_url(database_url: str) -> dict[str, str]:
     return values
 
 
+def validate_evaluation_api_key_file(
+    settings: Settings, *, forbidden_root: Path | None = None
+) -> Path:
+    if settings.model_api_key.get_secret_value():
+        raise DatasetError(
+            "atomic runner forbids AGENT_MEMORY_MODEL_API_KEY; use a private key file"
+        )
+    if not settings.model_api_key_file:
+        raise DatasetError("AGENT_MEMORY_MODEL_API_KEY_FILE is required")
+    expanded = Path(settings.model_api_key_file).expanduser()
+    if any(candidate.is_symlink() for candidate in (expanded, *expanded.parents)):
+        raise DatasetError("atomic runner API key path cannot use a symlink")
+    resolved = expanded.resolve()
+    if forbidden_root is not None:
+        try:
+            resolved.relative_to(forbidden_root.resolve())
+        except ValueError:
+            pass
+        else:
+            raise DatasetError("atomic runner API key file must be outside the source repository")
+    if not resolved.is_file():
+        raise DatasetError("atomic runner API key file must be a regular file")
+    parent_mode = stat.S_IMODE(resolved.parent.stat().st_mode)
+    if parent_mode & 0o077:
+        raise DatasetError("atomic runner API key directory must be mode 0700 or stricter")
+    file_stat = resolved.stat()
+    if stat.S_IMODE(file_stat.st_mode) & 0o077:
+        raise DatasetError("atomic runner API key file must be mode 0600 or stricter")
+    if file_stat.st_nlink != 1:
+        raise DatasetError("atomic runner API key file cannot have multiple hard links")
+    try:
+        if not resolved.read_text(encoding="utf-8").strip():
+            raise DatasetError("atomic runner API key file is empty")
+    except (OSError, UnicodeError) as error:
+        raise DatasetError("atomic runner API key file cannot be read") from error
+    return resolved
+
+
 def validate_runtime_settings(
     settings: Settings,
     *,
@@ -120,6 +158,7 @@ def validate_runtime_settings(
         raise DatasetError("atomic runner requires model retries=0 for a fixed request budget")
     if not settings.model_allow_external_data:
         raise DatasetError("external model data authorization is required")
+    validate_evaluation_api_key_file(settings, forbidden_root=Path(__file__).parents[2])
     profile = ModelProfile.from_settings(settings)
     if profile.model != expected_model:
         raise DatasetError("configured model differs from --expected-model")

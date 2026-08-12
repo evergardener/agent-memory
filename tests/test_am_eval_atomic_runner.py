@@ -1,4 +1,5 @@
 import json
+import os
 import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,6 +15,7 @@ from agent_memory.am_eval_atomic_runner import (
     build_plan,
     emit_run_summary,
     external_data_confirmation,
+    validate_evaluation_api_key_file,
     validate_isolated_database_url,
     validate_model_call_budget,
     validate_private_output,
@@ -37,7 +39,8 @@ def _settings(**overrides) -> Settings:
         "model_enabled": True,
         "model_name": "ocg/qwen3.7-plus",
         "model_api_base": "https://models.example.com/v1",
-        "model_api_key": SecretStr("isolated-test-key"),
+        "model_api_key": SecretStr(""),
+        "model_api_key_file": "",
         "model_allow_external_data": True,
         "model_evaluation_mode": True,
         "model_evaluation_plan_sha": MANIFEST_SHA,
@@ -46,6 +49,22 @@ def _settings(**overrides) -> Settings:
     }
     values.update(overrides)
     return Settings(**values)
+
+
+def _private_key(
+    root: Path,
+    *,
+    directory_mode: int = 0o700,
+    file_mode: int = 0o600,
+    content: str = "isolated-test-key\n",
+) -> Path:
+    private = root / "private-key"
+    private.mkdir(mode=directory_mode, parents=True)
+    private.chmod(directory_mode)
+    key_file = private / "model-api-key"
+    key_file.write_text(content, encoding="utf-8")
+    key_file.chmod(file_mode)
+    return key_file
 
 
 def test_plan_is_metadata_only_and_turn_ids_are_deterministic() -> None:
@@ -157,13 +176,15 @@ def test_complete_run_summary_returns_zero_path(tmp_path: Path, capsys) -> None:
         ({"model_auto_backfill_enabled": True}, "forbids automatic"),
         ({"model_max_retries": 1}, "retries=0"),
         ({"model_allow_external_data": False}, "authorization"),
-        ({"model_api_key": SecretStr("")}, "API key"),
+        ({"model_api_key_file": ""}, "API_KEY_FILE"),
     ],
 )
-def test_runner_settings_fail_closed(overrides: dict, message: str) -> None:
+def test_runner_settings_fail_closed(tmp_path: Path, overrides: dict, message: str) -> None:
+    key_file = _private_key(tmp_path)
+    settings_overrides = {"model_api_key_file": str(key_file), **overrides}
     with pytest.raises(DatasetError, match=message):
         validate_runtime_settings(
-            _settings(**overrides),
+            _settings(**settings_overrides),
             namespace=NAMESPACE,
             plan_sha256=MANIFEST_SHA,
             expected_model="ocg/qwen3.7-plus",
@@ -171,10 +192,11 @@ def test_runner_settings_fail_closed(overrides: dict, message: str) -> None:
         )
 
 
-def test_runner_rejects_unexpected_model_or_endpoint() -> None:
+def test_runner_rejects_unexpected_model_or_endpoint(tmp_path: Path) -> None:
+    key_file = _private_key(tmp_path)
     with pytest.raises(DatasetError, match="model differs"):
         validate_runtime_settings(
-            _settings(),
+            _settings(model_api_key_file=str(key_file)),
             namespace=NAMESPACE,
             plan_sha256=MANIFEST_SHA,
             expected_model="different-model",
@@ -182,12 +204,76 @@ def test_runner_rejects_unexpected_model_or_endpoint() -> None:
         )
     with pytest.raises(DatasetError, match="API base differs"):
         validate_runtime_settings(
-            _settings(),
+            _settings(model_api_key_file=str(key_file)),
             namespace=NAMESPACE,
             plan_sha256=MANIFEST_SHA,
             expected_model="ocg/qwen3.7-plus",
             expected_api_base="https://other.example.com/v1",
         )
+
+
+def test_evaluation_api_key_requires_private_file_outside_repository(tmp_path: Path) -> None:
+    key_file = _private_key(tmp_path)
+    settings = _settings(model_api_key_file=str(key_file))
+
+    assert validate_evaluation_api_key_file(settings) == key_file.resolve()
+    with pytest.raises(DatasetError, match="outside the source repository"):
+        validate_evaluation_api_key_file(settings, forbidden_root=tmp_path)
+
+
+def test_evaluation_api_key_rejects_direct_secret_and_missing_file(tmp_path: Path) -> None:
+    key_file = _private_key(tmp_path)
+    with pytest.raises(DatasetError, match="forbids AGENT_MEMORY_MODEL_API_KEY"):
+        validate_evaluation_api_key_file(
+            _settings(
+                model_api_key=SecretStr("direct-secret"),
+                model_api_key_file=str(key_file),
+            )
+        )
+    with pytest.raises(DatasetError, match="API_KEY_FILE is required"):
+        validate_evaluation_api_key_file(_settings())
+    with pytest.raises(DatasetError, match="regular file"):
+        validate_evaluation_api_key_file(_settings(model_api_key_file=str(tmp_path / "missing")))
+
+
+@pytest.mark.parametrize(
+    ("directory_mode", "file_mode", "message"),
+    [
+        (0o755, 0o600, "directory must be mode 0700"),
+        (0o700, 0o644, "file must be mode 0600"),
+    ],
+)
+def test_evaluation_api_key_rejects_broad_permissions(
+    tmp_path: Path,
+    directory_mode: int,
+    file_mode: int,
+    message: str,
+) -> None:
+    key_file = _private_key(
+        tmp_path,
+        directory_mode=directory_mode,
+        file_mode=file_mode,
+    )
+
+    with pytest.raises(DatasetError, match=message):
+        validate_evaluation_api_key_file(_settings(model_api_key_file=str(key_file)))
+
+
+def test_evaluation_api_key_rejects_empty_symlink_and_hard_link(tmp_path: Path) -> None:
+    empty_file = _private_key(tmp_path / "empty", content="\n")
+    with pytest.raises(DatasetError, match="empty"):
+        validate_evaluation_api_key_file(_settings(model_api_key_file=str(empty_file)))
+
+    linked_source = _private_key(tmp_path / "linked")
+    symbolic = linked_source.parent / "symbolic-key"
+    symbolic.symlink_to(linked_source)
+    with pytest.raises(DatasetError, match="symlink"):
+        validate_evaluation_api_key_file(_settings(model_api_key_file=str(symbolic)))
+
+    hard_link = linked_source.parent / "hard-key"
+    os.link(linked_source, hard_link)
+    with pytest.raises(DatasetError, match="hard links"):
+        validate_evaluation_api_key_file(_settings(model_api_key_file=str(hard_link)))
 
 
 def test_database_must_be_loopback_and_explicitly_named_for_evaluation() -> None:
