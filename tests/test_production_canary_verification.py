@@ -63,7 +63,8 @@ def test_production_up_preserves_skip_build_control_before_loading_env() -> None
     assert up_script.index('"${COMPOSE[@]}" pull api worker migrate') < up_script.index(
         '"${COMPOSE[@]}" up -d --no-build'
     )
-    assert "org.opencontainers.image.revision" in up_script
+    assert "verify-image-build-identity.sh" in up_script
+    assert "AGENT_MEMORY_SOURCE_SHA256" in up_script
     assert '"--upgrade"' in up_script
     assert 'MODE="upgrade"' in up_script
     assert '"$MODE" == "new" || "$MODE" == "upgrade"' in up_script

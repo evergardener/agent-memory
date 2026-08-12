@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import stat
+import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -11,10 +12,12 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from pydantic import SecretStr
 
+import agent_memory.am_eval_atomic_runner as atomic_runner
 from agent_memory.am_eval_atomic_runner import (
     DATABASE_SCHEMA_REVISION,
     MAX_API_KEY_BYTES,
     MAX_EXECUTION_PLAN_BYTES,
+    RuntimeIdentity,
     benchmark_idempotency_key,
     benchmark_run_complete,
     benchmark_turn_id,
@@ -24,6 +27,8 @@ from agent_memory.am_eval_atomic_runner import (
     external_data_confirmation,
     plan_main,
     preflight_main,
+    resolve_runtime_identity,
+    runtime_source_sha256,
     validate_evaluation_api_base,
     validate_evaluation_api_key_file,
     validate_evaluation_plan_file,
@@ -31,6 +36,7 @@ from agent_memory.am_eval_atomic_runner import (
     validate_external_dataset_scope,
     validate_isolated_database_url,
     validate_model_call_budget,
+    validate_output_runtime_identity,
     validate_private_output,
     validate_run_metadata,
     validate_runtime_settings,
@@ -45,6 +51,14 @@ NAMESPACE = "hermes:automated-tests:atomic-runner"
 TRUSTED_TOOLS = frozenset({"terminal", "exec", "execute_code", "shell", "health_probe"})
 ROOT = Path(__file__).parents[1]
 PUBLIC_MANIFEST = ROOT / "benchmarks/am-eval-v1/datasets/atomic-quality-selftest-v1/manifest.json"
+TEST_IDENTITY = RuntimeIdentity(
+    revision="d" * 40,
+    version="test",
+    source_sha256="e" * 64,
+    source_file_count=7,
+    provenance="test-fixture",
+    source_root=ROOT,
+)
 
 
 def _manifest() -> dict:
@@ -99,6 +113,284 @@ def _private_key(
     return key_file
 
 
+def _runtime_source_tree(root: Path) -> Path:
+    for relative in ("VERSION", "alembic.ini", "pyproject.toml", "uv.lock"):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            f"{atomic_runner.__version__}\n" if relative == "VERSION" else f"{relative}\n"
+        )
+    module = root / "src" / "agent_memory" / "example.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("VALUE = 1\n", encoding="utf-8")
+    migration = root / "migrations" / "versions" / "0001_example.py"
+    migration.parent.mkdir(parents=True)
+    migration.write_text("revision = '0001'\n", encoding="utf-8")
+    return root
+
+
+def _commit_runtime_source_tree(root: Path) -> str:
+    subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=AM-Eval Test",
+            "-c",
+            "user.email=am-eval@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "runtime identity fixture",
+        ],
+        cwd=root,
+        check=True,
+    )
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True
+    ).strip()
+
+
+@pytest.fixture(autouse=True)
+def isolated_runtime_pycache(tmp_path: Path, monkeypatch) -> None:
+    cache_root = tmp_path / "runtime-pycache"
+    cache_root.mkdir(mode=0o700)
+    cache_root.chmod(0o700)
+    monkeypatch.setattr(atomic_runner.sys, "pycache_prefix", str(cache_root))
+    monkeypatch.setattr(atomic_runner.sys, "dont_write_bytecode", True)
+
+
+def _mock_git(
+    source_root: Path,
+    monkeypatch,
+    *,
+    revision: str = "f" * 40,
+    dirty: str = "",
+) -> None:
+    committed = runtime_source_sha256(
+        source_root,
+        package_root=source_root / "src" / "agent_memory",
+    )
+
+    def git_output(_root: Path, *arguments: str) -> str:
+        if arguments == ("rev-parse", "--show-toplevel"):
+            return str(source_root)
+        if arguments == ("rev-parse", "--verify", "HEAD^{commit}"):
+            return revision
+        if arguments[:1] == ("status",):
+            return dirty
+        return ""
+
+    monkeypatch.setattr(atomic_runner, "_git_output", git_output)
+    monkeypatch.setattr(atomic_runner, "_validate_git_index_flags", lambda _root: None)
+    monkeypatch.setattr(
+        atomic_runner,
+        "_git_runtime_source_sha256",
+        lambda _root, *, revision: committed,
+    )
+
+
+def test_runtime_source_digest_and_image_identity_are_content_bound(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source_root = _runtime_source_tree(tmp_path / "runtime")
+    initial_sha, initial_count = runtime_source_sha256(
+        source_root,
+        package_root=source_root / "src" / "agent_memory",
+    )
+    identity_file = source_root / atomic_runner.BUILD_IDENTITY_FILE_NAME
+    identity_file.write_text(
+        json.dumps(
+            {
+                "schema_version": atomic_runner.BUILD_IDENTITY_SCHEMA_VERSION,
+                "revision": "f" * 40,
+                "source_file_count": initial_count,
+                "source_sha256": initial_sha,
+                "version": atomic_runner.__version__,
+            }
+        ),
+        encoding="utf-8",
+    )
+    identity = resolve_runtime_identity(source_root)
+    assert identity == RuntimeIdentity(
+        revision="f" * 40,
+        version=atomic_runner.__version__,
+        source_sha256=initial_sha,
+        source_file_count=initial_count,
+        provenance="image-build-metadata",
+        source_root=source_root.resolve(),
+    )
+
+    (source_root / "src" / "agent_memory" / "example.py").write_text(
+        "VALUE = 2\n", encoding="utf-8"
+    )
+    changed_sha, changed_count = runtime_source_sha256(
+        source_root,
+        package_root=source_root / "src" / "agent_memory",
+    )
+    assert changed_sha != initial_sha
+    assert changed_count == initial_count
+    with pytest.raises(DatasetError, match="source differs from build identity"):
+        resolve_runtime_identity(source_root)
+
+
+def test_runtime_identity_requires_clean_git_checkout(tmp_path: Path, monkeypatch) -> None:
+    source_root = _runtime_source_tree(tmp_path / "runtime")
+    (source_root / ".git").mkdir()
+    _mock_git(source_root, monkeypatch)
+    identity = resolve_runtime_identity(source_root)
+    assert identity.revision == "f" * 40
+    assert identity.provenance == "clean-git-checkout"
+
+    _mock_git(source_root, monkeypatch, dirty=" M src/example.py")
+    with pytest.raises(DatasetError, match="clean Git checkout"):
+        resolve_runtime_identity(source_root)
+
+
+def test_runtime_identity_rejects_stale_installed_package_and_bytecode(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source_root = _runtime_source_tree(tmp_path / "runtime")
+    installed_package = tmp_path / "site-packages" / "agent_memory"
+    installed_package.mkdir(parents=True)
+    (installed_package / "example.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (source_root / ".git").mkdir()
+
+    _mock_git(source_root, monkeypatch)
+    with pytest.raises(DatasetError, match="executing package differs"):
+        resolve_runtime_identity(source_root, package_root=installed_package)
+
+    normal_bytecode = (
+        source_root / "src" / "agent_memory" / "__pycache__" / "example.pyc"
+    )
+    normal_bytecode.parent.mkdir()
+    normal_bytecode.write_bytes(b"ignored-cache")
+    identity = resolve_runtime_identity(source_root)
+    assert identity.provenance == "clean-git-checkout"
+
+    executable_artifact = source_root / "src" / "agent_memory" / "example.so"
+    executable_artifact.write_bytes(b"not-a-real-extension")
+    with pytest.raises(DatasetError, match="executable import artifact"):
+        resolve_runtime_identity(source_root)
+
+
+def test_runtime_identity_rejects_source_tree_pycache_without_creating_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source_root = _runtime_source_tree(tmp_path / "runtime")
+    forbidden_cache = source_root / "not-created-pycache"
+    monkeypatch.setattr(atomic_runner.sys, "pycache_prefix", str(forbidden_cache))
+
+    with pytest.raises(DatasetError, match="outside runtime sources"):
+        resolve_runtime_identity(source_root)
+    assert not forbidden_cache.exists()
+
+
+def test_runtime_identity_rejects_reused_nonempty_private_pycache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source_root = _runtime_source_tree(tmp_path / "runtime")
+    cache_root = tmp_path / "preloaded-pycache"
+    cache_root.mkdir(mode=0o700)
+    cache_root.chmod(0o700)
+    (cache_root / "preloaded.pyc").write_bytes(b"untrusted-bytecode")
+    monkeypatch.setattr(atomic_runner.sys, "pycache_prefix", str(cache_root))
+
+    with pytest.raises(DatasetError, match="must be empty"):
+        resolve_runtime_identity(source_root)
+
+
+def test_runtime_identity_requires_disabled_bytecode_writes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source_root = _runtime_source_tree(tmp_path / "runtime")
+    monkeypatch.setattr(atomic_runner.sys, "dont_write_bytecode", False)
+
+    with pytest.raises(DatasetError, match="PYTHONDONTWRITEBYTECODE=1"):
+        resolve_runtime_identity(source_root)
+
+
+def test_runtime_identity_rejects_git_head_drift(tmp_path: Path, monkeypatch) -> None:
+    source_root = _runtime_source_tree(tmp_path / "runtime")
+    (source_root / ".git").mkdir()
+    revisions = iter(("f" * 40, "e" * 40))
+    committed = runtime_source_sha256(
+        source_root,
+        package_root=source_root / "src" / "agent_memory",
+    )
+
+    def changing_git(_root: Path, *arguments: str) -> str:
+        if arguments == ("rev-parse", "--show-toplevel"):
+            return str(source_root)
+        if arguments == ("rev-parse", "--verify", "HEAD^{commit}"):
+            return next(revisions)
+        return ""
+
+    monkeypatch.setattr(atomic_runner, "_git_output", changing_git)
+    monkeypatch.setattr(atomic_runner, "_validate_git_index_flags", lambda _root: None)
+    monkeypatch.setattr(
+        atomic_runner,
+        "_git_runtime_source_sha256",
+        lambda _root, *, revision: committed,
+    )
+    with pytest.raises(DatasetError, match="Git HEAD changed"):
+        resolve_runtime_identity(source_root)
+
+
+def test_runtime_identity_is_bound_to_real_git_head_and_ignores_git_env_spoofing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source_root = _runtime_source_tree(tmp_path / "runtime")
+    revision = _commit_runtime_source_tree(source_root)
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "missing-decoy.git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path / "decoy-worktree"))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / "decoy-index"))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+
+    identity = resolve_runtime_identity(source_root)
+
+    assert identity.revision == revision
+    assert identity.provenance == "clean-git-checkout"
+    environment = atomic_runner._git_environment()
+    assert not any(key.startswith("GIT_") for key in environment if key not in {
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_LITERAL_PATHSPECS",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_OPTIONAL_LOCKS",
+        "GIT_TERMINAL_PROMPT",
+    })
+
+
+@pytest.mark.parametrize("index_flag", ["--assume-unchanged", "--skip-worktree"])
+def test_runtime_identity_rejects_hidden_git_index_changes(
+    tmp_path: Path, index_flag: str
+) -> None:
+    source_root = _runtime_source_tree(tmp_path / "runtime")
+    _commit_runtime_source_tree(source_root)
+    relative = "src/agent_memory/example.py"
+    subprocess.run(["git", "update-index", index_flag, relative], cwd=source_root, check=True)
+    (source_root / relative).write_text("VALUE = 2\n", encoding="utf-8")
+
+    with pytest.raises(DatasetError, match="index flags|differ from the Git commit"):
+        resolve_runtime_identity(source_root)
+
+
+def test_runtime_identity_rejects_ignored_extra_python_source(tmp_path: Path) -> None:
+    source_root = _runtime_source_tree(tmp_path / "runtime")
+    (source_root / ".gitignore").write_text("generated.py\n", encoding="utf-8")
+    _commit_runtime_source_tree(source_root)
+    generated = source_root / "src" / "agent_memory" / "generated.py"
+    generated.write_text("VALUE = 2\n", encoding="utf-8")
+    assert not subprocess.check_output(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=source_root
+    )
+
+    with pytest.raises(DatasetError, match="checkout sources differ from the Git commit"):
+        resolve_runtime_identity(source_root)
+
+
 def test_plan_is_metadata_only_and_turn_ids_are_deterministic() -> None:
     cases = _cases()
     plan = build_plan(
@@ -107,8 +399,10 @@ def test_plan_is_metadata_only_and_turn_ids_are_deterministic() -> None:
         namespace=NAMESPACE,
         manifest_sha256=MANIFEST_SHA,
         run_id="atomic-plan-test",
-        system_revision="d" * 40,
-        system_version="test",
+        system_revision=TEST_IDENTITY.revision,
+        system_version=TEST_IDENTITY.version,
+        source_sha256=TEST_IDENTITY.source_sha256,
+        source_file_count=TEST_IDENTITY.source_file_count,
         model="ocg/qwen3.7-plus",
         api_base="https://models.example.com/v1/",
         max_model_calls=2,
@@ -129,6 +423,8 @@ def test_plan_is_metadata_only_and_turn_ids_are_deterministic() -> None:
     assert plan["model"]["max_calls"] == 2
     assert plan["model"]["api_base"] == "https://models.example.com/v1"
     assert plan["run"]["system_revision"] == "d" * 40
+    assert plan["run"]["source_sha256"] == TEST_IDENTITY.source_sha256
+    assert plan["run"]["source_file_count"] == TEST_IDENTITY.source_file_count
     assert plan["model"]["max_atomic_facts"] == 8
     assert plan["model"]["timeout_seconds"] == 30.0
     assert plan["policy"]["trusted_observation_tools"] == sorted(TRUSTED_TOOLS)
@@ -136,6 +432,82 @@ def test_plan_is_metadata_only_and_turn_ids_are_deterministic() -> None:
     assert plan["contains_memory_text"] is False
     assert plan["model_called"] is False
     assert plan["external_data_sent"] is False
+
+
+def test_output_runtime_identity_is_fully_bound_to_the_execution_plan() -> None:
+    plan = build_plan(
+        manifest=_manifest(),
+        cases=_cases(),
+        namespace=NAMESPACE,
+        manifest_sha256=MANIFEST_SHA,
+        run_id="atomic-plan-test",
+        system_revision=TEST_IDENTITY.revision,
+        system_version=TEST_IDENTITY.version,
+        source_sha256=TEST_IDENTITY.source_sha256,
+        source_file_count=TEST_IDENTITY.source_file_count,
+        model="ocg/qwen3.7-plus",
+        api_base="https://models.example.com/v1",
+        max_model_calls=2,
+        max_atomic_facts=8,
+        model_timeout_seconds=30,
+        current_state_days=7,
+        weather_state_hours=24,
+        trusted_observation_tools=TRUSTED_TOOLS,
+    )
+    output = {
+        "run_id": plan["run"]["id"],
+        "model": plan["model"]["name"],
+        "policy_version": plan["policy"]["atomic_extraction_version"],
+        "contains_production_data": plan["dataset"]["contains_production_data"],
+        "dataset_visibility": plan["dataset"]["visibility"],
+        "model_called": True,
+        "external_data_sent": True,
+        "system": {
+            "name": "agent-memory",
+            "revision": plan["run"]["system_revision"],
+            "source_file_count": plan["run"]["source_file_count"],
+            "source_sha256": plan["run"]["source_sha256"],
+            "version": plan["run"]["system_version"],
+        },
+    }
+    validate_output_runtime_identity(output, plan=plan)
+
+    for key, value in (
+        ("revision", "f" * 40),
+        ("source_file_count", 8),
+        ("source_sha256", "f" * 64),
+        ("version", "different"),
+    ):
+        tampered = json.loads(json.dumps(output))
+        tampered["system"][key] = value
+        with pytest.raises(DatasetError, match="runtime identity differs"):
+            validate_output_runtime_identity(tampered, plan=plan)
+
+    for key, value in (
+        ("run_id", "different"),
+        ("model", "different"),
+        ("policy_version", "different"),
+    ):
+        tampered = json.loads(json.dumps(output))
+        tampered[key] = value
+        with pytest.raises(DatasetError, match="execution metadata differs"):
+            validate_output_runtime_identity(tampered, plan=plan)
+
+    malformed = json.loads(json.dumps(plan))
+    del malformed["run"]["source_file_count"]
+    with pytest.raises(DatasetError, match="invalid output binding metadata"):
+        validate_output_runtime_identity(output, plan=malformed)
+
+    for key, value in (
+        ("contains_production_data", True),
+        ("dataset_visibility", "private"),
+        ("model_called", False),
+        ("external_data_sent", False),
+    ):
+        tampered = json.loads(json.dumps(output))
+        tampered[key] = value
+        with pytest.raises(DatasetError, match="governance metadata differs"):
+            validate_output_runtime_identity(tampered, plan=plan)
 
 
 def test_execution_plan_rejects_dataset_model_and_allowlist_drift() -> None:
@@ -146,8 +518,10 @@ def test_execution_plan_rejects_dataset_model_and_allowlist_drift() -> None:
         namespace=NAMESPACE,
         manifest_sha256=MANIFEST_SHA,
         run_id="atomic-plan-test",
-        system_revision="d" * 40,
-        system_version="test",
+        system_revision=TEST_IDENTITY.revision,
+        system_version=TEST_IDENTITY.version,
+        source_sha256=TEST_IDENTITY.source_sha256,
+        source_file_count=TEST_IDENTITY.source_file_count,
         model="ocg/qwen3.7-plus",
         api_base="https://models.example.com/v1",
         max_model_calls=2,
@@ -191,6 +565,16 @@ def test_execution_plan_rejects_dataset_model_and_allowlist_drift() -> None:
             manifest_sha256=MANIFEST_SHA,
             cases=cases,
         )
+
+    tampered = json.loads(json.dumps(plan))
+    tampered["run"]["source_sha256"] = "f" * 64
+    validated_tampered = validate_execution_plan(
+        tampered,
+        manifest=_manifest(),
+        manifest_sha256=MANIFEST_SHA,
+        cases=cases,
+    )
+    assert validated_tampered["run"]["source_sha256"] == "f" * 64
 
     with pytest.raises(DatasetError, match="invalid schema"):
         validate_execution_plan(
@@ -276,8 +660,10 @@ def test_plan_fact_limit_cannot_truncate_a_gold_case() -> None:
             namespace=NAMESPACE,
             manifest_sha256=MANIFEST_SHA,
             run_id="atomic-plan-test",
-            system_revision="d" * 40,
-            system_version="test",
+            system_revision=TEST_IDENTITY.revision,
+            system_version=TEST_IDENTITY.version,
+            source_sha256=TEST_IDENTITY.source_sha256,
+            source_file_count=TEST_IDENTITY.source_file_count,
             model="ocg/qwen3.7-plus",
             api_base="https://models.example.com/v1",
             max_model_calls=1,
@@ -441,6 +827,7 @@ def test_runner_settings_fail_closed(tmp_path: Path, overrides: dict, message: s
             plan_sha256=MANIFEST_SHA,
             expected_model="ocg/qwen3.7-plus",
             expected_api_base="https://models.example.com/v1",
+            forbidden_root=ROOT,
         )
 
 
@@ -453,6 +840,7 @@ def test_runner_rejects_unexpected_model_or_endpoint(tmp_path: Path) -> None:
             plan_sha256=MANIFEST_SHA,
             expected_model="different-model",
             expected_api_base="https://models.example.com/v1",
+            forbidden_root=ROOT,
         )
     with pytest.raises(DatasetError, match="API base differs"):
         validate_runtime_settings(
@@ -461,6 +849,7 @@ def test_runner_rejects_unexpected_model_or_endpoint(tmp_path: Path) -> None:
             plan_sha256=MANIFEST_SHA,
             expected_model="ocg/qwen3.7-plus",
             expected_api_base="https://other.example.com/v1",
+            forbidden_root=ROOT,
         )
 
 
@@ -661,6 +1050,7 @@ def test_plan_and_preflight_cli_bind_configuration_without_database_or_model_acc
     key_path = private / "model-api-key"
     key_path.write_text("preflight-only-fake-key\n", encoding="utf-8")
     key_path.chmod(0o600)
+    monkeypatch.setattr(atomic_runner, "resolve_runtime_identity", lambda: TEST_IDENTITY)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -673,10 +1063,6 @@ def test_plan_and_preflight_cli_bind_configuration_without_database_or_model_acc
             NAMESPACE,
             "--run-id",
             "public-preflight-test",
-            "--system-revision",
-            "d" * 40,
-            "--system-version",
-            "test",
             "--model",
             "ocg/qwen3.7-plus",
             "--api-base",
@@ -702,6 +1088,9 @@ def test_plan_and_preflight_cli_bind_configuration_without_database_or_model_acc
     assert plan_summary["plan_sha256"] == hashlib.sha256(plan_path.read_bytes()).hexdigest()
     assert plan_summary["max_atomic_facts"] == 8
     assert plan_summary["database_schema_revision"] == DATABASE_SCHEMA_REVISION
+    assert plan_summary["runtime_identity_provenance"] == "test-fixture"
+    assert plan_summary["source_sha256"] == TEST_IDENTITY.source_sha256
+    assert plan["run"]["source_sha256"] == TEST_IDENTITY.source_sha256
     assert stat.S_IMODE(plan_path.stat().st_mode) == 0o600
 
     environment = {
@@ -758,6 +1147,8 @@ def test_plan_and_preflight_cli_bind_configuration_without_database_or_model_acc
     assert summary["max_atomic_facts"] == 8
     assert summary["model_timeout_seconds"] == 30.0
     assert summary["database_schema_revision"] == DATABASE_SCHEMA_REVISION
+    assert summary["runtime_identity_provenance"] == "test-fixture"
+    assert summary["source_sha256"] == TEST_IDENTITY.source_sha256
     assert summary["database_connected"] is False
     assert summary["model_called"] is False
     assert summary["external_data_sent"] is False
@@ -785,6 +1176,25 @@ def test_plan_and_preflight_cli_bind_configuration_without_database_or_model_acc
         with pytest.raises(DatasetError, match=message):
             preflight_main()
         monkeypatch.setenv(name, original)
+
+    mismatched_identity = RuntimeIdentity(
+        revision=TEST_IDENTITY.revision,
+        version=TEST_IDENTITY.version,
+        source_sha256="f" * 64,
+        source_file_count=TEST_IDENTITY.source_file_count,
+        provenance="test-fixture",
+        source_root=ROOT,
+    )
+    monkeypatch.setattr(
+        atomic_runner, "resolve_runtime_identity", lambda: mismatched_identity
+    )
+    monkeypatch.setattr(
+        atomic_runner,
+        "Settings",
+        lambda: pytest.fail("runtime identity drift must fail before settings or key access"),
+    )
+    with pytest.raises(DatasetError, match="runtime identity differs"):
+        preflight_main()
 
 
 def test_database_must_be_loopback_and_explicitly_named_for_evaluation() -> None:
@@ -838,16 +1248,31 @@ def test_private_output_rejects_symlinked_parent(tmp_path: Path) -> None:
 
 
 def test_run_metadata_requires_git_revision_and_non_empty_labels() -> None:
-    validate_run_metadata(run_id="round-4", system_revision="d" * 40, system_version="1.0")
+    metadata = {
+        "run_id": "round-4",
+        "system_revision": "d" * 40,
+        "system_version": "1.0",
+        "source_sha256": "e" * 64,
+        "source_file_count": 7,
+    }
+    validate_run_metadata(**metadata)
 
     with pytest.raises(DatasetError, match="Git commit SHA"):
-        validate_run_metadata(run_id="round-4", system_revision="short", system_version="1.0")
+        validate_run_metadata(**(metadata | {"system_revision": "short"}))
+    with pytest.raises(DatasetError, match="Git commit SHA"):
+        validate_run_metadata(**(metadata | {"system_revision": "D" * 40}))
     with pytest.raises(DatasetError, match="run ID"):
-        validate_run_metadata(run_id=" ", system_revision="d" * 40, system_version="1.0")
+        validate_run_metadata(**(metadata | {"run_id": " "}))
     with pytest.raises(DatasetError, match="system version"):
-        validate_run_metadata(run_id="round-4", system_revision="d" * 40, system_version=" ")
+        validate_run_metadata(**(metadata | {"system_version": " "}))
     with pytest.raises(DatasetError, match="run ID"):
-        validate_run_metadata(run_id=1, system_revision="d" * 40, system_version="1.0")
+        validate_run_metadata(**(metadata | {"run_id": 1}))
+    with pytest.raises(DatasetError, match="source_sha256"):
+        validate_run_metadata(**(metadata | {"source_sha256": "short"}))
+    with pytest.raises(DatasetError, match="lowercase hexadecimal"):
+        validate_run_metadata(**(metadata | {"source_sha256": "E" * 64}))
+    with pytest.raises(DatasetError, match="source file count"):
+        validate_run_metadata(**(metadata | {"source_file_count": 0}))
 
 
 def test_efficiency_input_uses_terminal_jobs_and_contains_no_memory_text() -> None:
@@ -855,7 +1280,13 @@ def test_efficiency_input_uses_terminal_jobs_and_contains_no_memory_text() -> No
     output = {
         "run_id": "r3",
         "execution_plan_sha256": MANIFEST_SHA,
-        "system": {"revision": "c" * 40},
+        "system": {
+            "revision": "c" * 40,
+            "version": "test",
+            "source_file_count": 7,
+            "source_sha256": "d" * 64,
+        },
+        "model": "ocg/qwen3.7-plus",
         "policy_version": "atomic-admission-v3",
         "contains_production_data": True,
         "external_data_sent": True,
@@ -886,5 +1317,7 @@ def test_efficiency_input_uses_terminal_jobs_and_contains_no_memory_text() -> No
     assert result["contains_production_data"] is True
     assert result["external_data_sent"] is True
     assert result["execution_plan_sha256"] == MANIFEST_SHA
+    assert result["system_source_sha256"] == "d" * 64
+    assert result["system_source_file_count"] == 7
     assert result["contains_memory_text"] is False
     assert "private fact" not in serialized

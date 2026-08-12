@@ -44,6 +44,8 @@ CRITICAL_RUNTIME_FILES = (
     "scripts/production-up.sh",
     "scripts/production-verify.sh",
     "scripts/production_control.py",
+    "scripts/runtime-source-sha256.py",
+    "scripts/verify-image-build-identity.sh",
     "scripts/verify-restore.sh",
 )
 

@@ -44,7 +44,10 @@ docker compose --env-file .env ps
 curl --fail http://127.0.0.1:7788/health/ready
 ```
 
-初始化脚本只显示一次星图登录密码。星图默认位于 `http://127.0.0.1:7788/`；API 仅绑定 localhost。`.env.example` 含公开测试值，只能用于自动测试，不能代替初始化。
+初始化与本地源码构建只接受无 tracked、staged、untracked 变更的 Git checkout；脚本会把
+`VERSION`、完整 Git revision 和 canonical runtime source SHA 写入 `.env`，镜像构建时重新计算并
+强制一致。初始化脚本只显示一次星图登录密码。星图默认位于 `http://127.0.0.1:7788/`；API 仅绑定
+localhost。`.env.example` 含公开测试值，只能用于自动测试，不能代替初始化。
 
 ## Hermes 接入
 
@@ -134,12 +137,15 @@ backfill 默认关闭，启用模型不等于授权发送历史证据；历史�
 ```bash
 backup_dir="$(bash scripts/backup.sh .env)"
 cp secrets/vault_root_key "$backup_dir/vault_root_key.separate-copy"
+bash scripts/refresh-local-build-identity.sh
 docker compose --env-file .env build
 docker compose --env-file .env up -d
 curl --fail http://127.0.0.1:7788/health/ready
 ```
 
-`migrate` 容器必须成功退出后 API/worker 才会启动。不要修改已经执行过的迁移文件，也不要跳过版本升级路径。
+身份刷新只更新 `.env` 中的 version、revision、source SHA 和本地 image tag，逐字保留密码、token 与
+模型配置；缺少既有 `.env` 或 Vault key 时拒绝执行，不会初始化新秘密。`migrate` 容器必须成功退出后
+API/worker 才会启动。不要修改已经执行过的迁移文件，也不要跳过版本升级路径。
 
 ### 历史派生记忆敏感值净化
 

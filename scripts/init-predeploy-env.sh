@@ -3,7 +3,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
-REVISION="$(git -C "$ROOT" rev-parse HEAD)"
+IDENTITY_JSON="$(python3 "$ROOT/scripts/runtime-source-sha256.py" \
+  --source-root "$ROOT" --verify-clean-git --json)"
+REVISION="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["revision"])' \
+  "$IDENTITY_JSON")"
+SOURCE_SHA="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["source_sha256"])' \
+  "$IDENTITY_JSON")"
 RUNTIME_ROOT="${1:-$HOME/.local/share/agent-memory/production}"
 ENV_FILE="${2:-$RUNTIME_ROOT/production.env}"
 PROJECT="${AGENT_MEMORY_PRODUCTION_PROJECT:-agent-memory-production}"
@@ -51,6 +56,7 @@ chmod 600 "$RUNTIME_ROOT/model_api_key"
 {
   printf 'AGENT_MEMORY_VERSION=%s\n' "$VERSION"
   printf 'AGENT_MEMORY_REVISION=%s\n' "$REVISION"
+  printf 'AGENT_MEMORY_SOURCE_SHA256=%s\n' "$SOURCE_SHA"
   printf 'AGENT_MEMORY_IMAGE_TAG=%s\n' "$IMAGE_TAG"
   printf 'AGENT_MEMORY_DEPLOYMENT_TIER=production\n'
   printf 'AGENT_MEMORY_DEPLOYMENT_PHASE=canary\n'

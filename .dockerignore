@@ -1,6 +1,10 @@
 .git
 .DS_Store
-.env
+.env*
+**/.env*
+!.env.example
+!.env.release.example
+!.env.production.example
 .venv
 .uv-cache
 frontend/node_modules
@@ -8,6 +12,7 @@ frontend/dist
 frontend/*.tsbuildinfo
 __pycache__
 *.pyc
+*.pyo
 .pytest_cache
 .ruff_cache
 data

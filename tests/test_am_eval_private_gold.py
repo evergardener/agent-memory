@@ -7,6 +7,10 @@ from pathlib import Path
 
 import pytest
 
+import agent_memory.am_eval_atomic_runner as atomic_runner
+from agent_memory.am_eval_atomic_runner import (
+    RuntimeIdentity,
+)
 from agent_memory.am_eval_atomic_runner import (
     main as atomic_runner_main,
 )
@@ -33,6 +37,14 @@ from agent_memory.am_eval_private_gold import (
 )
 
 ROOT = Path(__file__).parents[1]
+TEST_IDENTITY = RuntimeIdentity(
+    revision="d" * 40,
+    version="test",
+    source_sha256="e" * 64,
+    source_file_count=7,
+    provenance="test-fixture",
+    source_root=ROOT,
+)
 
 
 def _annotation(*, scenario_id: str, scenario_class: str, source: str) -> dict:
@@ -345,6 +357,7 @@ def test_atomic_runner_rejects_tampered_private_contract_before_settings(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["split_negative_counts"]["blind"] -= 1
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(atomic_runner, "resolve_runtime_identity", lambda: TEST_IDENTITY)
 
     monkeypatch.setattr(
         sys,
@@ -380,6 +393,7 @@ def test_atomic_runner_plan_rejects_tampered_private_contract(tmp_path: Path, mo
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["scenario_count"] -= 1
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(atomic_runner, "resolve_runtime_identity", lambda: TEST_IDENTITY)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -390,10 +404,6 @@ def test_atomic_runner_plan_rejects_tampered_private_contract(tmp_path: Path, mo
             str(workspace / "not-created-plan.json"),
             "--run-id",
             "private-plan-tamper-test",
-            "--system-revision",
-            "d" * 40,
-            "--system-version",
-            "test",
             "--model",
             "must-not-be-read",
             "--api-base",

@@ -12,6 +12,11 @@ from tests.production_runtime_helpers import (
 
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+SOURCE_SHA = subprocess.check_output(
+    ["python3", "scripts/runtime-source-sha256.py", "--source-root", str(ROOT)],
+    cwd=ROOT,
+    text=True,
+).strip()
 
 
 def _write_predeploy_env(tmp_path: Path, **overrides: str) -> Path:
@@ -44,6 +49,7 @@ def _write_predeploy_env(tmp_path: Path, **overrides: str) -> Path:
     values = {
         "AGENT_MEMORY_VERSION": (ROOT / "VERSION").read_text().strip(),
         "AGENT_MEMORY_REVISION": REVISION,
+        "AGENT_MEMORY_SOURCE_SHA256": SOURCE_SHA,
         "AGENT_MEMORY_IMAGE_TAG": f"sha-{REVISION}",
         "AGENT_MEMORY_DEPLOYMENT_TIER": "production",
         "AGENT_MEMORY_DEPLOYMENT_PHASE": "canary",

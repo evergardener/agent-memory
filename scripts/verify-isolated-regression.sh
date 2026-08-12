@@ -97,6 +97,8 @@ done
 curl -fsS "http://127.0.0.1:${test_port}/health/ready" >/dev/null
 
 env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYDANTIC_DISABLE_PLUGINS=__all__ \
+  PYTHONDONTWRITEBYTECODE=1 \
+  PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/agent-memory-integration-pycache-${compose_project}" \
   AGENT_MEMORY_INTEGRATION=1 \
   AGENT_MEMORY_DATABASE_URL="postgresql://agent_memory:${AGENT_MEMORY_DB_PASSWORD}@127.0.0.1:${AGENT_MEMORY_RELEASE_POSTGRES_PORT}/agent_memory" \
   AGENT_MEMORY_TEST_API_URL="http://127.0.0.1:${test_port}" \

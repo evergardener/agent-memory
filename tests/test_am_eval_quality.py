@@ -57,12 +57,20 @@ def _oracle_output() -> dict:
         ]
         output_cases.append({"case_id": case["case_id"], "facts": facts, "recalls": recalls})
     return {
-        "schema_version": "am-eval-atomic-output-v2",
+        "schema_version": "am-eval-atomic-output-v3",
         "dataset_id": "agent-memory-atomic-quality-selftest-v1",
         "run_id": "oracle-selftest",
         "dataset_manifest_sha256": sha256_file(MANIFEST),
         "execution_plan_sha256": "a" * 64,
-        "system": {"name": "fixture-oracle", "version": "1", "revision": "test"},
+        "system": {
+            "name": "fixture-oracle",
+            "version": "1",
+            "revision": "test",
+            "source_file_count": 7,
+            "source_sha256": "a" * 64,
+        },
+        "model": "fixture-oracle",
+        "policy_version": "fixture-policy-v1",
         "contains_memory_text": True,
         "contains_production_data": False,
         "external_data_sent": False,
@@ -83,6 +91,10 @@ def test_oracle_proves_metric_arithmetic_without_claiming_model_quality() -> Non
     result = evaluate_atomic_quality(CASES, _oracle_output())
 
     assert result["system"]["name"] == "fixture-oracle"
+    assert result["system"]["source_sha256"] == "a" * 64
+    assert result["system"]["source_file_count"] == 7
+    assert result["model"] == "fixture-oracle"
+    assert result["policy_version"] == "fixture-policy-v1"
     assert result["sample_counts"] == {
         "gold_claims": 24,
         "predictions": 24,
@@ -165,17 +177,36 @@ def test_atomic_output_loader_requires_execution_plan_sha(tmp_path: Path) -> Non
         load_atomic_output(path, case_ids={case["case_id"] for case in CASES})
 
 
+def test_atomic_output_loader_requires_runtime_source_sha(tmp_path: Path) -> None:
+    output = _oracle_output()
+    output["system"]["source_sha256"] = "not-a-sha"
+    path = tmp_path / "output.json"
+    path.write_text(json.dumps(output), encoding="utf-8")
+
+    with pytest.raises(DatasetError, match="system metadata"):
+        load_atomic_output(path, case_ids={case["case_id"] for case in CASES})
+
+
 def test_quality_scoring_requires_the_exact_execution_plan_sha() -> None:
     output = _oracle_output()
     validate_execution_plan_confirmation(
         output,
         confirm_plan_sha256="a" * 64,
+        confirm_source_sha256="a" * 64,
     )
 
     with pytest.raises(DatasetError, match="confirmation mismatch"):
         validate_execution_plan_confirmation(
             output,
             confirm_plan_sha256="b" * 64,
+            confirm_source_sha256="a" * 64,
+        )
+
+    with pytest.raises(DatasetError, match="runtime source SHA-256"):
+        validate_execution_plan_confirmation(
+            output,
+            confirm_plan_sha256="a" * 64,
+            confirm_source_sha256="b" * 64,
         )
 
 

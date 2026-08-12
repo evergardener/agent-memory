@@ -17,13 +17,17 @@ def _input(**count_overrides) -> dict:
     }
     counts.update(count_overrides)
     return {
-        "schema_version": "am-eval-efficiency-input-v1",
+        "schema_version": "am-eval-efficiency-input-v2",
         "run_id": "isolated-efficiency-test",
         "execution_plan_sha256": "b" * 64,
         "scope": "isolated",
         "window_start": "2026-08-01T00:00:00+08:00",
         "window_end": "2026-08-08T00:00:00+08:00",
         "system_revision": "a" * 40,
+        "system_version": "1.0.0-test",
+        "system_source_file_count": 7,
+        "system_source_sha256": "c" * 64,
+        "model": "ocg/qwen3.7-plus",
         "policy_version": "atomic-admission-v3",
         "counts": counts,
         "contains_memory_text": False,
@@ -42,8 +46,12 @@ def test_efficiency_metrics_have_frozen_denominators() -> None:
     assert result["complete"] is True
     assert result["contains_memory_text"] is False
     assert result["system_revision"] == "a" * 40
+    assert result["system_version"] == "1.0.0-test"
     assert result["policy_version"] == "atomic-admission-v3"
     assert result["execution_plan_sha256"] == "b" * 64
+    assert result["system_source_sha256"] == "c" * 64
+    assert result["system_source_file_count"] == 7
+    assert result["model"] == "ocg/qwen3.7-plus"
 
 
 def test_unfinished_jobs_keep_terminal_failure_rate_unmeasured() -> None:
@@ -89,6 +97,15 @@ def test_efficiency_input_rejects_memory_text_or_bad_counts() -> None:
     with pytest.raises(DatasetError, match="execution plan SHA-256"):
         evaluate_efficiency(payload)
 
+    with pytest.raises(DatasetError, match="must be an object"):
+        evaluate_efficiency([])
+
+    production_shadow = _input()
+    production_shadow["scope"] = "production-shadow"
+    production_shadow.pop("model")
+    with pytest.raises(DatasetError, match="production-shadow"):
+        evaluate_efficiency(production_shadow)
+
 
 def test_external_model_run_preserves_truthful_data_transfer_flag() -> None:
     payload = _input()
@@ -104,18 +121,30 @@ def test_isolated_efficiency_scoring_requires_the_exact_execution_plan_sha() -> 
     validate_execution_plan_confirmation(
         payload,
         confirm_plan_sha256="b" * 64,
+        confirm_source_sha256="c" * 64,
     )
 
     with pytest.raises(DatasetError, match="confirmation mismatch"):
         validate_execution_plan_confirmation(
             payload,
             confirm_plan_sha256=None,
+            confirm_source_sha256="c" * 64,
+        )
+
+    with pytest.raises(DatasetError, match="runtime source SHA-256"):
+        validate_execution_plan_confirmation(
+            payload,
+            confirm_plan_sha256="b" * 64,
+            confirm_source_sha256="d" * 64,
         )
 
     production_shadow = _input()
     production_shadow["scope"] = "production-shadow"
     production_shadow.pop("execution_plan_sha256")
+    production_shadow.pop("system_source_sha256")
+    production_shadow.pop("system_source_file_count")
     validate_execution_plan_confirmation(
         production_shadow,
         confirm_plan_sha256=None,
+        confirm_source_sha256=None,
     )

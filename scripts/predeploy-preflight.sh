@@ -33,6 +33,18 @@ version="$(tr -d '[:space:]' < VERSION)"
   || fail "AGENT_MEMORY_VERSION must equal VERSION ($version)"
 [[ "${AGENT_MEMORY_REVISION:-}" =~ ^[0-9a-f]{40}$ ]] \
   || fail "AGENT_MEMORY_REVISION must be a full lowercase Git revision"
+[[ "${AGENT_MEMORY_SOURCE_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] \
+  || fail "AGENT_MEMORY_SOURCE_SHA256 must be a lowercase SHA-256"
+identity_json="$(python3 scripts/runtime-source-sha256.py \
+  --source-root "$ROOT" --verify-clean-git --json)"
+expected_revision="$(python3 -c \
+  'import json,sys; print(json.loads(sys.argv[1])["revision"])' "$identity_json")"
+expected_source_sha="$(python3 -c \
+  'import json,sys; print(json.loads(sys.argv[1])["source_sha256"])' "$identity_json")"
+[[ "$AGENT_MEMORY_REVISION" == "$expected_revision" ]] \
+  || fail "AGENT_MEMORY_REVISION must match the verified clean checkout"
+[[ "$AGENT_MEMORY_SOURCE_SHA256" == "$expected_source_sha" ]] \
+  || fail "AGENT_MEMORY_SOURCE_SHA256 must match the checkout runtime sources"
 [[ "${AGENT_MEMORY_DEPLOYMENT_TIER:-}" == "production" ]] \
   || fail "AGENT_MEMORY_DEPLOYMENT_TIER=production is required"
 [[ "${AGENT_MEMORY_DEPLOYMENT_PHASE:-}" == "canary" ]] \
@@ -52,6 +64,7 @@ for variable in \
   AGENT_MEMORY_POSTGRES_DATA_DIR \
   AGENT_MEMORY_IMAGE_PREFIX \
   AGENT_MEMORY_IMAGE_TAG \
+  AGENT_MEMORY_SOURCE_SHA256 \
   AGENT_MEMORY_BACKEND_SUBNET \
   AGENT_MEMORY_EDGE_SUBNET \
   AGENT_MEMORY_VAULT_ROOT_KEY_HOST_FILE \

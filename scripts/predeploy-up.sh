@@ -89,15 +89,9 @@ chmod 600 "$AGENT_MEMORY_DEPLOYMENT_STATE_FILE"
 "${COMPOSE[@]}" pull api worker migrate
 for service in api worker migrate; do
   image="$AGENT_MEMORY_IMAGE_PREFIX-$service:$AGENT_MEMORY_IMAGE_TAG"
-  docker image inspect "$image" >/dev/null
-  [[ "$(docker image inspect "$image" \
-    --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" \
-    == "$AGENT_MEMORY_VERSION" ]] \
-    || { echo "production $service image version label mismatch" >&2; exit 1; }
-  [[ "$(docker image inspect "$image" \
-    --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" \
-    == "$AGENT_MEMORY_REVISION" ]] \
-    || { echo "production $service image revision label mismatch" >&2; exit 1; }
+  bash scripts/verify-image-build-identity.sh \
+    "$image" "$AGENT_MEMORY_VERSION" "$AGENT_MEMORY_REVISION" \
+    "$AGENT_MEMORY_SOURCE_SHA256"
 done
 services=(postgres migrate api worker)
 if [[ "${AGENT_MEMORY_MODEL_ENABLED:-false}" == "true" ]]; then

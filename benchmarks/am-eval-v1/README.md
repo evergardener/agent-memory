@@ -53,8 +53,8 @@ uv run agent-memory-validate-benchmark-dataset \
 ```
 
 M01/M02/M03/M07 使用
-`agent-memory-score-atomic-quality <manifest> <output> --confirm-plan-sha256 <sha>`；M22/M23 使用
-`agent-memory-score-efficiency <aggregate-input> --confirm-plan-sha256 <sha>`。合成 oracle 只验证评分器
+`agent-memory-score-atomic-quality <manifest> <output> --plan <plan> --confirm-plan-sha256 <sha> --confirm-source-sha256 <sha>`；M22/M23 使用
+`agent-memory-score-efficiency <aggregate-input> --manifest <manifest> --plan <plan> --confirm-plan-sha256 <sha> --confirm-source-sha256 <sha>`。两个评分器都会完整校验 plan，并核对当前评分代码、run/model/policy、数据治理字段与输出身份。合成 oracle 只验证评分器
 算术，不能写入正式 run。真实外部模型运行必须先用 `agent-memory-plan-atomic-benchmark` 在仓库外生成
 metadata-only execution plan，再以 `agent-memory-preflight-atomic-benchmark` 完成零网络预检，最后由
 `agent-memory-run-atomic-benchmark` 在全新 `am_eval_` 隔离数据库执行；合成与生产派生数据使用不同

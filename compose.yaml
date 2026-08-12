@@ -12,8 +12,9 @@ x-app-hardening: &app-hardening
 x-app-build: &app-build
   context: .
   args:
-    AGENT_MEMORY_BUILD_VERSION: ${AGENT_MEMORY_VERSION:-1.0.0-rc.9}
-    AGENT_MEMORY_BUILD_REVISION: ${AGENT_MEMORY_REVISION:-unknown}
+    AGENT_MEMORY_BUILD_VERSION: ${AGENT_MEMORY_VERSION:?set AGENT_MEMORY_VERSION to VERSION}
+    AGENT_MEMORY_BUILD_REVISION: ${AGENT_MEMORY_REVISION:?set AGENT_MEMORY_REVISION to a full lowercase Git SHA}
+    AGENT_MEMORY_BUILD_SOURCE_SHA256: ${AGENT_MEMORY_SOURCE_SHA256:?set AGENT_MEMORY_SOURCE_SHA256 to the verified clean checkout digest}
 
 services:
   postgres:

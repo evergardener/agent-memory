@@ -14,7 +14,11 @@ import psycopg
 import pytest
 from psycopg import sql
 
-from agent_memory.am_eval_atomic_runner import build_plan, write_private_json
+from agent_memory.am_eval_atomic_runner import (
+    build_plan,
+    resolve_runtime_identity,
+    write_private_json,
+)
 from agent_memory.am_eval_dataset import sha256_file
 from agent_memory.am_eval_efficiency import (
     evaluate_efficiency,
@@ -222,7 +226,9 @@ def _write_dataset(root: Path) -> tuple[Path, str]:
     return manifest_path, sha256_file(manifest_path)
 
 
-def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) -> None:
+def test_cli_runs_real_litellm_against_loopback_openai_endpoint(
+    tmp_path: Path, monkeypatch
+) -> None:
     if not BASE_DATABASE_URL:
         pytest.skip("set AGENT_MEMORY_DATABASE_URL to an isolated PostgreSQL server")
     database = f"am_eval_cli_{uuid4().hex}"
@@ -231,6 +237,11 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
     namespace = f"hermes:automated-tests:atomic-cli:{uuid4().hex}"
     private_root = tmp_path / "private"
     private_root.mkdir(mode=0o700)
+    runtime_pycache = private_root / "runtime-pycache"
+    runtime_pycache.mkdir(mode=0o700)
+    runtime_pycache.chmod(0o700)
+    monkeypatch.setattr(sys, "pycache_prefix", str(runtime_pycache))
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
     manifest_path, manifest_sha = _write_dataset(private_root)
     output_path = private_root / "atomic-output.json"
     efficiency_path = private_root / "efficiency-input.json"
@@ -242,14 +253,17 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
     try:
         _migrate(test_url)
         with _model_server() as api_base:
+            runtime_identity = resolve_runtime_identity()
             plan = build_plan(
                 manifest=json.loads(manifest_path.read_text(encoding="utf-8")),
                 cases=CASES,
                 namespace=namespace,
                 manifest_sha256=manifest_sha,
                 run_id="atomic-cli-selftest",
-                system_revision="d" * 40,
-                system_version="test",
+                system_revision=runtime_identity.revision,
+                system_version=runtime_identity.version,
+                source_sha256=runtime_identity.source_sha256,
+                source_file_count=runtime_identity.source_file_count,
                 model="openai/test-model",
                 api_base=api_base,
                 max_model_calls=len(CASES),
@@ -265,6 +279,8 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
             environment = _environment(test_url)
             environment.update(
                 {
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                    "PYTHONPYCACHEPREFIX": str(runtime_pycache),
                     "AGENT_MEMORY_NAMESPACE": namespace,
                     "AGENT_MEMORY_WORKER_ROLE": "model",
                     "AGENT_MEMORY_MODEL_ENABLED": "true",
@@ -324,6 +340,8 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
             assert preflight_summary["database_connected"] is False
             assert preflight_summary["model_called"] is False
             assert preflight_summary["external_data_sent"] is False
+            assert preflight_summary["source_sha256"] == runtime_identity.source_sha256
+            assert preflight_summary["system_revision"] == runtime_identity.revision
             assert OpenAICompatibleHandler.calls == 0
             assert not output_path.exists()
             assert not efficiency_path.exists()
@@ -358,6 +376,8 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
         assert summary["job_statuses"] == {"done": 2}
         assert summary["external_data_sent"] is False
         assert summary["execution_plan_sha256"] == plan_sha
+        assert runtime_pycache.is_dir()
+        assert stat.S_IMODE(runtime_pycache.stat().st_mode) == 0o700
         assert OpenAICompatibleHandler.calls == len(CASES)
         assert all(
             "Extract zero to 8 atomic memory facts" in item
@@ -377,7 +397,11 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
         )
         assert output["model_called"] is True
         assert output["external_data_sent"] is False
-        validate_quality_plan(output, confirm_plan_sha256=plan_sha)
+        validate_quality_plan(
+            output,
+            confirm_plan_sha256=plan_sha,
+            confirm_source_sha256=runtime_identity.source_sha256,
+        )
         quality = evaluate_atomic_quality(CASES, output)
         assert quality["execution_plan_sha256"] == plan_sha
         assert {key: value["value"] for key, value in quality["metrics"].items()} == {
@@ -390,6 +414,7 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
         validate_efficiency_plan(
             efficiency_input,
             confirm_plan_sha256=plan_sha,
+            confirm_source_sha256=runtime_identity.source_sha256,
         )
         efficiency = evaluate_efficiency(efficiency_input)
         assert efficiency["execution_plan_sha256"] == plan_sha

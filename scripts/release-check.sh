@@ -4,14 +4,16 @@ set -euo pipefail
 ENV_FILE="${1:-.env}"
 VERSION="$(tr -d '[:space:]' < VERSION)"
 revision="${AGENT_MEMORY_REVISION:-}"
-if [[ -z "$revision" ]]; then
-  revision="$(git rev-parse HEAD)"
-fi
-if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
-  echo "Release check requires a clean Git worktree" >&2
-  exit 1
-fi
+identity_json="$(python3 scripts/runtime-source-sha256.py \
+  --source-root . --verify-clean-git --json)"
+verified_revision="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["revision"])' \
+  "$identity_json")"
+[[ -z "$revision" || "$revision" == "$verified_revision" ]] \
+  || { echo "Release revision differs from the verified clean checkout" >&2; exit 1; }
+revision="$verified_revision"
 export AGENT_MEMORY_REVISION="$revision"
+export AGENT_MEMORY_SOURCE_SHA256="$(python3 -c \
+  'import json,sys; print(json.loads(sys.argv[1])["source_sha256"])' "$identity_json")"
 HERMES_AGENT_ROOT="${HERMES_AGENT_ROOT:-$HOME/.hermes/hermes-agent}"
 COMPOSE=(docker compose -f compose.yaml -f compose.release.yaml --env-file "$ENV_FILE")
 
@@ -59,6 +61,11 @@ if [[ "${AGENT_MEMORY_SKIP_BUILD:-0}" == "1" ]]; then
 else
   "${COMPOSE[@]}" build
 fi
+for service in api worker migrate; do
+  bash scripts/verify-image-build-identity.sh \
+    "$IMAGE_PREFIX-$service:$IMAGE_TAG" "$VERSION" "$revision" \
+    "$AGENT_MEMORY_SOURCE_SHA256"
+done
 bash scripts/prepare-release-vault-key.sh "$ENV_FILE"
 if ! "${COMPOSE[@]}" up -d --no-build; then
   "${COMPOSE[@]}" ps --all || true

@@ -6,9 +6,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .am_eval_atomic_runner import (
+    discover_runtime_source_root,
+    load_evaluation_plan_file,
+    resolve_runtime_identity,
+    validate_execution_plan,
+    validate_output_runtime_identity,
+)
 from .am_eval_dataset import DatasetError, load_dataset, sha256_file
 
-OUTPUT_SCHEMA_VERSION = "am-eval-atomic-output-v2"
+OUTPUT_SCHEMA_VERSION = "am-eval-atomic-output-v3"
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
 
 
@@ -23,17 +30,26 @@ def _safe_divide(numerator: int, denominator: int) -> float:
 
 
 def validate_execution_plan_confirmation(
-    output: dict[str, Any], *, confirm_plan_sha256: str
+    output: dict[str, Any], *, confirm_plan_sha256: str, confirm_source_sha256: str
 ) -> None:
-    value = confirm_plan_sha256.casefold()
-    output_value = output.get("execution_plan_sha256")
+    plan_value = confirm_plan_sha256.casefold()
+    source_value = confirm_source_sha256.casefold()
+    output_plan_value = output.get("execution_plan_sha256")
+    output_source_value = (output.get("system") or {}).get("source_sha256")
     if (
-        len(value) != 64
-        or any(character not in SHA256_CHARACTERS for character in value)
-        or not isinstance(output_value, str)
-        or output_value.casefold() != value
+        len(plan_value) != 64
+        or any(character not in SHA256_CHARACTERS for character in plan_value)
+        or not isinstance(output_plan_value, str)
+        or output_plan_value.casefold() != plan_value
     ):
         raise DatasetError("atomic output execution plan SHA-256 confirmation mismatch")
+    if (
+        len(source_value) != 64
+        or any(character not in SHA256_CHARACTERS for character in source_value)
+        or not isinstance(output_source_value, str)
+        or output_source_value.casefold() != source_value
+    ):
+        raise DatasetError("atomic output runtime source SHA-256 confirmation mismatch")
 
 
 def load_atomic_output(path: Path, *, case_ids: set[str]) -> dict[str, Any]:
@@ -41,6 +57,8 @@ def load_atomic_output(path: Path, *, case_ids: set[str]) -> dict[str, Any]:
         output = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise DatasetError(f"invalid atomic evaluation output: {path}") from error
+    if not isinstance(output, dict):
+        raise DatasetError("atomic evaluation output must be an object")
     if output.get("schema_version") != OUTPUT_SCHEMA_VERSION:
         raise DatasetError("unsupported atomic evaluation output schema")
     if output.get("contains_memory_text") is not True:
@@ -57,6 +75,10 @@ def load_atomic_output(path: Path, *, case_ids: set[str]) -> dict[str, Any]:
         raise DatasetError("atomic evaluation output requires external_data_sent")
     if output.get("dataset_visibility") not in {"open", "private", "restricted"}:
         raise DatasetError("atomic evaluation output requires dataset_visibility")
+    if not isinstance(output.get("model"), str) or not output["model"]:
+        raise DatasetError("atomic evaluation output requires model")
+    if not isinstance(output.get("policy_version"), str) or not output["policy_version"]:
+        raise DatasetError("atomic evaluation output requires policy_version")
     dataset_sha = output.get("dataset_manifest_sha256")
     if (
         not isinstance(dataset_sha, str)
@@ -79,7 +101,15 @@ def load_atomic_output(path: Path, *, case_ids: set[str]) -> dict[str, Any]:
         not isinstance(system, dict)
         or not all(
             isinstance(system.get(key), str) and system[key]
-            for key in ("name", "version", "revision")
+            for key in ("name", "version", "revision", "source_sha256")
+        )
+        or isinstance(system.get("source_file_count"), bool)
+        or not isinstance(system.get("source_file_count"), int)
+        or system["source_file_count"] <= 0
+        or len(system["source_sha256"]) != 64
+        or any(
+            character not in SHA256_CHARACTERS
+            for character in system["source_sha256"].casefold()
         )
     ):
         raise DatasetError("atomic evaluation output requires system metadata")
@@ -264,6 +294,8 @@ def evaluate_atomic_quality(
         "system": output["system"],
         "dataset_manifest_sha256": output["dataset_manifest_sha256"],
         "execution_plan_sha256": output["execution_plan_sha256"],
+        "model": output["model"],
+        "policy_version": output["policy_version"],
         "model_called": output["model_called"],
         "contains_production_data": output["contains_production_data"],
         "external_data_sent": output["external_data_sent"],
@@ -286,7 +318,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Score AM-Eval atomic facts and citations.")
     parser.add_argument("manifest", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--plan", required=True, type=Path)
     parser.add_argument("--confirm-plan-sha256", required=True)
+    parser.add_argument("--confirm-source-sha256", required=True)
     arguments = parser.parse_args()
     manifest = json.loads(arguments.manifest.read_text(encoding="utf-8"))
     cases = tuple(
@@ -298,11 +332,33 @@ def main() -> None:
         parser.error("dataset has no atomic_fact cases")
     output = load_atomic_output(arguments.output, case_ids={case["case_id"] for case in cases})
     try:
+        _path, _sha, plan_payload = load_evaluation_plan_file(
+            arguments.plan,
+            confirm_sha256=arguments.confirm_plan_sha256,
+            forbidden_root=discover_runtime_source_root(),
+        )
+        plan = json.loads(plan_payload.decode("utf-8"))
+        plan = validate_execution_plan(
+            plan,
+            manifest=manifest,
+            manifest_sha256=sha256_file(arguments.manifest),
+            cases=cases,
+        )
+        scorer_identity = resolve_runtime_identity()
+        if (
+            plan["run"]["system_revision"] != scorer_identity.revision
+            or plan["run"]["system_version"] != scorer_identity.version
+            or plan["run"]["source_sha256"] != scorer_identity.source_sha256
+            or plan["run"]["source_file_count"] != scorer_identity.source_file_count
+        ):
+            raise DatasetError("quality scorer runtime identity differs from the execution plan")
         validate_execution_plan_confirmation(
             output,
             confirm_plan_sha256=arguments.confirm_plan_sha256,
+            confirm_source_sha256=arguments.confirm_source_sha256,
         )
-    except DatasetError as error:
+        validate_output_runtime_identity(output, plan=plan)
+    except (DatasetError, UnicodeError, json.JSONDecodeError) as error:
         parser.error(str(error))
     manifest_sha256 = sha256_file(arguments.manifest)
     if output["dataset_id"] != manifest.get("dataset_id"):
@@ -310,6 +366,13 @@ def main() -> None:
     if output["dataset_manifest_sha256"] != manifest_sha256:
         parser.error("atomic output dataset SHA-256 does not match the manifest")
     result = evaluate_atomic_quality(cases, output)
+    result["scorer_runtime_identity"] = {
+        "provenance": scorer_identity.provenance,
+        "revision": scorer_identity.revision,
+        "source_file_count": scorer_identity.source_file_count,
+        "source_sha256": scorer_identity.source_sha256,
+        "version": scorer_identity.version,
+    }
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
 
 

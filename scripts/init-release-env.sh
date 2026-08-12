@@ -3,6 +3,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
+IDENTITY_JSON="$(python3 "$ROOT/scripts/runtime-source-sha256.py" \
+  --source-root "$ROOT" --verify-clean-git --json)"
+REVISION="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["revision"])' \
+  "$IDENTITY_JSON")"
+SOURCE_SHA="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["source_sha256"])' \
+  "$IDENTITY_JSON")"
 RUNTIME_ROOT="${1:-${TMPDIR:-/tmp}/agent-memory-release-gate}"
 ENV_FILE="${2:-$RUNTIME_ROOT/release.env}"
 PROJECT="${AGENT_MEMORY_RELEASE_PROJECT:-agent-memory-release-gate}"
@@ -32,6 +38,8 @@ chmod 600 "$RUNTIME_ROOT/vault_root_key"
 
 {
   printf 'AGENT_MEMORY_VERSION=%s\n' "$VERSION"
+  printf 'AGENT_MEMORY_REVISION=%s\n' "$REVISION"
+  printf 'AGENT_MEMORY_SOURCE_SHA256=%s\n' "$SOURCE_SHA"
   printf 'AGENT_MEMORY_IMAGE_TAG=%s\n' "$VERSION"
   printf 'AGENT_MEMORY_RELEASE_ISOLATED=true\n'
   printf 'AGENT_MEMORY_COMPOSE_PROJECT=%s\n' "$PROJECT"

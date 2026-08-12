@@ -62,6 +62,7 @@ agent-memory-init-private-gold = "agent_memory.am_eval_private_gold:init_main"
 agent-memory-validate-private-gold = "agent_memory.am_eval_private_gold:validate_main"
 agent-memory-freeze-private-gold = "agent_memory.am_eval_private_gold:freeze_main"
 agent-memory-run-lifecycle-benchmark = "agent_memory.am_eval_lifecycle:main"
+agent-memory-write-build-identity = "agent_memory.am_eval_atomic_runner:build_identity_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_memory"]

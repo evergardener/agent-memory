@@ -125,10 +125,9 @@ fi
 
 for service in api worker migrate; do
   image="$AGENT_MEMORY_IMAGE_PREFIX-$service:$AGENT_MEMORY_IMAGE_TAG"
-  [[ "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" == "$AGENT_MEMORY_VERSION" ]] \
-    || { echo "predeploy $service image version label mismatch" >&2; exit 1; }
-  [[ "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" == "$AGENT_MEMORY_REVISION" ]] \
-    || { echo "predeploy $service image revision label mismatch" >&2; exit 1; }
+  bash scripts/verify-image-build-identity.sh \
+    "$image" "$AGENT_MEMORY_VERSION" "$AGENT_MEMORY_REVISION" \
+    "$AGENT_MEMORY_SOURCE_SHA256"
 done
 
 expected_head="$(.venv/bin/python -m alembic heads | awk 'NR==1 {print $1}')"
