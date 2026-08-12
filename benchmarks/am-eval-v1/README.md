@@ -20,6 +20,8 @@
 [`../../docs/V1.0-AM-Eval第四轮CLI端到端门禁报告.md`](../../docs/V1.0-AM-Eval第四轮CLI端到端门禁报告.md)。
 私有生产派生 gold 的仓库外初始化、复核、隐私扫描与冻结规则见
 [`../../docs/V1.0-AM-Eval私有盲测金标工作流.md`](../../docs/V1.0-AM-Eval私有盲测金标工作流.md)。
+工具链首轮完整验证证据见 [`round-5-private-gold-tooling-readiness.json`](round-5-private-gold-tooling-readiness.json)
+及 [`../../docs/V1.0-AM-Eval第五轮私有金标工具验证报告.md`](../../docs/V1.0-AM-Eval第五轮私有金标工具验证报告.md)。
 
 验证冻结数据集：
 

@@ -1,0 +1,84 @@
+{
+  "schema_version": "am-eval-private-gold-tooling-readiness-v1",
+  "run_id": "agent-memory-1.0.0rc9-private-gold-tooling-r5-20260812",
+  "system_revision": "b3f3992c78e461d598889163272d4250029fde7a",
+  "status": "PRIVATE_GOLD_TOOLING_READY_DATA_PENDING",
+  "official_metrics_updated": false,
+  "contract_fixture": {
+    "source": "generated synthetic test fixture",
+    "scenario_count": 50,
+    "case_count": 200,
+    "gold_fact_count": 100,
+    "recall_query_count": 200,
+    "negative_case_count": 100,
+    "scenario_split_counts": {
+      "development": 30,
+      "validation": 10,
+      "blind": 10
+    },
+    "split_case_counts": {
+      "development": 120,
+      "validation": 40,
+      "blind": 40
+    },
+    "privacy_findings": 0,
+    "contains_production_data": false,
+    "contains_memory_text": false
+  },
+  "verification": {
+    "targeted_tests": {
+      "passed": 122,
+      "failed": 0
+    },
+    "non_integration_tests": {
+      "passed": 380,
+      "failed": 0,
+      "deselected_integration": 41
+    },
+    "isolated_runner_integration": {
+      "passed": 3,
+      "failed": 0,
+      "postgresql_binding": "127.0.0.1:55438",
+      "temporary_database_pattern": "am_eval_private_gold_gate_20260812*",
+      "temporary_databases_remaining": 0,
+      "external_model_called": false
+    },
+    "console_entrypoints": {
+      "init": "PASS",
+      "validate": "PASS",
+      "freeze": "PASS"
+    },
+    "repository_private_data_leak_gate": "PASS",
+    "ruff": "PASS",
+    "uv_lock_check": "PASS",
+    "diff_check": "PASS"
+  },
+  "implemented_gates": [
+    "private inputs and outputs must stay outside the repository",
+    "private directories and files must be 0700 and 0600 or stricter",
+    "symlink paths and overwrite attempts fail closed",
+    "case, scenario, evidence, fact and query identifiers are opaque numeric IDs",
+    "source, annotator and reviewer hashes reject placeholders",
+    "independent review, exact spans, redaction and semantic flags are mandatory",
+    "scenarios cannot cross development, validation and blind splits",
+    "all required scenario classes and minimum content exist in every split",
+    "privacy scanning rejects credentials and direct identifiers",
+    "frozen manifests pin file hashes, review contract and aggregate counts",
+    "plan and runner revalidate private manifests before model configuration"
+  ],
+  "boundaries": {
+    "private_production_derived_gold_created": false,
+    "production_data_read": false,
+    "production_api_or_database_connected": false,
+    "production_modified": false,
+    "external_model_called": false,
+    "external_data_sent": false,
+    "repository_contains_private_memory_text": false
+  },
+  "remaining_requirements": [
+    "configure a non-production external model key and authorize the 24-case public synthetic shakedown",
+    "separately authorize selection and annotation of redacted production-derived private gold",
+    "separately authorize transmission of a frozen private manifest to the chosen external model",
+    "separately authorize aggregate-only production shadow M22"
+  ]
+}
