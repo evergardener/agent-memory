@@ -482,6 +482,12 @@ def build_efficiency_input(
     }
 
 
+def external_data_confirmation(manifest: dict[str, Any]) -> str:
+    if manifest.get("contains_production_data") is True:
+        return "SEND_REDACTED_PRODUCTION_DERIVED_BENCHMARK_TO_EXTERNAL_MODEL"
+    return "SEND_SYNTHETIC_BENCHMARK_TO_EXTERNAL_MODEL"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run a frozen atomic-fact benchmark in an isolated database."
@@ -532,14 +538,15 @@ def main() -> None:
     manifest_sha256 = sha256_file(manifest_path)
     if arguments.confirm_sha256.casefold() != manifest_sha256:
         raise SystemExit("--confirm-sha256 does not match the frozen manifest")
-    if arguments.confirm_external_data != "SEND_REDACTED_BENCHMARK_TO_EXTERNAL_MODEL":
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    required_confirmation = external_data_confirmation(manifest)
+    if arguments.confirm_external_data != required_confirmation:
         raise SystemExit("explicit external-data confirmation is required")
     validate_run_metadata(
         run_id=arguments.run_id,
         system_revision=arguments.system_revision,
         system_version=arguments.system_version,
     )
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     cases = tuple(
         case for case in load_dataset(manifest_path) if case["suite"] == "atomic_fact"
     )

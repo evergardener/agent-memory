@@ -9,6 +9,9 @@
 第三轮质量测量工具、合成自检和真实运行前置条件见
 [`../../docs/V1.0-AM-Eval第三轮质量评测基础设施报告.md`](../../docs/V1.0-AM-Eval第三轮质量评测基础设施报告.md)。
 机器可读 readiness 证据见 [`round-3-measurement-readiness.json`](round-3-measurement-readiness.json)。
+第四轮隔离模型 runner 的 readiness 证据见
+[`round-4-atomic-runner-readiness.json`](round-4-atomic-runner-readiness.json)，可复现操作见
+[`../../docs/V1.0-AM-Eval隔离模型评测运行手册.md`](../../docs/V1.0-AM-Eval隔离模型评测运行手册.md)。
 
 验证冻结数据集：
 
@@ -22,6 +25,9 @@ uv run agent-memory-validate-benchmark-dataset \
 
 M01/M02/M03/M07 使用 `agent-memory-score-atomic-quality <manifest> <output>`；M22/M23 使用
 `agent-memory-score-efficiency <aggregate-input>`。合成 oracle 只验证评分器算术，不能写入正式 run。
+真实外部模型运行必须先用 `agent-memory-plan-atomic-benchmark` 生成 metadata-only allowlist，再由
+`agent-memory-run-atomic-benchmark` 在全新 `am_eval_` 隔离数据库执行；合成与生产派生数据使用不同
+确认口令。
 
 运行评分器：
 

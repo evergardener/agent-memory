@@ -11,6 +11,7 @@ from agent_memory.am_eval_atomic_runner import (
     benchmark_turn_id,
     build_efficiency_input,
     build_plan,
+    external_data_confirmation,
     validate_isolated_database_url,
     validate_private_output,
     validate_run_metadata,
@@ -76,6 +77,17 @@ def test_ingest_idempotency_key_is_scoped_by_namespace() -> None:
     )
 
     assert first != second
+
+
+def test_production_derived_data_requires_a_distinct_confirmation() -> None:
+    assert (
+        external_data_confirmation({"contains_production_data": False})
+        == "SEND_SYNTHETIC_BENCHMARK_TO_EXTERNAL_MODEL"
+    )
+    assert (
+        external_data_confirmation({"contains_production_data": True})
+        == "SEND_REDACTED_PRODUCTION_DERIVED_BENCHMARK_TO_EXTERNAL_MODEL"
+    )
 
 
 @pytest.mark.parametrize(
