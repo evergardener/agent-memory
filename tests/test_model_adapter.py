@@ -82,6 +82,13 @@ def test_external_model_requires_explicit_real_data_authorization():
         )
     )
     assert profile.api_base == "https://models.example.com/v1"
+    assert profile.sends_data_externally is True
+
+
+def test_local_model_endpoint_is_not_reported_as_external_data_transfer():
+    profile = ModelProfile.from_settings(settings())
+
+    assert profile.sends_data_externally is False
 
 
 def test_external_model_rejects_plaintext_http_even_with_data_authorization():

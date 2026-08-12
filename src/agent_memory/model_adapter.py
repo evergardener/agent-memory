@@ -115,6 +115,10 @@ class ModelProfile:
     timeout_seconds: float
     max_retries: int
 
+    @property
+    def sends_data_externally(self) -> bool:
+        return not _is_local_model_endpoint(self.api_base)
+
     @classmethod
     def from_settings(cls, settings: Settings) -> "ModelProfile":
         if not settings.model_enabled:

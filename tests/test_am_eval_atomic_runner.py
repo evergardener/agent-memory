@@ -8,11 +8,14 @@ from pydantic import SecretStr
 
 from agent_memory.am_eval_atomic_runner import (
     benchmark_idempotency_key,
+    benchmark_run_complete,
     benchmark_turn_id,
     build_efficiency_input,
     build_plan,
+    emit_run_summary,
     external_data_confirmation,
     validate_isolated_database_url,
+    validate_model_call_budget,
     validate_private_output,
     validate_run_metadata,
     validate_runtime_settings,
@@ -59,6 +62,7 @@ def test_plan_is_metadata_only_and_turn_ids_are_deterministic() -> None:
         for case in cases
     ]
     assert plan["turn_allowlist_csv"].split(",") == [str(item) for item in expected]
+    assert plan["model_call_budget"] == 2
     assert plan["contains_memory_text"] is False
     assert plan["model_called"] is False
     assert plan["external_data_sent"] is False
@@ -88,6 +92,59 @@ def test_production_derived_data_requires_a_distinct_confirmation() -> None:
         external_data_confirmation({"contains_production_data": True})
         == "SEND_REDACTED_PRODUCTION_DERIVED_BENCHMARK_TO_EXTERNAL_MODEL"
     )
+
+
+def test_run_is_complete_only_when_every_expected_job_is_done() -> None:
+    assert benchmark_run_complete(job_statuses={"done": 24}, case_count=24)
+    assert not benchmark_run_complete(
+        job_statuses={"done": 23, "failed": 1}, case_count=24
+    )
+    assert not benchmark_run_complete(
+        job_statuses={"done": 24, "cancelled": 1}, case_count=24
+    )
+
+
+@pytest.mark.parametrize("budget", [0, 23, 25])
+def test_model_call_budget_must_exactly_match_case_count(budget: int) -> None:
+    with pytest.raises(DatasetError, match="exactly match"):
+        validate_model_call_budget(max_model_calls=budget, case_count=24)
+
+    validate_model_call_budget(max_model_calls=24, case_count=24)
+
+
+def test_failed_run_summary_returns_nonzero_without_memory_text(
+    tmp_path: Path, capsys
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        emit_run_summary(
+            run_id="failed-run",
+            case_count=2,
+            job_statuses={"failed": 2},
+            output_path=tmp_path / "private.json",
+            efficiency_output_path=tmp_path / "efficiency.json",
+            external_data_sent=False,
+        )
+
+    assert error.value.code == 2
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["status"] == "FAILED"
+    assert summary["contains_memory_text"] is False
+    assert summary["external_data_sent"] is False
+
+
+def test_complete_run_summary_returns_zero_path(tmp_path: Path, capsys) -> None:
+    emit_run_summary(
+        run_id="complete-run",
+        case_count=2,
+        job_statuses={"done": 2},
+        output_path=tmp_path / "private.json",
+        efficiency_output_path=tmp_path / "efficiency.json",
+        external_data_sent=True,
+    )
+
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["status"] == "COMPLETE"
+    assert summary["external_data_sent"] is True
 
 
 @pytest.mark.parametrize(
@@ -201,6 +258,7 @@ def test_efficiency_input_uses_terminal_jobs_and_contains_no_memory_text() -> No
         "system": {"revision": "c" * 40},
         "policy_version": "atomic-admission-v3",
         "contains_production_data": True,
+        "external_data_sent": True,
         "cases": [
             {
                 "facts": [

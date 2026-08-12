@@ -168,6 +168,7 @@ def build_plan(
         "namespace": namespace,
         "manifest_sha256": manifest_sha256,
         "case_count": len(cases),
+        "model_call_budget": len(cases),
         "turn_allowlist_csv": ",".join(str(turn_id) for turn_id in turn_ids),
         "contains_memory_text": False,
         "model_called": False,
@@ -357,6 +358,8 @@ def build_private_output(
     model: str,
     contains_production_data: bool,
     dataset_visibility: str,
+    model_called: bool,
+    external_data_sent: bool,
 ) -> dict[str, Any]:
     output_cases: list[dict[str, Any]] = []
     for item in prepared:
@@ -421,8 +424,8 @@ def build_private_output(
         "contains_memory_text": True,
         "contains_production_data": contains_production_data,
         "dataset_visibility": dataset_visibility,
-        "model_called": True,
-        "external_data_sent": True,
+        "model_called": model_called,
+        "external_data_sent": external_data_sent,
         "cases": output_cases,
     }
 
@@ -478,8 +481,51 @@ def build_efficiency_input(
         },
         "contains_memory_text": False,
         "contains_production_data": output["contains_production_data"],
-        "external_data_sent": True,
+        "external_data_sent": output["external_data_sent"],
     }
+
+
+def benchmark_run_complete(*, job_statuses: dict[str, int], case_count: int) -> bool:
+    return job_statuses == {"done": case_count}
+
+
+def validate_model_call_budget(*, max_model_calls: int, case_count: int) -> None:
+    if max_model_calls <= 0 or max_model_calls != case_count:
+        raise DatasetError(
+            "model call budget must exactly match the frozen atomic case count"
+        )
+
+
+def emit_run_summary(
+    *,
+    run_id: str,
+    case_count: int,
+    job_statuses: dict[str, int],
+    output_path: Path,
+    efficiency_output_path: Path,
+    external_data_sent: bool,
+) -> None:
+    complete = benchmark_run_complete(
+        job_statuses=job_statuses,
+        case_count=case_count,
+    )
+    print(
+        json.dumps(
+            {
+                "status": "COMPLETE" if complete else "FAILED",
+                "run_id": run_id,
+                "case_count": case_count,
+                "job_statuses": job_statuses,
+                "output": str(output_path),
+                "efficiency_output": str(efficiency_output_path),
+                "contains_memory_text": False,
+                "external_data_sent": external_data_sent,
+            },
+            sort_keys=True,
+        )
+    )
+    if not complete:
+        raise SystemExit(2)
 
 
 def external_data_confirmation(manifest: dict[str, Any]) -> str:
@@ -501,6 +547,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--system-version", required=True)
     parser.add_argument("--expected-model", required=True)
     parser.add_argument("--expected-api-base", required=True)
+    parser.add_argument("--max-model-calls", required=True, type=int)
     parser.add_argument("--confirm-sha256", required=True)
     parser.add_argument("--confirm-external-data", required=True)
     return parser
@@ -552,6 +599,10 @@ def main() -> None:
     )
     if not cases:
         raise SystemExit("dataset has no atomic_fact cases")
+    validate_model_call_budget(
+        max_model_calls=arguments.max_model_calls,
+        case_count=len(cases),
+    )
     settings = Settings()
     validate_isolated_database_url(settings.database_url)
     profile = validate_runtime_settings(
@@ -614,6 +665,8 @@ def main() -> None:
             model=profile.model,
             contains_production_data=manifest["contains_production_data"],
             dataset_visibility=manifest["visibility"],
+            model_called=True,
+            external_data_sent=profile.sends_data_externally,
         )
     payload["job_statuses"] = job_statuses
     write_private_json(output_path, payload)
@@ -624,20 +677,13 @@ def main() -> None:
         window_end=datetime.now(UTC),
     )
     write_private_json(efficiency_output_path, efficiency_payload)
-    print(
-        json.dumps(
-            {
-                "status": "COMPLETE" if job_statuses.get("done") == len(cases) else "FAILED",
-                "run_id": arguments.run_id,
-                "case_count": len(cases),
-                "job_statuses": job_statuses,
-                "output": str(output_path),
-                "efficiency_output": str(efficiency_output_path),
-                "contains_memory_text": False,
-                "external_data_sent": True,
-            },
-            sort_keys=True,
-        )
+    emit_run_summary(
+        run_id=arguments.run_id,
+        case_count=len(cases),
+        job_statuses=job_statuses,
+        output_path=output_path,
+        efficiency_output_path=efficiency_output_path,
+        external_data_sent=payload["external_data_sent"],
     )
 
 

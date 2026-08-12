@@ -7,6 +7,7 @@ import pytest
 from pydantic import SecretStr
 
 from agent_memory.am_eval_atomic_runner import (
+    benchmark_run_complete,
     build_efficiency_input,
     build_private_output,
     prepare_cases,
@@ -15,6 +16,7 @@ from agent_memory.am_eval_atomic_runner import (
 from agent_memory.am_eval_efficiency import evaluate_efficiency
 from agent_memory.am_eval_quality import evaluate_atomic_quality
 from agent_memory.config import Settings
+from agent_memory.ids import stable_uuid
 
 pytestmark = [
     pytest.mark.integration,
@@ -101,12 +103,24 @@ class FakeModelAdapter:
         return {"facts": facts}, {"model": self.profile.model, "redaction_count": 0}
 
 
-def _settings() -> Settings:
+class FakeTimeoutModelAdapter:
+    calls = 0
+
+    def __init__(self, profile) -> None:
+        self.profile = profile
+
+    def complete_json(self, *, task: str, evidence_text: str) -> tuple[dict, dict]:
+        del task, evidence_text
+        type(self).calls += 1
+        raise TimeoutError("isolated synthetic model timeout")
+
+
+def _settings(namespace: str = NAMESPACE) -> Settings:
     return Settings(
         database_url=DATABASE_URL,
         service_token=SecretStr("a" * 32),
         ui_session_secret=SecretStr("b" * 32),
-        namespace=NAMESPACE,
+        namespace=namespace,
         worker_role="model",
         model_enabled=True,
         model_name="fake/atomic-runner",
@@ -152,10 +166,15 @@ def test_runner_uses_real_worker_storage_and_recall_with_fake_model(monkeypatch)
             model=settings.model_name,
             contains_production_data=False,
             dataset_visibility="private",
+            model_called=False,
+            external_data_sent=False,
         )
 
     assert statuses == {"done": 2}
+    assert benchmark_run_complete(job_statuses=statuses, case_count=len(CASES))
     assert output["contains_production_data"] is False
+    assert output["model_called"] is False
+    assert output["external_data_sent"] is False
     quality = evaluate_atomic_quality(CASES, output)
     assert {key: value["value"] for key, value in quality["metrics"].items()} == {
         "M01": 1.0,
@@ -176,3 +195,86 @@ def test_runner_uses_real_worker_storage_and_recall_with_fake_model(monkeypatch)
         "M23": {"value": 0.0, "sample_count": 2},
     }
     assert efficiency["contains_production_data"] is False
+    assert efficiency["external_data_sent"] is False
+
+
+def test_timeout_is_one_call_per_case_and_preserves_evidence_without_facts(
+    monkeypatch,
+) -> None:
+    import agent_memory.worker as worker
+
+    failure_namespace = f"{NAMESPACE}:timeout"
+    settings = _settings(failure_namespace)
+    FakeTimeoutModelAdapter.calls = 0
+    monkeypatch.setattr(worker, "get_settings", lambda: settings)
+    monkeypatch.setattr(worker, "LiteLLMModelAdapter", FakeTimeoutModelAdapter)
+    started_at = datetime.now(UTC)
+
+    with psycopg.connect(DATABASE_URL) as connection:
+        prepared = prepare_cases(
+            connection,
+            cases=CASES,
+            namespace=failure_namespace,
+            manifest_sha256=MANIFEST_SHA,
+            occurred_at=started_at,
+        )
+        statuses = process_model_jobs(
+            connection,
+            prepared=prepared,
+            namespace=failure_namespace,
+        )
+        namespace_id = stable_uuid("namespace", failure_namespace)
+        evidence_count = connection.execute(
+            "SELECT count(*) FROM evidence.events WHERE namespace_id=%s",
+            (namespace_id,),
+        ).fetchone()[0]
+        fact_count = connection.execute(
+            "SELECT count(*) FROM memory.facts WHERE namespace_id=%s",
+            (namespace_id,),
+        ).fetchone()[0]
+        attempt_count, error_attempts = connection.execute(
+            """SELECT count(*),count(*) FILTER (WHERE result='error')
+               FROM ops.job_attempts attempt
+               JOIN ops.jobs job ON job.id=attempt.job_id
+               WHERE job.namespace_id=%s AND job.kind='extract_atomic_turn'""",
+            (namespace_id,),
+        ).fetchone()
+        output = build_private_output(
+            connection,
+            prepared=prepared,
+            namespace=failure_namespace,
+            dataset_id="runner-timeout-selftest",
+            manifest_sha256=MANIFEST_SHA,
+            run_id=f"{RUN_ID}-timeout",
+            system_revision="c" * 40,
+            system_version="test",
+            model=settings.model_name,
+            contains_production_data=False,
+            dataset_visibility="private",
+            model_called=False,
+            external_data_sent=False,
+        )
+
+    assert statuses == {"failed": 2}
+    assert not benchmark_run_complete(job_statuses=statuses, case_count=len(CASES))
+    assert FakeTimeoutModelAdapter.calls == len(CASES)
+    assert evidence_count == 2
+    assert fact_count == 0
+    assert (attempt_count, error_attempts) == (2, 2)
+    assert all(not case["facts"] for case in output["cases"])
+
+    quality = evaluate_atomic_quality(CASES, output)
+    assert quality["metrics"]["M02"]["value"] == 0.0
+    assert quality["metrics"]["M07"]["value"] == 0.0
+    assert quality["missing_metric_ids"] == ["M01", "M03"]
+
+    efficiency_input = build_efficiency_input(
+        output=output,
+        job_statuses=statuses,
+        window_start=started_at,
+        window_end=started_at + timedelta(seconds=1),
+    )
+    efficiency = evaluate_efficiency(efficiency_input)
+    assert efficiency["metrics"]["M23"] == {"value": 1.0, "sample_count": 2}
+    assert efficiency["missing_metric_ids"] == ["M22"]
+    assert efficiency["external_data_sent"] is False
