@@ -59,6 +59,9 @@ def _oracle_output() -> dict:
         "dataset_manifest_sha256": sha256_file(MANIFEST),
         "system": {"name": "fixture-oracle", "version": "1", "revision": "test"},
         "contains_memory_text": True,
+        "contains_production_data": False,
+        "external_data_sent": False,
+        "dataset_visibility": "open",
         "model_called": False,
         "cases": output_cases,
     }
@@ -91,6 +94,8 @@ def test_oracle_proves_metric_arithmetic_without_claiming_model_quality() -> Non
     assert result["complete"] is True
     assert result["contains_memory_text"] is False
     assert result["model_called"] is False
+    assert result["contains_production_data"] is False
+    assert result["external_data_sent"] is False
     serialized = json.dumps(result, ensure_ascii=False)
     assert "Evergarden" not in serialized
     assert "PostgreSQL" not in serialized
@@ -151,6 +156,15 @@ def test_atomic_quality_rejects_unknown_recall_query() -> None:
 
     with pytest.raises(DatasetError, match="unknown recall queries"):
         evaluate_atomic_quality(CASES, output)
+
+
+def test_recalled_unscored_memory_counts_as_wrong_citation_not_invalid_output() -> None:
+    output = _oracle_output()
+    output["cases"][0]["recalls"][0]["prediction_id"] = "unrelated-memory-id"
+
+    result = evaluate_atomic_quality(CASES, output)
+
+    assert result["metrics"]["M07"]["value"] == pytest.approx(20 / 21)
 
 
 def test_wrong_lifecycle_or_fact_type_is_not_a_correct_claim() -> None:

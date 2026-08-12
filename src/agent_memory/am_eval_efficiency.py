@@ -33,8 +33,8 @@ def validate_efficiency_input(payload: dict[str, Any]) -> None:
             raise DatasetError(f"efficiency input requires {key}")
     if not isinstance(payload.get("contains_production_data"), bool):
         raise DatasetError("efficiency input must declare contains_production_data")
-    if payload.get("external_data_sent") is not False:
-        raise DatasetError("efficiency input requires external_data_sent=false")
+    if not isinstance(payload.get("external_data_sent"), bool):
+        raise DatasetError("efficiency input must declare external_data_sent")
     try:
         window_start = datetime.fromisoformat(payload["window_start"])
         window_end = datetime.fromisoformat(payload["window_end"])
@@ -94,7 +94,7 @@ def evaluate_efficiency(payload: dict[str, Any]) -> dict[str, Any]:
         "complete": not missing,
         "contains_memory_text": False,
         "contains_production_data": payload["contains_production_data"],
-        "external_data_sent": False,
+        "external_data_sent": payload["external_data_sent"],
     }
 
 

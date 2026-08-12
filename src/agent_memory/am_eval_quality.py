@@ -37,6 +37,12 @@ def load_atomic_output(path: Path, *, case_ids: set[str]) -> dict[str, Any]:
         raise DatasetError("atomic evaluation output requires run_id")
     if not isinstance(output.get("model_called"), bool):
         raise DatasetError("atomic evaluation output requires model_called")
+    if not isinstance(output.get("contains_production_data"), bool):
+        raise DatasetError("atomic evaluation output requires contains_production_data")
+    if not isinstance(output.get("external_data_sent"), bool):
+        raise DatasetError("atomic evaluation output requires external_data_sent")
+    if output.get("dataset_visibility") not in {"open", "private", "restricted"}:
+        raise DatasetError("atomic evaluation output requires dataset_visibility")
     dataset_sha = output.get("dataset_manifest_sha256")
     if (
         not isinstance(dataset_sha, str)
@@ -100,7 +106,7 @@ def load_atomic_output(path: Path, *, case_ids: set[str]) -> dict[str, Any]:
                 not recall_id
                 or recall_id in recall_ids
                 or not isinstance(recall.get("prediction_id"), str)
-                or recall["prediction_id"] not in prediction_ids
+                or not recall["prediction_id"]
                 or not isinstance(source_ids, list)
                 or not all(isinstance(item, str) and item for item in source_ids)
             ):
@@ -234,6 +240,9 @@ def evaluate_atomic_quality(
         "system": output["system"],
         "dataset_manifest_sha256": output["dataset_manifest_sha256"],
         "model_called": output["model_called"],
+        "contains_production_data": output["contains_production_data"],
+        "external_data_sent": output["external_data_sent"],
+        "dataset_visibility": output["dataset_visibility"],
         "sample_counts": {
             "gold_claims": len(gold_claims),
             "predictions": prediction_count,

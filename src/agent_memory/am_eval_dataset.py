@@ -24,6 +24,7 @@ ALLOWED_CASE_SUITES = {
 ALLOWED_SPLITS = {"development", "validation", "blind"}
 ATOMIC_FACT_TYPES = {"long_term", "stage", "current", "observed"}
 ATOMIC_MEMORY_STATES = {"active", "candidate", "evidence_only"}
+ATOMIC_EVIDENCE_TYPES = {"user_message", "tool_result", "environment_observation"}
 
 
 def sha256_file(path: Path) -> str:
@@ -76,6 +77,8 @@ def validate_atomic_fact_case(case: dict[str, Any]) -> None:
         return
     evidence = case["input"].get("evidence")
     evidence_ids = case["input"].get("evidence_ids")
+    evidence_types = case["input"].get("evidence_types")
+    tool_names = case["input"].get("tool_names")
     facts = case["expected"].get("facts")
     recall_queries = case["expected"].get("recall_queries", [])
     if (
@@ -91,6 +94,29 @@ def validate_atomic_fact_case(case: dict[str, Any]) -> None:
         or len(set(evidence_ids)) != len(evidence_ids)
     ):
         raise DatasetError(f"atomic fact case {case['case_id']} requires unique evidence IDs")
+    if evidence_types is None:
+        evidence_types = ["user_message"] * len(evidence)
+    if tool_names is None:
+        tool_names = [""] * len(evidence)
+    if (
+        not isinstance(evidence_types, list)
+        or len(evidence_types) != len(evidence)
+        or any(item not in ATOMIC_EVIDENCE_TYPES for item in evidence_types)
+        or evidence_types.count("user_message") > 1
+        or len(evidence_types) > 7
+        or not isinstance(tool_names, list)
+        or len(tool_names) != len(evidence)
+        or not all(isinstance(item, str) for item in tool_names)
+        or any(
+            evidence_type == "tool_result" and not tool_name
+            for evidence_type, tool_name in zip(evidence_types, tool_names, strict=True)
+        )
+        or any(
+            evidence_type != "tool_result" and tool_name
+            for evidence_type, tool_name in zip(evidence_types, tool_names, strict=True)
+        )
+    ):
+        raise DatasetError(f"atomic fact case {case['case_id']} has invalid evidence metadata")
     if not isinstance(facts, list):
         raise DatasetError(f"atomic fact case {case['case_id']} requires a facts array")
     if not facts and not isinstance(case["expected"].get("no_memory_reason"), str):

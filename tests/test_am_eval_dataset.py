@@ -273,3 +273,41 @@ def test_atomic_fact_gold_rejects_non_verbatim_span() -> None:
 
     with pytest.raises(DatasetError, match="invalid exact span"):
         validate_atomic_fact_case(case)
+
+
+def test_atomic_fact_gold_rejects_multiple_user_messages() -> None:
+    case = {
+        "schema_version": "am-eval-case-v1",
+        "case_id": "bad-evidence-order",
+        "suite": "atomic_fact",
+        "split": "development",
+        "input": {
+            "evidence_ids": ["e1", "e2"],
+            "evidence": ["first", "second"],
+            "evidence_types": ["user_message", "user_message"],
+            "tool_names": ["", ""],
+        },
+        "expected": {"facts": [], "no_memory_reason": "invalid", "recall_queries": []},
+    }
+
+    with pytest.raises(DatasetError, match="invalid evidence metadata"):
+        validate_atomic_fact_case(case)
+
+
+def test_atomic_fact_gold_rejects_tool_name_on_user_evidence() -> None:
+    case = {
+        "schema_version": "am-eval-case-v1",
+        "case_id": "bad-tool-name",
+        "suite": "atomic_fact",
+        "split": "development",
+        "input": {
+            "evidence_ids": ["e1"],
+            "evidence": ["first"],
+            "evidence_types": ["user_message"],
+            "tool_names": ["terminal"],
+        },
+        "expected": {"facts": [], "no_memory_reason": "invalid", "recall_queries": []},
+    }
+
+    with pytest.raises(DatasetError, match="invalid evidence metadata"):
+        validate_atomic_fact_case(case)

@@ -75,6 +75,15 @@ def test_efficiency_input_rejects_memory_text_or_bad_counts() -> None:
         evaluate_efficiency(payload)
 
     payload = _input()
-    payload["external_data_sent"] = True
-    with pytest.raises(DatasetError, match="external_data_sent=false"):
+    del payload["external_data_sent"]
+    with pytest.raises(DatasetError, match="declare external_data_sent"):
         evaluate_efficiency(payload)
+
+
+def test_external_model_run_preserves_truthful_data_transfer_flag() -> None:
+    payload = _input()
+    payload["external_data_sent"] = True
+
+    result = evaluate_efficiency(payload)
+
+    assert result["external_data_sent"] is True
