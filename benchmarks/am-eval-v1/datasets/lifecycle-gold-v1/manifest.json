@@ -1,0 +1,25 @@
+{
+  "schema_version": "am-eval-dataset-manifest-v1",
+  "dataset_id": "agent-memory-lifecycle-gold-v1",
+  "frozen_at": "2026-08-12",
+  "case_count": 20,
+  "contains_production_data": false,
+  "contains_memory_text": false,
+  "external_data_sent": false,
+  "visibility": "open",
+  "blind_cases": 0,
+  "files": [
+    {
+      "path": "lifecycle.jsonl",
+      "sha256": "62cb844821ce7ba4c211d20af7650583ab8ab8bc04b1b8ffd9c3591a4db114d0",
+      "case_count": 20,
+      "suites": ["lifecycle"]
+    }
+  ],
+  "suite_counts": {"lifecycle": 20},
+  "notes": [
+    "Synthetic lifecycle operation contracts only; no production or Hermes transcript was copied.",
+    "The dataset freezes action and invariant coverage but does not qualify as a private blind benchmark.",
+    "Execution requires a dedicated empty am_eval_ database on a loopback PostgreSQL server."
+  ]
+}

@@ -37,6 +37,7 @@ from .repository import (
     ingest_turn,
     list_review_queue,
     merge_entity,
+    purge_confirmation_matches,
     recall,
     request_memory_purge,
     set_memory_state,
@@ -1068,7 +1069,7 @@ def forget_endpoint(memory_id: str, request_body: MemoryActionRequest, request: 
 )
 def purge_endpoint(memory_id: str, request_body: PurgeRequest, request: Request):
     parsed_id = _governance_id(memory_id, request_body)
-    if request_body.confirm_memory_id != parsed_id:
+    if not purge_confirmation_matches(parsed_id, request_body.confirm_memory_id):
         raise HTTPException(status_code=409, detail="PURGE_CONFIRMATION_MISMATCH")
     with request.app.state.database.connection() as connection:
         job_id = request_memory_purge(

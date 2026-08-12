@@ -1828,3 +1828,8 @@ def request_memory_purge(
     )
     enqueue_derived_rebuild(connection, namespace_id, memory_id, f"purge:{memory_id}")
     return job_id
+
+
+def purge_confirmation_matches(memory_id: UUID, confirm_memory_id: UUID) -> bool:
+    """Keep the destructive purge confirmation contract shared by API and gates."""
+    return memory_id == confirm_memory_id

@@ -20,11 +20,37 @@ ALLOWED_CASE_SUITES = {
     "procedure",
     "recall",
     "temporal_rule",
+    "lifecycle",
 }
 ALLOWED_SPLITS = {"development", "validation", "blind"}
 ATOMIC_FACT_TYPES = {"long_term", "stage", "current", "observed"}
 ATOMIC_MEMORY_STATES = {"active", "candidate", "evidence_only"}
 ATOMIC_EVIDENCE_TYPES = {"user_message", "tool_result", "environment_observation"}
+LIFECYCLE_ACTIONS = {
+    "confirm",
+    "correct",
+    "forget",
+    "isolate",
+    "purge",
+    "current_resolve",
+    "current_expire",
+    "entity_merge",
+    "entity_unmerge",
+    "entity_split",
+}
+LIFECYCLE_INVARIANTS = {
+    "action_audited",
+    "correction_evidence_preserved",
+    "current_hidden",
+    "entity_links_preserved",
+    "evidence_preserved",
+    "namespace_denied",
+    "purge_confirmation_required",
+    "purge_residue_zero",
+    "recall_excluded",
+    "state_changed",
+    "stale_version_rejected",
+}
 
 
 def sha256_file(path: Path) -> str:
@@ -192,6 +218,34 @@ def validate_atomic_fact_case(case: dict[str, Any]) -> None:
         query_ids.add(query_id)
 
 
+def validate_lifecycle_case(case: dict[str, Any]) -> None:
+    """Validate one deterministic lifecycle operation and its required invariants."""
+    if case.get("suite") != "lifecycle":
+        return
+    lifecycle_input = case["input"]
+    expected = case["expected"]
+    action = lifecycle_input.get("action")
+    variant = lifecycle_input.get("variant")
+    invariants = expected.get("invariants")
+    if action not in LIFECYCLE_ACTIONS:
+        raise DatasetError(f"lifecycle case {case['case_id']} has an invalid action")
+    if not isinstance(variant, str) or not variant or len(variant) > 64:
+        raise DatasetError(f"lifecycle case {case['case_id']} requires a bounded variant")
+    if set(lifecycle_input) != {"action", "variant"}:
+        raise DatasetError(f"lifecycle case {case['case_id']} has unsupported input fields")
+    if expected.get("success") is not True:
+        raise DatasetError(f"lifecycle case {case['case_id']} requires expected.success=true")
+    if (
+        not isinstance(invariants, list)
+        or not invariants
+        or len(invariants) != len(set(invariants))
+        or any(item not in LIFECYCLE_INVARIANTS for item in invariants)
+    ):
+        raise DatasetError(f"lifecycle case {case['case_id']} has invalid invariants")
+    if set(expected) != {"success", "invariants"}:
+        raise DatasetError(f"lifecycle case {case['case_id']} has unsupported expected fields")
+
+
 def load_dataset(manifest_path: Path) -> tuple[dict[str, Any], ...]:
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -231,6 +285,7 @@ def load_dataset(manifest_path: Path) -> tuple[dict[str, Any], ...]:
         cases = load_jsonl(candidate)
         for case in cases:
             validate_atomic_fact_case(case)
+            validate_lifecycle_case(case)
         if len(cases) != int(item.get("case_count", -1)):
             raise DatasetError(f"dataset case count mismatch: {relative}")
         declared_suites = set(item.get("suites") or [])

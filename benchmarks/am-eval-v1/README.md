@@ -22,6 +22,8 @@
 [`../../docs/V1.0-AM-Eval私有盲测金标工作流.md`](../../docs/V1.0-AM-Eval私有盲测金标工作流.md)。
 工具链首轮完整验证证据见 [`round-5-private-gold-tooling-readiness.json`](round-5-private-gold-tooling-readiness.json)
 及 [`../../docs/V1.0-AM-Eval第五轮私有金标工具验证报告.md`](../../docs/V1.0-AM-Eval第五轮私有金标工具验证报告.md)。
+冻结生命周期操作契约及运行方法见
+[`../../docs/V1.0-AM-Eval生命周期Gate运行手册.md`](../../docs/V1.0-AM-Eval生命周期Gate运行手册.md)。
 
 验证冻结数据集：
 
@@ -31,6 +33,9 @@ uv run agent-memory-validate-benchmark-dataset \
 
 uv run agent-memory-validate-benchmark-dataset \
   benchmarks/am-eval-v1/datasets/atomic-quality-selftest-v1/manifest.json
+
+uv run agent-memory-validate-benchmark-dataset \
+  benchmarks/am-eval-v1/datasets/lifecycle-gold-v1/manifest.json
 ```
 
 M01/M02/M03/M07 使用 `agent-memory-score-atomic-quality <manifest> <output>`；M22/M23 使用
@@ -38,6 +43,8 @@ M01/M02/M03/M07 使用 `agent-memory-score-atomic-quality <manifest> <output>`�
 真实外部模型运行必须先用 `agent-memory-plan-atomic-benchmark` 生成 metadata-only allowlist，再由
 `agent-memory-run-atomic-benchmark` 在全新 `am_eval_` 隔离数据库执行；合成与生产派生数据使用不同
 确认口令。
+20 组生命周期操作使用 `agent-memory-run-lifecycle-benchmark`，只允许 loopback 上全新的
+`am_eval_` 空数据库和仓库外受限输出；公开合成结果不计为 blind benchmark。详细边界见运行手册。
 
 运行评分器：
 
