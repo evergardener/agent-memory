@@ -400,6 +400,8 @@ def test_atomic_runner_plan_rejects_tampered_private_contract(tmp_path: Path, mo
             "https://example.invalid/v1",
             "--max-model-calls",
             "200",
+            "--max-atomic-facts",
+            "8",
         ],
     )
 

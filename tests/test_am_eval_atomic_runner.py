@@ -108,6 +108,7 @@ def test_plan_is_metadata_only_and_turn_ids_are_deterministic() -> None:
         model="ocg/qwen3.7-plus",
         api_base="https://models.example.com/v1/",
         max_model_calls=2,
+        max_atomic_facts=8,
     )
 
     expected = [
@@ -120,7 +121,7 @@ def test_plan_is_metadata_only_and_turn_ids_are_deterministic() -> None:
     assert plan["model"]["max_calls"] == 2
     assert plan["model"]["api_base"] == "https://models.example.com/v1"
     assert plan["run"]["system_revision"] == "d" * 40
-    assert plan["expected_max_atomic_facts"] == 1
+    assert plan["model"]["max_atomic_facts"] == 8
     assert plan["contains_memory_text"] is False
     assert plan["model_called"] is False
     assert plan["external_data_sent"] is False
@@ -139,6 +140,7 @@ def test_execution_plan_rejects_dataset_model_and_allowlist_drift() -> None:
         model="ocg/qwen3.7-plus",
         api_base="https://models.example.com/v1",
         max_model_calls=2,
+        max_atomic_facts=8,
     )
     validated = validate_execution_plan(
         plan,
@@ -204,6 +206,16 @@ def test_execution_plan_rejects_dataset_model_and_allowlist_drift() -> None:
         )
 
     tampered = json.loads(json.dumps(plan))
+    tampered["model"]["max_atomic_facts"] = 0
+    with pytest.raises(DatasetError, match="case binding"):
+        validate_execution_plan(
+            tampered,
+            manifest=_manifest(),
+            manifest_sha256=MANIFEST_SHA,
+            cases=cases,
+        )
+
+    tampered = json.loads(json.dumps(plan))
     tampered["run"]["id"] = 1
     with pytest.raises(DatasetError, match="invalid run metadata"):
         validate_execution_plan(
@@ -211,6 +223,30 @@ def test_execution_plan_rejects_dataset_model_and_allowlist_drift() -> None:
             manifest=_manifest(),
             manifest_sha256=MANIFEST_SHA,
             cases=cases,
+        )
+
+
+def test_plan_fact_limit_cannot_truncate_a_gold_case() -> None:
+    cases = (
+        {
+            "case_id": "atomic-two-facts",
+            "expected": {"facts": [{"fact_id": "f-1"}, {"fact_id": "f-2"}]},
+        },
+    )
+
+    with pytest.raises(DatasetError, match="below the gold case maximum"):
+        build_plan(
+            manifest=_manifest(),
+            cases=cases,
+            namespace=NAMESPACE,
+            manifest_sha256=MANIFEST_SHA,
+            run_id="atomic-plan-test",
+            system_revision="d" * 40,
+            system_version="test",
+            model="ocg/qwen3.7-plus",
+            api_base="https://models.example.com/v1",
+            max_model_calls=1,
+            max_atomic_facts=1,
         )
 
 
@@ -601,6 +637,8 @@ def test_plan_and_preflight_cli_bind_configuration_without_database_or_model_acc
             "https://models.example.com/v1",
             "--max-model-calls",
             "24",
+            "--max-atomic-facts",
+            "8",
         ],
     )
     plan_main()
@@ -608,6 +646,7 @@ def test_plan_and_preflight_cli_bind_configuration_without_database_or_model_acc
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     assert plan_summary["status"] == "EXECUTION_PLAN_CREATED"
     assert plan_summary["plan_sha256"] == hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    assert plan_summary["max_atomic_facts"] == 8
     assert stat.S_IMODE(plan_path.stat().st_mode) == 0o600
 
     environment = {
@@ -628,6 +667,7 @@ def test_plan_and_preflight_cli_bind_configuration_without_database_or_model_acc
         "AGENT_MEMORY_MODEL_EVALUATION_PLAN_SHA": plan_summary["plan_sha256"],
         "AGENT_MEMORY_MODEL_EVALUATION_TURN_ALLOWLIST": plan["turn_allowlist_csv"],
         "AGENT_MEMORY_MODEL_MAX_RETRIES": "0",
+        "AGENT_MEMORY_MODEL_MAX_ATOMIC_FACTS": "8",
         "AGENT_MEMORY_MODEL_AUTO_BACKFILL_ENABLED": "false",
     }
     for name, value in environment.items():
@@ -654,11 +694,16 @@ def test_plan_and_preflight_cli_bind_configuration_without_database_or_model_acc
     assert summary["status"] == "PREFLIGHT_PASS"
     assert summary["case_count"] == 24
     assert summary["model_call_budget"] == 24
+    assert summary["max_atomic_facts"] == 8
     assert summary["database_connected"] is False
     assert summary["model_called"] is False
     assert summary["external_data_sent"] is False
     assert not output_path.exists()
     assert not efficiency_path.exists()
+
+    monkeypatch.setenv("AGENT_MEMORY_MODEL_MAX_ATOMIC_FACTS", "9")
+    with pytest.raises(DatasetError, match="MAX_ATOMIC_FACTS differs"):
+        preflight_main()
 
 
 def test_database_must_be_loopback_and_explicitly_named_for_evaluation() -> None:

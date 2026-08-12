@@ -127,11 +127,13 @@ def _migrate(database_url: str) -> None:
 
 class OpenAICompatibleHandler(BaseHTTPRequestHandler):
     calls = 0
+    prompts: list[str] = []
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
         type(self).calls += 1
         size = int(self.headers.get("Content-Length", "0"))
         request = json.loads(self.rfile.read(size))
+        type(self).prompts.append(request["messages"][-1]["content"])
         evidence = request["messages"][-1]["content"]
         facts = []
         if STATEMENT in evidence:
@@ -177,6 +179,7 @@ class OpenAICompatibleHandler(BaseHTTPRequestHandler):
 @contextmanager
 def _model_server():
     OpenAICompatibleHandler.calls = 0
+    OpenAICompatibleHandler.prompts = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), OpenAICompatibleHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -249,6 +252,7 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
                 model="openai/test-model",
                 api_base=api_base,
                 max_model_calls=len(CASES),
+                max_atomic_facts=8,
             )
             plan_path = private_root / "execution-plan.json"
             write_private_json(plan_path, plan)
@@ -270,6 +274,7 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
                         "turn_allowlist_csv"
                     ],
                     "AGENT_MEMORY_MODEL_MAX_RETRIES": "0",
+                    "AGENT_MEMORY_MODEL_MAX_ATOMIC_FACTS": "8",
                     "AGENT_MEMORY_MODEL_AUTO_BACKFILL_ENABLED": "false",
                 }
             )
@@ -343,6 +348,10 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(tmp_path: Path) 
         assert summary["external_data_sent"] is False
         assert summary["execution_plan_sha256"] == plan_sha
         assert OpenAICompatibleHandler.calls == len(CASES)
+        assert all(
+            "Extract zero to 8 atomic memory facts" in item
+            for item in OpenAICompatibleHandler.prompts
+        )
         assert stat.S_IMODE(output_path.stat().st_mode) == 0o600
         assert stat.S_IMODE(efficiency_path.stat().st_mode) == 0o600
         assert stat.S_IMODE(key_path.stat().st_mode) == 0o600

@@ -216,7 +216,8 @@ def prepare_atomic_fact_extraction(
     profile = model_profile or ModelProfile.from_settings(settings)
     result, audit = LiteLLMModelAdapter(profile).complete_json(
         task=(
-            "Extract zero to eight atomic memory facts from Evidence. Return exactly "
+            f"Extract zero to {settings.model_max_atomic_facts} atomic memory facts from "
+            "Evidence. Return exactly "
             '{"facts":[{"evidence_index":0,'
             '"statement":"exact contiguous quote from that Evidence item",'
             '"fact_type":"long_term|stage|current|observed",'

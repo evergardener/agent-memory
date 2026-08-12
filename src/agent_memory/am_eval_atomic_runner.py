@@ -29,9 +29,9 @@ from .worker import (
     select_turn_evidence,
 )
 
-RUNNER_VERSION = "am-eval-atomic-runner-v2"
+RUNNER_VERSION = "am-eval-atomic-runner-v3"
 OUTPUT_SCHEMA_VERSION = "am-eval-atomic-output-v2"
-PLAN_SCHEMA_VERSION = "am-eval-atomic-execution-plan-v2"
+PLAN_SCHEMA_VERSION = "am-eval-atomic-execution-plan-v3"
 DEFAULT_NAMESPACE = "hermes:automated-tests:am-eval-atomic"
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
 GIT_REVISION_LENGTH = 40
@@ -342,6 +342,7 @@ def build_plan(
     model: str,
     api_base: str,
     max_model_calls: int,
+    max_atomic_facts: int,
 ) -> dict[str, Any]:
     if not namespace.startswith("hermes:automated-tests:"):
         raise DatasetError("atomic benchmark plan requires an automated namespace")
@@ -358,6 +359,12 @@ def build_plan(
         max_model_calls=max_model_calls,
         case_count=len(cases),
     )
+    if (
+        isinstance(max_atomic_facts, bool)
+        or not isinstance(max_atomic_facts, int)
+        or not 1 <= max_atomic_facts <= 20
+    ):
+        raise DatasetError("atomic benchmark fact limit must be an integer from 1 to 20")
     turn_ids = tuple(
         benchmark_turn_id(
             namespace=namespace,
@@ -367,6 +374,8 @@ def build_plan(
         for case in cases
     )
     expected_fact_limit = max(len(case["expected"]["facts"]) for case in cases)
+    if max_atomic_facts < expected_fact_limit:
+        raise DatasetError("atomic benchmark fact limit is below the gold case maximum")
     return {
         "schema_version": PLAN_SCHEMA_VERSION,
         "dataset": {
@@ -385,11 +394,11 @@ def build_plan(
             "name": model.strip(),
             "api_base": normalized_api_base,
             "max_calls": max_model_calls,
+            "max_atomic_facts": max_atomic_facts,
             "max_retries": 0,
             "automatic_backfill": False,
         },
         "case_count": len(cases),
-        "expected_max_atomic_facts": expected_fact_limit,
         "turn_allowlist_csv": ",".join(str(turn_id) for turn_id in turn_ids),
         "required_external_data_confirmation": external_data_confirmation(manifest),
         "contains_memory_text": False,
@@ -412,7 +421,6 @@ def validate_execution_plan(
         "run",
         "model",
         "case_count",
-        "expected_max_atomic_facts",
         "turn_allowlist_csv",
         "required_external_data_confirmation",
         "contains_memory_text",
@@ -455,6 +463,7 @@ def validate_execution_plan(
         "name",
         "api_base",
         "max_calls",
+        "max_atomic_facts",
         "max_retries",
         "automatic_backfill",
     }:
@@ -468,6 +477,8 @@ def validate_execution_plan(
     if (
         isinstance(model["max_calls"], bool)
         or not isinstance(model["max_calls"], int)
+        or isinstance(model["max_atomic_facts"], bool)
+        or not isinstance(model["max_atomic_facts"], int)
         or isinstance(model["max_retries"], bool)
         or not isinstance(model["max_retries"], int)
     ):
@@ -496,10 +507,9 @@ def validate_execution_plan(
     if (
         isinstance(plan["case_count"], bool)
         or not isinstance(plan["case_count"], int)
-        or isinstance(plan["expected_max_atomic_facts"], bool)
-        or not isinstance(plan["expected_max_atomic_facts"], int)
         or plan["case_count"] != len(cases)
-        or plan["expected_max_atomic_facts"] != expected_fact_limit
+        or not 1 <= model["max_atomic_facts"] <= 20
+        or model["max_atomic_facts"] < expected_fact_limit
         or planned_ids != expected_ids
     ):
         raise DatasetError("atomic execution plan case binding mismatch")
@@ -918,6 +928,7 @@ def plan_main() -> None:
     parser.add_argument("--model", required=True)
     parser.add_argument("--api-base", required=True)
     parser.add_argument("--max-model-calls", required=True, type=int)
+    parser.add_argument("--max-atomic-facts", required=True, type=int)
     arguments = parser.parse_args()
     manifest_path = arguments.manifest.expanduser().resolve()
     manifest_sha256 = sha256_file(manifest_path)
@@ -942,6 +953,7 @@ def plan_main() -> None:
         model=arguments.model,
         api_base=arguments.api_base,
         max_model_calls=arguments.max_model_calls,
+        max_atomic_facts=arguments.max_atomic_facts,
     )
     output_path = validate_private_output(
         arguments.output,
@@ -958,6 +970,7 @@ def plan_main() -> None:
                 "manifest_sha256": manifest_sha256,
                 "case_count": len(cases),
                 "model_call_budget": arguments.max_model_calls,
+                "max_atomic_facts": arguments.max_atomic_facts,
                 "contains_memory_text": False,
                 "model_called": False,
                 "external_data_sent": False,
@@ -1029,8 +1042,8 @@ def validate_run_preflight(
     )
     if set(settings.model_evaluation_turn_ids) != plan["expected_turn_ids"]:
         raise DatasetError("AGENT_MEMORY_MODEL_EVALUATION_TURN_ALLOWLIST mismatch")
-    if settings.model_max_atomic_facts < plan["expected_max_atomic_facts"]:
-        raise DatasetError("AGENT_MEMORY_MODEL_MAX_ATOMIC_FACTS is below the plan requirement")
+    if settings.model_max_atomic_facts != plan["model"]["max_atomic_facts"]:
+        raise DatasetError("AGENT_MEMORY_MODEL_MAX_ATOMIC_FACTS differs from the plan")
     source_root = Path(__file__).parents[2]
     output_path = validate_private_output(arguments.output, forbidden_root=source_root)
     efficiency_output_path = validate_private_output(
@@ -1067,6 +1080,7 @@ def preflight_main() -> None:
                 "case_count": len(validated.cases),
                 "model": validated.profile.model,
                 "model_call_budget": validated.plan["model"]["max_calls"],
+                "max_atomic_facts": validated.plan["model"]["max_atomic_facts"],
                 "contains_memory_text": False,
                 "database_connected": False,
                 "model_called": False,
