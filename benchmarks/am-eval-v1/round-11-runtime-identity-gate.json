@@ -1,0 +1,115 @@
+{
+  "schema_version": "am-eval-runtime-identity-gate-v1",
+  "run_id": "agent-memory-1.0.0rc9-runtime-identity-r11-20260813",
+  "system_revision": "fc4eef3e5705d43de15fe9c9a1d616a99640c574",
+  "system_version": "1.0.0-rc.9",
+  "source_file_count": 73,
+  "source_sha256": "3b368025a4541e20fbb2937e15174ecd9e2ec148ed7e97a98162f2306cad9700",
+  "status": "RUNTIME_IDENTITY_GATE_PASS_REAL_MODEL_PENDING",
+  "official_metrics_updated": false,
+  "verification": {
+    "non_integration_tests": {
+      "passed": 449,
+      "failed": 0
+    },
+    "loopback_atomic_runner_cli": {
+      "passed": 1,
+      "failed": 0,
+      "postgresql_binding": "127.0.0.1:55438",
+      "temporary_database_pattern": "am_eval_cli_*",
+      "temporary_database_residue": 0,
+      "model_endpoint": "127.0.0.1 ephemeral OpenAI-compatible server",
+      "loopback_model_calls": 2,
+      "supplier_calls": 0,
+      "quality_scorer_cli": "PASS",
+      "efficiency_scorer_cli": "PASS",
+      "tampered_governance_output": "PASS_FAIL_CLOSED",
+      "tampered_plan_database_schema": "PASS_FAIL_CLOSED",
+      "external_data_sent": false
+    },
+    "metadata_only_plan": {
+      "status": "EXECUTION_PLAN_CREATED",
+      "plan_sha256": "4c24e5f22d092a55ac60fbf1135bf5a913e579a8a16905dc9ebe30c00660f7aa",
+      "case_count": 24,
+      "database_connected": false,
+      "model_called": false,
+      "external_data_sent": false
+    },
+    "zero_network_preflight": {
+      "status": "PREFLIGHT_PASS",
+      "plan_sha256": "4c24e5f22d092a55ac60fbf1135bf5a913e579a8a16905dc9ebe30c00660f7aa",
+      "database_connected": false,
+      "model_called": false,
+      "external_data_sent": false
+    },
+    "local_image_contract": {
+      "image": "agent-memory-image-contract:fc4eef3",
+      "image_id": "sha256:bcb71ca852677d8c48b06f1a305d37ba3be6f16a34aa4876d9903bfaff0c862b",
+      "architecture": "arm64",
+      "verification_runs": 2,
+      "provenance": "image-build-metadata",
+      "readonly_rootfs": true,
+      "network": "none",
+      "runtime_source_match": "PASS"
+    },
+    "ruff_check": "PASS",
+    "shell_syntax_check": "PASS",
+    "diff_check": "PASS",
+    "review": {
+      "independent_reviewers": 3,
+      "remaining_reproducible_p0_p1": 0
+    }
+  },
+  "implemented_gates": [
+    "execution plan v5 automatically binds clean Git revision package version canonical runtime source SHA and file count",
+    "Git identity strips inherited GIT redirects rejects unsafe index flags and compares HEAD blobs checkout sources and the executing package twice",
+    "image builds bind an externally calculated source SHA to read-only build metadata OCI labels and the installed package digest",
+    "PR and main CI build an image contract before publication and published images are reverified after pull",
+    "production and isolated release entry points verify the same image build identity without building on the deployment host",
+    "the runner requires an empty private bytecode cache and rejects source-side executable import artifacts",
+    "quality and isolated efficiency scorers validate the complete plan current scorer runtime identity and output governance metadata",
+    "local initialization and identity refresh preserve secrets and fail closed on dirty hidden or redirected Git state"
+  ],
+  "schemas": {
+    "execution_plan": "am-eval-atomic-execution-plan-v5",
+    "runner": "am-eval-atomic-runner-v5",
+    "atomic_output": "am-eval-atomic-output-v3",
+    "efficiency_input": "am-eval-efficiency-input-v2",
+    "build_identity": "agent-memory-build-identity-v1",
+    "database": "0019_review_queue_indexes"
+  },
+  "scope_limitations": [
+    "runtime source SHA covers Agent Memory Python sources migrations VERSION pyproject alembic and uv.lock but not the complete OCI filesystem",
+    "formal image-backed evaluation must also record and run an immutable OCI manifest digest",
+    "supplier model quality and production-shadow metrics were not measured in this round"
+  ],
+  "boundaries": {
+    "production_data_read": false,
+    "production_api_or_database_connected": false,
+    "production_namespace_connected": false,
+    "production_container_inspected_or_modified": false,
+    "production_modified": false,
+    "external_model_called": false,
+    "external_data_sent": false,
+    "real_api_key_read": false,
+    "repository_contains_real_api_key": false
+  },
+  "current_real_model_readiness": {
+    "model": "ocg/qwen3.7-plus",
+    "api_base": "https://9router.evergardenviolet.top/v1",
+    "public_synthetic_case_count": 24,
+    "maximum_supplier_calls": 24,
+    "nonproduction_key_file_present": false,
+    "external_data_confirmation_received": false,
+    "real_model_run_started": false
+  },
+  "remaining_requirements": [
+    "review and approve a newly generated v5 execution plan and its exact SHA for the supplier run",
+    "provide a repository-outside 0700 directory containing a 0600 non-production model key file",
+    "provide the exact SEND_SYNTHETIC_BENCHMARK_TO_EXTERNAL_MODEL confirmation",
+    "run the 24-case public synthetic shakedown in a fresh loopback am_eval_ database",
+    "record the exact OCI manifest digest if the formal run uses a published image",
+    "score and review aggregate M01 M02 M03 M07 M22 and M23 without publishing model text",
+    "authorize production shadow and private blind data separately if those stages are later requested"
+  ]
+}

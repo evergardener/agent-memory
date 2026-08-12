@@ -38,6 +38,9 @@
 第十轮将模型超时、时间窗口、可信工具和数据库迁移 head 冻结到 execution plan v4，证据见
 [`round-10-runtime-policy-schema-gate.json`](round-10-runtime-policy-schema-gate.json) 及
 [`../../docs/V1.0-AM-Eval第十轮运行策略与Schema绑定门禁报告.md`](../../docs/V1.0-AM-Eval第十轮运行策略与Schema绑定门禁报告.md)。
+第十一轮将 Git checkout、实际执行 package、镜像 build identity、plan/output 和评分器绑定到同一个
+运行源身份，证据见 [`round-11-runtime-identity-gate.json`](round-11-runtime-identity-gate.json) 及
+[`../../docs/V1.0-AM-Eval第十一轮运行身份绑定门禁报告.md`](../../docs/V1.0-AM-Eval第十一轮运行身份绑定门禁报告.md)。
 
 验证冻结数据集：
 
