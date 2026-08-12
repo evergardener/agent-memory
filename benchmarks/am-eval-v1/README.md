@@ -12,6 +12,9 @@
 第四轮隔离模型 runner 的 readiness 证据见
 [`round-4-atomic-runner-readiness.json`](round-4-atomic-runner-readiness.json)，可复现操作见
 [`../../docs/V1.0-AM-Eval隔离模型评测运行手册.md`](../../docs/V1.0-AM-Eval隔离模型评测运行手册.md)。
+成功/超时路径、调用预算和非零退出码 Gate 见
+[`round-4-atomic-runner-failure-gate.json`](round-4-atomic-runner-failure-gate.json) 及
+[`../../docs/V1.0-AM-Eval第四轮Runner故障门禁报告.md`](../../docs/V1.0-AM-Eval第四轮Runner故障门禁报告.md)。
 
 验证冻结数据集：
 
