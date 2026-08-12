@@ -35,6 +35,9 @@
 第九轮将实际事实提取上限冻结到 execution plan v3，证据见
 [`round-9-fact-limit-binding-gate.json`](round-9-fact-limit-binding-gate.json) 及
 [`../../docs/V1.0-AM-Eval第九轮提取上限绑定门禁报告.md`](../../docs/V1.0-AM-Eval第九轮提取上限绑定门禁报告.md)。
+第十轮将模型超时、时间窗口、可信工具和数据库迁移 head 冻结到 execution plan v4，证据见
+[`round-10-runtime-policy-schema-gate.json`](round-10-runtime-policy-schema-gate.json) 及
+[`../../docs/V1.0-AM-Eval第十轮运行策略与Schema绑定门禁报告.md`](../../docs/V1.0-AM-Eval第十轮运行策略与Schema绑定门禁报告.md)。
 
 验证冻结数据集：
 
