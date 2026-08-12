@@ -1,7 +1,7 @@
 {
   "schema_version": "am-eval-runtime-evidence-v1",
   "run_id": "agent-memory-1.0.0rc9-deterministic-r2-20260812",
-  "system_revision": "TO_BE_PINNED",
+  "system_revision": "844e596e94b522694a56c75fdc01ea5d4f5bbf2f",
   "dataset": {
     "id": "agent-memory-deterministic-gold-v1",
     "manifest_sha256": "6b06f88949f0acd135368ce8d8b4564e66f922eb54b083699d4ebb60c495f2cf",

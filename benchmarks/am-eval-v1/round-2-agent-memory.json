@@ -4,7 +4,7 @@
   "system": {
     "name": "agent-memory",
     "version": "1.0.0rc9",
-    "revision": "TO_BE_PINNED"
+    "revision": "844e596e94b522694a56c75fdc01ea5d4f5bbf2f"
   },
   "track": "deterministic-baseline",
   "dataset": {
