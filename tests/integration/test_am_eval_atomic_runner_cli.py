@@ -245,6 +245,8 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(
     manifest_path, manifest_sha = _write_dataset(private_root)
     output_path = private_root / "atomic-output.json"
     efficiency_path = private_root / "efficiency-input.json"
+    quality_result_path = private_root / "quality-result.json"
+    efficiency_result_path = private_root / "efficiency-result.json"
     key_path = private_root / "model-api-key"
     key_path.write_text("loopback-test-key\n", encoding="utf-8")
     key_path.chmod(0o600)
@@ -390,6 +392,131 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(
         assert "loopback-test-key" not in completed.stderr
         assert "loopback-test-key" not in output_path.read_text(encoding="utf-8")
         assert "loopback-test-key" not in efficiency_path.read_text(encoding="utf-8")
+
+        with quality_result_path.open("w", encoding="utf-8") as quality_result:
+            quality_completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from agent_memory.am_eval_quality import main; main()",
+                    str(manifest_path),
+                    str(output_path),
+                    "--plan",
+                    str(plan_path),
+                    "--confirm-plan-sha256",
+                    plan_sha,
+                    "--confirm-source-sha256",
+                    runtime_identity.source_sha256,
+                ],
+                cwd=ROOT,
+                env=environment,
+                check=False,
+                stdout=quality_result,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+            )
+        assert quality_completed.returncode == 0, quality_completed.stderr
+        with efficiency_result_path.open("w", encoding="utf-8") as efficiency_result:
+            efficiency_completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from agent_memory.am_eval_efficiency import main; main()",
+                    str(efficiency_path),
+                    "--manifest",
+                    str(manifest_path),
+                    "--plan",
+                    str(plan_path),
+                    "--confirm-plan-sha256",
+                    plan_sha,
+                    "--confirm-source-sha256",
+                    runtime_identity.source_sha256,
+                ],
+                cwd=ROOT,
+                env=environment,
+                check=False,
+                stdout=efficiency_result,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+            )
+        assert efficiency_completed.returncode == 0, efficiency_completed.stderr
+        quality_cli = json.loads(quality_result_path.read_text(encoding="utf-8"))
+        efficiency_cli = json.loads(efficiency_result_path.read_text(encoding="utf-8"))
+        for result in (quality_cli, efficiency_cli):
+            assert result["scorer_runtime_identity"] == {
+                "provenance": runtime_identity.provenance,
+                "revision": runtime_identity.revision,
+                "source_file_count": runtime_identity.source_file_count,
+                "source_sha256": runtime_identity.source_sha256,
+                "version": runtime_identity.version,
+            }
+        assert quality_cli["model"] == "openai/test-model"
+        assert quality_cli["policy_version"] == plan["policy"][
+            "atomic_extraction_version"
+        ]
+        assert efficiency_cli["execution_plan_sha256"] == plan_sha
+        assert "loopback-test-key" not in quality_result_path.read_text(encoding="utf-8")
+        assert "loopback-test-key" not in efficiency_result_path.read_text(encoding="utf-8")
+
+        tampered_output = json.loads(output_path.read_text(encoding="utf-8"))
+        tampered_output["contains_production_data"] = True
+        tampered_output_path = private_root / "tampered-output.json"
+        write_private_json(tampered_output_path, tampered_output)
+        rejected_quality = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from agent_memory.am_eval_quality import main; main()",
+                str(manifest_path),
+                str(tampered_output_path),
+                "--plan",
+                str(plan_path),
+                "--confirm-plan-sha256",
+                plan_sha,
+                "--confirm-source-sha256",
+                runtime_identity.source_sha256,
+            ],
+            cwd=ROOT,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert rejected_quality.returncode != 0
+        assert "governance metadata differs" in rejected_quality.stderr
+
+        tampered_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        tampered_plan["database"]["schema_revision"] = "forged"
+        tampered_plan_path = private_root / "tampered-plan.json"
+        write_private_json(tampered_plan_path, tampered_plan)
+        tampered_plan_sha = sha256_file(tampered_plan_path)
+        rejected_efficiency = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from agent_memory.am_eval_efficiency import main; main()",
+                str(efficiency_path),
+                "--manifest",
+                str(manifest_path),
+                "--plan",
+                str(tampered_plan_path),
+                "--confirm-plan-sha256",
+                tampered_plan_sha,
+                "--confirm-source-sha256",
+                runtime_identity.source_sha256,
+            ],
+            cwd=ROOT,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert rejected_efficiency.returncode != 0
+        assert "database schema binding mismatch" in rejected_efficiency.stderr
 
         output = load_atomic_output(
             output_path,
