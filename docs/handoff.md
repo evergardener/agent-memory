@@ -1,27 +1,25 @@
 # Agent Memory 接手交接
 
-> 更新时间：2026-07-26。目标：新接手者无需依赖聊天记录即可继续工作；生产运行态则必须单独授权交接。
+> 更新时间：2026-08-08。目标：新接手者无需依赖聊天记录即可继续工作；生产运行态则必须单独授权交接。
 
 ## 1. 一句话状态
 
-V1 基础证据/事实/召回、阶段 C 关系星系、阶段 E0 展示身份和 rc.8 生产边界已完成。
-真实生产当前运行 `1.0.0-rc.8` / `e05a492b7ba5e225e9eadcaca0fc63018f6d6600`
-的 GHCR 精确 SHA 镜像，状态为 `canary_active`；`jiuyue:production-jiuyue` 正在持续写入，
-模型关闭，尚未生成晋级记录。2026-07-26 已在 `codex/unified-memory-f1-f7` 完成统一经历
-与程序性记忆 F1–F6 隔离实现；migration、API/数据库、Provider、前端构建、浏览器及 F7
-故障恢复/泄漏/备份客观 Gate 已通过，revision
-`09a225681e875542e664d22390b6a39d843693fe` 的完整 Release Gate 亦已 PASS。用户主观
-星图验收和 F8 生产更新仍未完成；生产能力仍以 rc.8 为准。
+V1 基础证据/事实/召回、统一经历与程序性记忆、H0–H6 治理和 rc.9 生产 canary 已完成。
+真实生产当前运行 `1.0.0-rc.9` / `cb12c5185b5c4c7305685b5860202174a1b00de2`
+的 GHCR 精确 SHA 镜像，状态保持 `canary_active`；`jiuyue:production-jiuyue` 持续写入，
+外部模型已启用，历史自动回填关闭。2026-08-08 生产 H5 apply 将 candidate 从 38 降至 2，
+events `12,217`、facts `107` 与 evidence/Vault hash 均保持不变；两次恢复验证备份、Hermes
+browse/recall/trace 和前端加载均 PASS。当前质量状态仍为 DEGRADED，原因是 3 个授权前已存在的
+失败任务尚未重放；尚未生成晋级记录。
 
-源码包含当前回合切分、中文偏好/问句判定、最近记忆浏览、同文召回去重和重复工具事件质量指标。后续又修复 profile 级 Provider 升级文档、可重定位 Alembic 调用及 production `--upgrade` 绑定流程；这些后续运维改动仍需按新 Git SHA 经过 CI/GHCR Gate 后才能更新生产。
+源码包含当前回合切分、中文偏好/问句判定、最近记忆浏览、同文召回去重、重复工具事件质量
+指标，以及 H0–H5 的 current、偏好、召回和历史 candidate 治理。profile 级 Provider 升级、
+可重定位 Alembic 调用及 production `--upgrade` 绑定流程已经过 rc.9 生产验证。
 
-当前源码还新增质量门禁后的 GHCR 多架构发布与生产 pull-only 链路：三个应用镜像使用
-`sha-<full revision>`，包含 SBOM/provenance/attestation；生产预检拒绝 `main/latest`。
-revision `b9668d119509a2c17a757826140a060c3a1f3eb3` 的 Actions run
-`30152123281` 已完成源码质量、三包公开 GHCR 双架构发布、attestation、精确 SHA 镜像拉回
-和 skip-build 全量 Release Gate。Linux runner 上发现的 PostgreSQL bind 权限及临时
-Vault key UID 映射问题已在隔离 Gate 内修复；生产应用仍为固定非 root 用户且
-`cap_drop: ALL`。镜像已达到可部署制品状态，但工作流没有修改当前生产容器。
+GHCR 工作流使用 `sha-<full revision>` 发布三个 amd64/arm64 镜像，并生成
+SBOM/provenance/attestation；生产预检拒绝 `main/latest`。Actions run `31232820388` 已完成
+`cb12c518…` 的源码质量、三镜像发布、精确 SHA 拉回和完整 Hermes Release Gate，生产随后采用
+pull-only 升级。应用继续使用固定非 root 用户、只读根文件系统和 `cap_drop: ALL`。
 
 ## 2. 必读顺序
 
@@ -46,20 +44,21 @@ Vault key UID 映射问题已在隔离 Gate 内修复；生产应用仍为固定
 - 收敛分支：`codex/reconcile-rc8-main`，由 `main` 合入已部署的 `codex/production-canary-boundaries`；
 - 阶段 C 功能提交：`935faf8 feat: complete phase C relation galaxies`；
 - 阶段 C 验收记录：`02656de docs: record phase C acceptance`；
-- `VERSION` / Python package：`1.0.0-rc.8` / `1.0.0rc8`；
-- 生产已部署 rc.8 revision `e05a492…`；尚未打正式 tag 或晋级 V1.0；
+- `VERSION` / Python package：`1.0.0-rc.9` / `1.0.0rc9`；
+- 生产已部署 rc.9 revision `cb12c518…`；尚未打正式 tag 或晋级 V1.0；
 - 工作区中的 `data/`、`backups/`、`secrets/`、`release-artifacts/` 全部是 Git 忽略的本地资产。
 
 ## 4. 当前运行状态
 
-2026-07-25 更新后生产核验（计数会随新会话增长；接手时重新核对）：
+2026-08-08 更新后生产核验（计数会随新会话增长；接手时重新核对）：
 
 | 入口/组件 | 状态 | 说明 |
 | --- | --- | --- |
-| `127.0.0.1:7810` | 生产 canary API healthy | project `agent-memory-production`，GHCR 镜像 revision `e05a492…`，模型关闭 |
-| `jiuyue:production-jiuyue` | 当前 live canary 来源 | 1,610 events / 29 linked facts；首次 source-bound 验证为 361 events |
-| `qishuo:hermes-session-export` | 既有历史导入来源 | 只读核验时 9,117 events；当前不是 live Agent Memory Provider |
-| Hermes Provider | 新 session 已激活 7 tools | `browse` 返回最近记录，直接 Provider recall 可命中 |
+| `127.0.0.1:7810` | 生产 canary API healthy | project `agent-memory-production`，GHCR revision `cb12c518…`，模型启用 |
+| `jiuyue:production-jiuyue` | 当前 live canary 来源 | 生产 namespace 共 12,217 events / 107 facts；来源计数接手时重查 |
+| H5 历史治理 | 已应用 | 36 条受治理、22 份 evidence 归并、candidate `38→2`，幂等重放写入 0 |
+| Hermes Provider | 已激活 7 tools | `browse`、`recall`、`trace` 只读端到端检查 PASS |
+| 质量状态 | DEGRADED | 1 个历史模型超时、2 个旧 purge RestrictViolation；未经授权未重放 |
 
 隔离 Review 栈使用 `7802/7804/7805` 和独立 project/data/network；它不属于正式运行面，可在记录结果后停止。
 
@@ -68,7 +67,7 @@ Vault key UID 映射问题已在隔离 Gate 内修复；生产应用仍为固定
 `agent-memory-production` 完成正式 namespace 空库、安全属性、状态清单、备份恢复和 Vault
 往返演练；演练后同样已无损停止，未接入 Hermes、未启用模型。
 
-生产运行目录是 `$HOME/.local/share/agent-memory/production`。不得读取或复制其中的 env、token、数据库密码、UI secret、模型 key 或 Vault root key。当前 deployment state 已绑定 `e05a492…` bundle/source policy；GHCR 切换前恢复验证备份为 `20260725T110234Z-ghcr-precutover`。后续 revision 升级前仍需生成覆盖新增 events 的新备份。
+生产运行目录是 `$HOME/.local/share/agent-memory/production`。不得输出或复制其中的 env、token、数据库密码、UI secret、模型 key 或 Vault root key。当前 deployment state 已绑定 `cb12c518…` bundle/source policy；升级前恢复验证备份为 `20260808T030119Z`，H5 后备份为 `20260808T030901Z`。
 
 ## 5. 接手后前 15 分钟
 
@@ -117,15 +116,17 @@ curl --fail http://127.0.0.1:7810/health/ready
   evidence hash、Vault 解密、泄漏扫描和性能基线。
 - `09a225681e875542e664d22390b6a39d843693fe` 的 F1–F7 完整隔离 Release Gate：
   22 个集成用例、10 个 Hermes Provider 用例、镜像修订、恢复与 Vault Gate 全部 PASS。
+- rc.9 `cb12c518…` 的 GHCR 发布后 Gate、生产迁移、H5 apply、幂等重放、两次恢复验证备份、
+  Hermes Provider 只读端到端和前端无错误加载。
 
 ## 8. 下一任务队列
 
 | 优先级 | 任务 | 完成标准 |
 | --- | --- | --- |
-| P0 | 收敛 rc.8 到主线 | 合并生产边界分支与 CI 修复，更新文档，最终 SHA 的本地/隔离/handoff Gate PASS |
-| P0 | 修复并部署 `jiuyue` 写入/召回缺陷 | 已完成；Provider 7 tools、browse 与直接 recall 已验证 |
-| P0 | 完成 `jiuyue` 72 小时观察 | 到 2026-07-25 13:44 UTC 后复核健康、来源、失败任务、召回、追溯、星图与脱敏 |
-| P0 | 创建最新恢复验证备份 | 72 小时门禁满足后单独执行生产备份，覆盖首次验证后新增 events，并验证恢复/Vault |
+| P0 | 人工审核 2 条 review | 先追溯证据；持久格式偏好修正后确认，Surge 请求按证据修正或脱离 |
+| P0 | 治理 3 个既有失败任务 | 先 dry-run 分类；模型超时与 purge 任务均需单独重放授权 |
+| P0 | 观察 rc.9 canary | 复核健康、来源、失败任务、召回、追溯、星图和模型错误率 |
+| P0 | 维护恢复验证备份 | 当前 H5 后备份 `20260808T030901Z`；后续写入增长后重新创建 |
 | P1 | 真实数据质量校准 | 对 canary 新增事实做证据追溯、重复率、虚假实体和分类人工抽检 |
 | P1 | 原地晋级 | 最新备份恢复通过，用户批准，写入 `PROMOTION-RECORD.json`，不迁库/换 namespace |
 | P2 | 扩大真实数据质量验证 | 不降低门槛，积累更多人际/项目/设备/服务关系样本 |
