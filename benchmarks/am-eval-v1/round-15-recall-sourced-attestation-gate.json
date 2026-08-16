@@ -1,0 +1,117 @@
+{
+  "schema_version": "am-eval-recall-sourced-attestation-gate-v1",
+  "run_id": "agent-memory-1.0.0rc9-recall-sourced-attestation-r15-20260816",
+  "system_revision": "89fd396426dd6e0c64baf3d56b335f07e5faa736",
+  "system_version": "1.0.0-rc.9",
+  "source_file_count": 76,
+  "source_sha256": "b6387d9c80e2f5185ae2e222880578047c39539f120421b6dbc2d853f51bb634",
+  "runtime_environment_sha256": "17aa37fbbb1854443072a3752df1cd1965e235b6dbc6fc240621186f8a474d16",
+  "private_result_sha256": "0d18699d276c116967a835aa8dbcdbd1d8c0a8772f9151e12e3ae6027a0d339f",
+  "status": "RECALL_SOURCED_ATTESTATION_GATE_PASS_OFFICIAL_METRICS_UNCHANGED",
+  "official_metrics_updated": false,
+  "official_baseline": {
+    "source_run": "round-2-agent-memory.json",
+    "hard_gates_passed": 10,
+    "hard_gates_failed": 0,
+    "coverage_percent": 73,
+    "decision": "INCOMPLETE",
+    "missing_metric_ids": ["M01", "M02", "M03", "M07", "M22", "M23"]
+  },
+  "frozen_dataset": {
+    "id": "agent-memory-deterministic-gold-v1",
+    "manifest_sha256": "6b06f88949f0acd135368ce8d8b4564e66f922eb54b083699d4ebb60c495f2cf",
+    "recall_file_sha256": "a6095df16e56cba9100c46f6c829f84ff7613d55b338ad02c31fe56b18fa850d",
+    "query_count": 110,
+    "positive_count": 10,
+    "negative_count": 100,
+    "namespace_probe_count": 6,
+    "contains_memory_text": true,
+    "contains_production_data": false,
+    "visibility": "open",
+    "blind": false
+  },
+  "sourced_measurements": {
+    "G02": {"value": 0, "sample_count": 6},
+    "M05": {"value": 1.0, "sample_count": 10},
+    "M06": {"value": 1.0, "sample_count": 10},
+    "M08": {"value": 0.0, "sample_count": 100},
+    "M21": {"value": 6.341635, "sample_count": 110}
+  },
+  "explicitly_not_attested": {
+    "G04": "the recall ledger has no labeled source-profile versus real-subject classification",
+    "M07": "citation correctness remains bound to the private blind atomic quality scorer"
+  },
+  "implemented_gates": [
+    "recall CLI reads the manifest and JSONL from one descriptor snapshot and pins official manifest and recall file SHA values",
+    "the runner requires a loopback API an am_eval database an automated namespace and a private output outside the repository",
+    "110 normal HTTP recalls and 6 wrong-namespace probes produce metadata-only query ledgers without query or memory text",
+    "G02 M05 M06 M08 and M21 are recomputed from ranks returned IDs status codes counters and raw latency samples",
+    "recall attestation v1 embeds the original recall result bytes and binds their SHA schema source environment OCI digest and platform",
+    "the formal aggregator accepts exactly the five recall measurements as one sourced artifact"
+  ],
+  "verification": {
+    "python": {
+      "collected": 538,
+      "non_integration_passed": 495,
+      "integration_excluded": 43,
+      "failed": 0
+    },
+    "isolated_recall_cli": {
+      "postgres_binding": "127.0.0.1:55438",
+      "api_binding": "random 127.0.0.1 port",
+      "pytest_cases_passed": 1,
+      "repeat_runs_passed": 2,
+      "normal_http_queries": 110,
+      "namespace_http_probes": 6,
+      "top1_matches": 10,
+      "recall_at_5_matches": 10,
+      "negative_false_matches": 0,
+      "namespace_unauthorized_recall_items": 0,
+      "namespace_denials": 6,
+      "p95_ms": 6.341635,
+      "temporary_database_pattern": "am_eval_recall_%",
+      "temporary_database_residue": 0,
+      "output_mode": "0600",
+      "supplier_calls": 0
+    },
+    "adversarial": {
+      "summary_counter_retyping": "PASS_FAIL_CLOSED",
+      "rank_boolean_retyping": "PASS_FAIL_CLOSED",
+      "latency_p95_retyping": "PASS_FAIL_CLOSED",
+      "cross_namespace_returned_items": "PASS_FAIL_CLOSED",
+      "wrong_namespace_non_403": "PASS_FAIL_CLOSED",
+      "frozen_case_coverage_drift": "PASS_FAIL_CLOSED",
+      "formal_recall_artifact_path": "PASS"
+    },
+    "static": {
+      "ruff": "PASS",
+      "uv_lock": "PASS",
+      "git_diff_check": "PASS"
+    }
+  },
+  "boundaries": {
+    "production_data_read": false,
+    "production_api_or_database_connected": false,
+    "production_namespace_connected": false,
+    "production_modified": false,
+    "external_model_called": false,
+    "external_data_sent": false,
+    "real_api_key_read": false
+  },
+  "remaining_requirements": [
+    "add sourced runners or adapters for G01 G03 G04 G07 G08 G09 G10 and M04 M09 M10 M11 M12 M13 M14 M18 M19 M20",
+    "design a separately authorized production-shadow result for official M22",
+    "create or authorize a pull request and retain GitHub-hosted image-contract plus exact OCI digest evidence",
+    "run the recall sourced attestation inside that verified image by exact name at digest",
+    "create and review the private blind dataset before formal model-quality measurement"
+  ],
+  "remote_ci": {
+    "branch": "codex/review-queue-feedback",
+    "tested_code_revision": "89fd396426dd6e0c64baf3d56b335f07e5faa736",
+    "pull_request_created": false,
+    "workflow_triggered_for_head": false,
+    "image_contract_status": "REMOTE_CI_PENDING",
+    "images_published": false,
+    "production_deployed": false
+  }
+}

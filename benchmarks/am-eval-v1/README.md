@@ -53,6 +53,11 @@ attestation，证据见
 因现有 case 不直接测量越权召回而明确保持缺口。证据见
 [`round-14-lifecycle-sourced-attestation-gate.json`](round-14-lifecycle-sourced-attestation-gate.json) 及
 [`../../docs/V1.0-AM-Eval第十四轮生命周期来源证明门禁报告.md`](../../docs/V1.0-AM-Eval第十四轮生命周期来源证明门禁报告.md)。
+第十五轮使用冻结 recall suite、真实 loopback HTTP API 和 metadata-only query ledger，将 G02、M05、
+M06、M08、M21 从返回排名、状态码与原始耗时来源化。证据见
+[`round-15-recall-sourced-attestation-gate.json`](round-15-recall-sourced-attestation-gate.json) 及
+[`../../docs/V1.0-AM-Eval第十五轮召回来源证明门禁报告.md`](../../docs/V1.0-AM-Eval第十五轮召回来源证明门禁报告.md)，
+复现边界见 [`../../docs/V1.0-AM-Eval召回Gate运行手册.md`](../../docs/V1.0-AM-Eval召回Gate运行手册.md)。
 
 验证冻结数据集：
 
@@ -79,6 +84,9 @@ metadata-only execution plan，再以 `agent-memory-preflight-atomic-benchmark` 
 旧 quality/efficiency attestation v1 不再被正式聚合器接受。isolated M22 不能作为正式 M22。
 20 组生命周期操作使用 `agent-memory-run-lifecycle-benchmark`，只允许 loopback 上全新的
 `am_eval_` 空数据库和仓库外受限输出；公开合成结果不计为 blind benchmark。详细边界见运行手册。
+召回来源 Gate 使用 `agent-memory-run-recall-benchmark`，要求 loopback API、专用 `am_eval_` 数据库和
+自动化 namespace；其结果可由 `agent-memory-assemble-eval-attestation recall` 复算 G02、M05、M06、
+M08、M21，但本地 checkout 结果不能冒充正式 image-backed run。
 
 运行评分器：
 
