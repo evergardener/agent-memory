@@ -1,0 +1,91 @@
+{
+  "schema_version": "am-eval-formal-identity-attribution-gate-v1",
+  "run_id": "hermes:automated-tests:formal-identity-attribution-r23-20260816",
+  "recorded_at": "2026-08-16",
+  "scope": {
+    "production_touched": false,
+    "external_model_called": false,
+    "contains_memory_text": false,
+    "contains_production_data": false,
+    "database_started": false,
+    "api_or_worker_started": false
+  },
+  "source_identity": {
+    "revision": "f843358b8b096b57f8aa019f8c75ac294f86121c",
+    "version": "1.0.0-rc.9",
+    "source_file_count": 81,
+    "source_sha256": "418afa28ce41f1c540981aababc96588199a110eb9ad2f8bef0078591b8b7cb1"
+  },
+  "pre_fix_attack": {
+    "attack": "reuse a valid embedded Agent Memory scorer result while rewriting the formal run system name and outer OCI repository",
+    "claimed_system_name": "honcho",
+    "claimed_image_name": "ghcr.io/example/honcho",
+    "decision": "PASS",
+    "release_ready": true,
+    "status": "REPRODUCED"
+  },
+  "root_cause": [
+    "the formal run accepted any non-fixture system name even though the embedded scorer result identified agent-memory",
+    "the attestation assembler and formal evaluator accepted any syntactically valid untagged OCI repository",
+    "artifact SHA and run attestation could be recomputed after rewriting only the outer attribution fields"
+  ],
+  "implemented_contract": {
+    "official_system_name": "agent-memory",
+    "official_execution_image_names": [
+      "ghcr.io/evergardener/agent-memory-api"
+    ],
+    "enforced_by": [
+      "typed attestation assembler",
+      "deterministic multi-dataset run assembler",
+      "formal evaluator"
+    ]
+  },
+  "post_fix_attacks": [
+    {
+      "attack": "system-name-laundering",
+      "status": "REJECTED",
+      "reason": "formal run system identity must identify agent-memory"
+    },
+    {
+      "attack": "image-repository-laundering",
+      "status": "REJECTED",
+      "reason": "formal run requires a registered Agent Memory execution image"
+    }
+  ],
+  "validation": {
+    "am_eval_tests_collected_and_passed": 274,
+    "non_integration_tests_collected_and_passed": 530,
+    "integration_tests_deselected": 46,
+    "ruff": "PASS",
+    "frontend_tests": {
+      "passed": 6,
+      "failed": 0
+    },
+    "frontend_typecheck": "PASS",
+    "frontend_build": "PASS",
+    "diff_check": "PASS",
+    "pre_commit_dirty_checkout_gate": {
+      "status": "EXPECTED_FAIL_CLOSED",
+      "affected_tests": 11,
+      "resolution": "commit the reviewed source, then rerun from the clean revision without weakening the Git identity gate"
+    }
+  },
+  "remaining_boundaries": [
+    "repository registration does not prove that the scorer process was launched from the claimed manifest digest",
+    "remote GHCR provenance and attestation remain separate execution evidence",
+    "private blind model quality and production-shadow efficiency metrics remain unmeasured"
+  ],
+  "formal_evaluation": {
+    "official_metrics_updated": false,
+    "decision_remains": "INCOMPLETE",
+    "release_ready": false,
+    "missing_required_metric_ids": [
+      "M01",
+      "M02",
+      "M03",
+      "M07",
+      "M22",
+      "M23"
+    ]
+  }
+}

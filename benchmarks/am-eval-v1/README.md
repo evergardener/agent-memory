@@ -98,6 +98,12 @@ source-result validator 的旧通用 measurement artifact。攻击性回归证�
 语义漂移均被拒绝。测试镜像与输入已清理，不产生正式指标。证据见
 [`round-22-image-official-spec-gate.json`](round-22-image-official-spec-gate.json) 及
 [`../../docs/V1.0-AM-Eval第二十二轮镜像内官方Spec门禁报告.md`](../../docs/V1.0-AM-Eval第二十二轮镜像内官方Spec门禁报告.md)。
+第二十三轮复现了正式身份归属漂移：有效 Agent Memory scorer 结果只修改外层 system name 与 OCI
+repository、重签 artifact/run 后，旧实现会以其他系统身份返回 PASS。修复后 typed attestation、确定性
+run 组装器和最终 evaluator 共同要求 `system=agent-memory` 与登记的 Agent Memory API 仓库；两类攻击
+均 fail-closed。证据见
+[`round-23-formal-identity-attribution-gate.json`](round-23-formal-identity-attribution-gate.json) 及
+[`../../docs/V1.0-AM-Eval第二十三轮正式身份归属门禁报告.md`](../../docs/V1.0-AM-Eval第二十三轮正式身份归属门禁报告.md)。
 
 验证冻结数据集：
 
