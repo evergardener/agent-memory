@@ -49,6 +49,10 @@
 attestation，证据见
 [`round-13-sourced-score-attestation-gate.json`](round-13-sourced-score-attestation-gate.json) 及
 [`../../docs/V1.0-AM-Eval第十三轮评分来源证明门禁报告.md`](../../docs/V1.0-AM-Eval第十三轮评分来源证明门禁报告.md)。
+第十四轮把冻结生命周期 runner 的 G05、G06、M15、M16、M17 从实际 case/invariant 计数来源化；G02
+因现有 case 不直接测量越权召回而明确保持缺口。证据见
+[`round-14-lifecycle-sourced-attestation-gate.json`](round-14-lifecycle-sourced-attestation-gate.json) 及
+[`../../docs/V1.0-AM-Eval第十四轮生命周期来源证明门禁报告.md`](../../docs/V1.0-AM-Eval第十四轮生命周期来源证明门禁报告.md)。
 
 验证冻结数据集：
 

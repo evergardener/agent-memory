@@ -1,0 +1,104 @@
+{
+  "schema_version": "am-eval-lifecycle-sourced-attestation-gate-v1",
+  "run_id": "agent-memory-1.0.0rc9-lifecycle-sourced-attestation-r14-20260816",
+  "system_revision": "be0bdd7830c2b7eb771fc83687c80e38e8ab9793",
+  "system_version": "1.0.0-rc.9",
+  "source_file_count": 75,
+  "source_sha256": "ecfc4dd27ba2bdc035410479cdd4580b5d746106466a734aea4159f8da2d8253",
+  "runtime_environment_sha256": "25c191d909d83e3f5d8c320a59c671bf772c11e2db481816ee0611dd9e7f02ca",
+  "status": "LIFECYCLE_SOURCED_ATTESTATION_GATE_PASS_OFFICIAL_METRICS_UNCHANGED",
+  "official_metrics_updated": false,
+  "official_baseline": {
+    "source_run": "round-2-agent-memory.json",
+    "hard_gates_passed": 10,
+    "hard_gates_failed": 0,
+    "coverage_percent": 73,
+    "decision": "INCOMPLETE",
+    "missing_metric_ids": ["M01", "M02", "M03", "M07", "M22", "M23"]
+  },
+  "frozen_dataset": {
+    "id": "agent-memory-lifecycle-gold-v1",
+    "manifest_sha256": "fe14754d58113181fb0b49a42169a5cd1acf52ccea75a3ce40d5375ccbc757c5",
+    "case_count": 20,
+    "contains_memory_text": false,
+    "contains_production_data": false,
+    "visibility": "open",
+    "blind": false
+  },
+  "sourced_measurements": {
+    "G05": {"value": 0, "sample_count": 3},
+    "G06": {"value": 0, "sample_count": 1},
+    "M15": {"value": 1.0, "sample_count": 20},
+    "M16": {"value": 1.0, "sample_count": 2},
+    "M17": {"value": 1.0, "sample_count": 6}
+  },
+  "explicitly_not_attested": {
+    "G02": "namespace-denied mutation cases do not directly measure cross-namespace recall",
+    "M10": "lifecycle current-state cases do not fully cover contradiction and supersession accuracy",
+    "M20": "the frozen lifecycle set does not contain replay-idempotency measurements"
+  },
+  "implemented_gates": [
+    "lifecycle CLI reads manifest and JSONL from one descriptor snapshot and pins the official manifest SHA",
+    "lifecycle output v2 binds run source identity Python and dependency environment dataset governance and manifest SHA",
+    "formal lifecycle sources require image-build-metadata provenance and a complete 20 of 20 frozen run",
+    "action counts invariant counts and every case terminal status are exact-schema validated",
+    "G05 G06 M15 M16 and M17 are recomputed from frozen invariant and case counters",
+    "lifecycle attestation v2 embeds the original lifecycle result bytes and binds their SHA schema OCI digest and platform",
+    "the formal aggregator accepts the five lifecycle measurements only as one exact sourced artifact"
+  ],
+  "verification": {
+    "python": {
+      "collected": 529,
+      "non_integration_passed": 487,
+      "integration_skipped_in_non_integration_gate": 42,
+      "failed": 0
+    },
+    "isolated_lifecycle_cli": {
+      "binding": "127.0.0.1:55438",
+      "pytest_cases_passed": 1,
+      "frozen_cases_passed": 20,
+      "frozen_cases_failed": 0,
+      "temporary_database_pattern": "am_eval_lifecycle_%",
+      "temporary_database_residue": 0,
+      "output_mode": "0600",
+      "supplier_calls": 0
+    },
+    "adversarial": {
+      "invariant_counter_retyping": "PASS_FAIL_CLOSED",
+      "partial_lifecycle_run": "PASS_FAIL_CLOSED",
+      "wrong_manifest_sha": "PASS_FAIL_CLOSED",
+      "source_artifact_byte_drift": "PASS_FAIL_CLOSED",
+      "formal_lifecycle_aggregate_path": "PASS"
+    },
+    "static": {
+      "ruff": "PASS",
+      "uv_lock": "PASS",
+      "git_diff_check": "PASS"
+    }
+  },
+  "boundaries": {
+    "production_data_read": false,
+    "production_api_or_database_connected": false,
+    "production_namespace_connected": false,
+    "production_modified": false,
+    "external_model_called": false,
+    "external_data_sent": false,
+    "real_api_key_read": false
+  },
+  "remaining_requirements": [
+    "add sourced runners or adapters for G01 G02 G03 G04 G07 G08 G09 G10 and M04 M05 M06 M08 M09 M10 M11 M12 M13 M14 M18 M19 M20 M21",
+    "design a separately authorized production-shadow result for official M22",
+    "create or authorize a pull request and retain GitHub-hosted image-contract plus exact OCI digest evidence",
+    "run the lifecycle sourced attestation inside that verified image by exact name at digest",
+    "create and review the private blind dataset before formal model-quality measurement"
+  ],
+  "remote_ci": {
+    "branch": "codex/review-queue-feedback",
+    "tested_code_revision": "be0bdd7830c2b7eb771fc83687c80e38e8ab9793",
+    "pull_request_created": false,
+    "workflow_triggered_for_head": false,
+    "image_contract_status": "REMOTE_CI_PENDING",
+    "images_published": false,
+    "production_deployed": false
+  }
+}
