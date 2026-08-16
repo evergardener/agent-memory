@@ -40,6 +40,7 @@ from .worker import (
 
 RUNNER_VERSION = "am-eval-atomic-runner-v7"
 OUTPUT_SCHEMA_VERSION = "am-eval-atomic-output-v4"
+FAILURE_RECEIPT_SCHEMA_VERSION = "am-eval-atomic-failure-receipt-v1"
 PLAN_SCHEMA_VERSION = "am-eval-atomic-execution-plan-v6"
 DEFAULT_NAMESPACE = "hermes:automated-tests:am-eval-atomic"
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
@@ -1625,7 +1626,8 @@ def build_private_output(
     _validate_sha256(source_sha256, "source_sha256")
     _validate_sha256(environment_sha256, "environment_sha256")
     output_cases: list[dict[str, Any]] = []
-    for item in prepared:
+    scoreable = model_run.run_status == "complete"
+    for item in prepared if scoreable else ():
         predictions = _fact_rows(connection, namespace=namespace, turn_id=item.turn_id)
         event_index = {str(event_id): index for index, event_id in enumerate(item.event_ids)}
         logical_evidence_ids = item.case["input"]["evidence_ids"]
@@ -1672,7 +1674,9 @@ def build_private_output(
             {"case_id": item.case["case_id"], "facts": predictions, "recalls": recalls}
         )
     payload = {
-        "schema_version": OUTPUT_SCHEMA_VERSION,
+        "schema_version": (
+            OUTPUT_SCHEMA_VERSION if scoreable else FAILURE_RECEIPT_SCHEMA_VERSION
+        ),
         "runner_version": RUNNER_VERSION,
         "dataset_id": dataset_id,
         "dataset_manifest_sha256": manifest_sha256,
@@ -1692,7 +1696,7 @@ def build_private_output(
         "case_count": len(prepared),
         "job_statuses": model_run.job_statuses,
         "model_invocations": model_run.model_invocations,
-        "contains_memory_text": True,
+        "contains_memory_text": scoreable,
         "contains_production_data": contains_production_data,
         "dataset_visibility": dataset_visibility,
         "model_called": model_run.invocations_attempted > 0,

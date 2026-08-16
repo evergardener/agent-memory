@@ -34,6 +34,9 @@ class DatasetSnapshot:
     cases: tuple[dict[str, Any], ...]
 
 
+MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
+
+
 ALLOWED_CASE_SUITES = {
     "atomic_fact",
     "date_range",
@@ -118,9 +121,13 @@ def read_file_snapshot(path: Path | PathLike) -> FileSnapshot:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
             raise DatasetError(f"dataset path must be a single-link regular file: {absolute}")
+        if before.st_size > MAX_SNAPSHOT_BYTES:
+            raise DatasetError(f"dataset file exceeds the snapshot size limit: {absolute}")
         payload = bytearray()
         while chunk := os.read(descriptor, 1024 * 1024):
             payload.extend(chunk)
+            if len(payload) > MAX_SNAPSHOT_BYTES:
+                raise DatasetError(f"dataset file exceeds the snapshot size limit: {absolute}")
         after = os.fstat(descriptor)
         identity_before = (
             before.st_dev,

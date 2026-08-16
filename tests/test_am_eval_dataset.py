@@ -7,6 +7,7 @@ import pytest
 
 import agent_memory.am_eval_dataset as dataset_module
 from agent_memory.am_eval_dataset import (
+    MAX_SNAPSHOT_BYTES,
     DatasetError,
     dataset_summary,
     load_dataset,
@@ -414,6 +415,15 @@ def test_atomic_fact_gold_rejects_non_verbatim_span() -> None:
 
     with pytest.raises(DatasetError, match="invalid exact span"):
         validate_atomic_fact_case(case)
+
+
+def test_snapshot_reader_rejects_oversized_files_before_reading(tmp_path: Path) -> None:
+    oversized = tmp_path / "oversized.json"
+    with oversized.open("wb") as handle:
+        handle.truncate(MAX_SNAPSHOT_BYTES + 1)
+
+    with pytest.raises(DatasetError, match="snapshot size limit"):
+        sha256_file(oversized)
 
 
 def test_atomic_fact_gold_rejects_multiple_user_messages() -> None:

@@ -6,6 +6,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from alembic.config import Config
@@ -18,12 +19,14 @@ from agent_memory.am_eval_atomic_runner import (
     MAX_API_KEY_BYTES,
     MAX_EXECUTION_PLAN_BYTES,
     ModelRunResult,
+    PreparedCase,
     RuntimeIdentity,
     benchmark_idempotency_key,
     benchmark_run_complete,
     benchmark_turn_id,
     build_efficiency_input,
     build_plan,
+    build_private_output,
     emit_run_summary,
     external_data_confirmation,
     load_frozen_runtime_settings,
@@ -1443,3 +1446,39 @@ def test_efficiency_input_uses_terminal_jobs_and_contains_no_memory_text() -> No
     assert result["system_environment_sha256"] == "f" * 64
     assert result["contains_memory_text"] is False
     assert "private fact" not in serialized
+
+
+def test_failed_private_output_is_a_metadata_only_unscoreable_receipt() -> None:
+    model_run = ModelRunResult(
+        job_statuses={"done": 1, "failed": 1},
+        invocation_budget=2,
+        invocations_attempted=2,
+        invocations_terminal_success=1,
+        invocations_terminal_failure=1,
+    )
+    payload = build_private_output(
+        None,
+        prepared=(
+            PreparedCase({"case_id": "one"}, UUID(int=1), ()),
+            PreparedCase({"case_id": "two"}, UUID(int=2), ()),
+        ),
+        namespace=NAMESPACE,
+        dataset_id="failure-receipt-test",
+        manifest_sha256=MANIFEST_SHA,
+        execution_plan_sha256=MANIFEST_SHA,
+        run_id="failure-receipt-test",
+        system_revision="c" * 40,
+        system_version="test",
+        source_sha256="d" * 64,
+        source_file_count=7,
+        environment_sha256="f" * 64,
+        model="ocg/qwen3.7-plus",
+        contains_production_data=True,
+        dataset_visibility="private",
+        model_run=model_run,
+        external_data_sent=True,
+    )
+
+    assert payload["schema_version"] == "am-eval-atomic-failure-receipt-v1"
+    assert payload["contains_memory_text"] is False
+    assert payload["cases"] == []

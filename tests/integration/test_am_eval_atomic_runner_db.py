@@ -288,12 +288,9 @@ def test_timeout_is_one_call_per_case_and_preserves_evidence_without_facts(
     assert evidence_count == 2
     assert fact_count == 0
     assert (attempt_count, error_attempts) == (2, 2)
-    assert all(not case["facts"] for case in output["cases"])
-
-    quality = evaluate_atomic_quality(CASES, output)
-    assert quality["metrics"]["M02"]["value"] == 0.0
-    assert quality["metrics"]["M07"]["value"] == 0.0
-    assert quality["missing_metric_ids"] == ["M01", "M03"]
+    assert output["schema_version"] == "am-eval-atomic-failure-receipt-v1"
+    assert output["contains_memory_text"] is False
+    assert output["cases"] == []
 
     efficiency_input = build_efficiency_input(
         output=output,
