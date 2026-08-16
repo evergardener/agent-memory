@@ -1,0 +1,135 @@
+{
+  "schema_version": "am-eval-episode-procedure-sourced-attestation-gate-v1",
+  "run_id": "agent-memory-1.0.0rc9-episode-procedure-sourced-attestation-r17-20260816",
+  "system_revision": "329d5750875f00ca7c8c47acd236406adb366e95",
+  "system_version": "1.0.0-rc.9",
+  "source_file_count": 78,
+  "source_sha256": "7baa51ab666d54b5260059039bc9074f5beed1eaaf021474cdb099b755b8783b",
+  "runtime_environment_sha256": "528c3fbb48b62153534fe019eacbebabf53919ba5d778586b71ba556d7879147",
+  "private_result_sha256": "d14849baaf8e640aeb866dccdd655c339848e8be608fe5da48ee51da9b91bb2b",
+  "status": "EPISODE_PROCEDURE_SOURCED_ATTESTATION_GATE_PASS_OFFICIAL_METRICS_UNCHANGED",
+  "official_metrics_updated": false,
+  "official_baseline": {
+    "source_run": "round-2-agent-memory.json",
+    "hard_gates_passed": 10,
+    "hard_gates_failed": 0,
+    "coverage_percent": 73,
+    "decision": "INCOMPLETE",
+    "missing_metric_ids": ["M01", "M02", "M03", "M07", "M22", "M23"]
+  },
+  "frozen_dataset": {
+    "id": "agent-memory-episode-procedure-gold-v1",
+    "manifest_sha256": "8f212b3c435a7109a03ada28cf0a015f0f07339354e79a92dad4f4e3ed9b6fb7",
+    "case_file_sha256": "6e85413ef239ab46cf5caf9fb8057f0935b5976f3cb3380c2e500df27f8c0b6f",
+    "case_count": 21,
+    "split_counts": {"development": 11, "validation": 10},
+    "suite_counts": {
+      "date_range": 6,
+      "episode": 4,
+      "episode_procedure_db": 3,
+      "procedure": 4,
+      "temporal_rule": 4
+    },
+    "contains_memory_text": true,
+    "contains_production_data": false,
+    "visibility": "open",
+    "blind": false
+  },
+  "sourced_measurements": {
+    "G04": {"value": 0, "sample_count": 2},
+    "G08": {"value": 0, "sample_count": 4},
+    "M04": {"value": 1.0, "sample_count": 6},
+    "M09": {"value": 1.0, "sample_count": 10},
+    "M10": {"value": 1.0, "sample_count": 2},
+    "M11": {"value": 1.0, "sample_count": 4},
+    "M12": {"value": 1.0, "sample_count": 4},
+    "M13": {"value": 0.0, "sample_count": 3},
+    "M14": {"value": 1.0, "sample_count": 1}
+  },
+  "implemented_gates": [
+    "a frozen open synthetic dataset pins 21 temporal episode procedure and database cases",
+    "the runner requires a loopback am_eval empty database an automated namespace and a private output outside the repository",
+    "temporal episode and procedure measurements are recomputed from metadata-only case ledgers",
+    "current and preference supersession are checked through real database state and exact replacement links",
+    "procedure lineage requires an active support episode support fact fact evidence link and exact evidence event",
+    "profile names are explicitly excluded from selected episode entity sets",
+    "episode procedure attestation v1 binds original bytes source environment dataset OCI digest and platform"
+  ],
+  "verification": {
+    "python": {
+      "collected": 554,
+      "non_integration_passed": 509,
+      "integration_excluded": 45,
+      "failed": 0
+    },
+    "isolated_episode_procedure_cli": {
+      "postgres_binding": "127.0.0.1:55438",
+      "pytest_cases_passed": 1,
+      "frozen_cases_passed": 21,
+      "temporal_passed": 10,
+      "temporal_cases": 10,
+      "episode_passed": 4,
+      "episode_cases": 4,
+      "profile_subject_confusions": 0,
+      "selected_episode_cases": 2,
+      "entity_role_correct": 6,
+      "entity_role_expected": 6,
+      "entity_role_unexpected": 0,
+      "procedure_status_passed": 4,
+      "procedure_cases": 4,
+      "unauthorized_auto_apply": 0,
+      "dangerous_auto_apply": 0,
+      "dangerous_procedure_cases": 3,
+      "database_passed": 3,
+      "database_cases": 3,
+      "supersession_passed": 2,
+      "supersession_cases": 2,
+      "procedure_lineage_passed": 1,
+      "procedure_lineage_cases": 1,
+      "temporary_database_pattern": "am_eval_episode_%",
+      "temporary_database_residue": 0,
+      "output_mode": "0600",
+      "supplier_calls": 0
+    },
+    "adversarial": {
+      "manifest_case_and_denominator_drift": "PASS_FAIL_CLOSED",
+      "profile_subject_confusion": "PASS_FAIL_CLOSED",
+      "entity_role_retyping": "PASS_FAIL_CLOSED",
+      "unauthorized_auto_apply": "PASS_FAIL_CLOSED",
+      "supersession_link_drift": "PASS_FAIL_CLOSED",
+      "procedure_evidence_event_retargeting": "PASS_FAIL_CLOSED",
+      "summary_counter_retyping": "PASS_FAIL_CLOSED",
+      "formal_episode_procedure_artifact_path": "PASS"
+    },
+    "static": {
+      "ruff": "PASS",
+      "uv_lock": "PASS",
+      "git_diff_check": "PASS"
+    }
+  },
+  "boundaries": {
+    "production_data_read": false,
+    "production_api_or_database_connected": false,
+    "production_namespace_connected": false,
+    "production_modified": false,
+    "external_model_called": false,
+    "external_data_sent": false,
+    "real_api_key_read": false
+  },
+  "remaining_requirements": [
+    "add sourced runners or adapters for G07 G10 M18 M19 and M20",
+    "design a separately authorized production-shadow result for official M22",
+    "create or authorize a pull request and retain GitHub-hosted image-contract plus exact OCI digest evidence",
+    "run the episode procedure sourced attestation inside that verified image by exact name at digest",
+    "create and review the private blind dataset before formal model-quality measurement"
+  ],
+  "remote_ci": {
+    "branch": "codex/review-queue-feedback",
+    "tested_code_revision": "329d5750875f00ca7c8c47acd236406adb366e95",
+    "pull_request_created": false,
+    "workflow_triggered_for_head": false,
+    "image_contract_status": "REMOTE_CI_PENDING",
+    "images_published": false,
+    "production_deployed": false
+  }
+}

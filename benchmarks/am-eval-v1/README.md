@@ -63,6 +63,11 @@ event/fact/document 扫描、evidence link 与 exact trace event 来源化。证
 [`round-16-evidence-sourced-attestation-gate.json`](round-16-evidence-sourced-attestation-gate.json) 及
 [`../../docs/V1.0-AM-Eval第十六轮证据完整性来源证明门禁报告.md`](../../docs/V1.0-AM-Eval第十六轮证据完整性来源证明门禁报告.md)，
 复现边界见 [`../../docs/V1.0-AM-Eval证据完整性Gate运行手册.md`](../../docs/V1.0-AM-Eval证据完整性Gate运行手册.md)。
+第十七轮使用冻结时间、情节、程序和数据库 invariant case，将 G04、G08、M04、M09–M14 从实际
+parser 决策、supersession 状态和 procedure → episode → fact → evidence 来源链来源化。证据见
+[`round-17-episode-procedure-sourced-attestation-gate.json`](round-17-episode-procedure-sourced-attestation-gate.json) 及
+[`../../docs/V1.0-AM-Eval第十七轮情节与程序来源证明门禁报告.md`](../../docs/V1.0-AM-Eval第十七轮情节与程序来源证明门禁报告.md)，
+复现边界见 [`../../docs/V1.0-AM-Eval情节与程序Gate运行手册.md`](../../docs/V1.0-AM-Eval情节与程序Gate运行手册.md)。
 
 验证冻结数据集：
 
@@ -78,6 +83,9 @@ uv run agent-memory-validate-benchmark-dataset \
 
 uv run agent-memory-validate-benchmark-dataset \
   benchmarks/am-eval-v1/datasets/evidence-integrity-gold-v1/manifest.json
+
+uv run agent-memory-validate-benchmark-dataset \
+  benchmarks/am-eval-v1/datasets/episode-procedure-gold-v1/manifest.json
 ```
 
 M01/M02/M03/M07 使用
@@ -97,6 +105,9 @@ metadata-only execution plan，再以 `agent-memory-preflight-atomic-benchmark` 
 M08、M21，但本地 checkout 结果不能冒充正式 image-backed run。
 证据完整性 Gate 使用 `agent-memory-run-evidence-benchmark`，只允许全新 loopback `am_eval_` 数据库；
 `agent-memory-assemble-eval-attestation evidence` 只能从 metadata-only case ledger 复算 G01、G03、G09。
+情节与程序 Gate 使用 `agent-memory-run-episode-procedure-benchmark`，只允许全新 loopback `am_eval_`
+数据库；`agent-memory-assemble-eval-attestation episode-procedure` 从四类 metadata-only ledger 复算
+G04、G08、M04、M09–M14。
 
 运行评分器：
 
