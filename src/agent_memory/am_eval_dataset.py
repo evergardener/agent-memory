@@ -46,8 +46,11 @@ ALLOWED_CASE_SUITES = {
     "preference",
     "procedure",
     "recall",
+    "backup_restore",
+    "idempotency",
     "temporal_rule",
     "lifecycle",
+    "worker_recovery",
 }
 ALLOWED_SPLITS = {"development", "validation", "blind"}
 ATOMIC_FACT_TYPES = {"long_term", "stage", "current", "observed"}
@@ -105,6 +108,39 @@ EPISODE_PROCEDURE_DB_SCENARIOS = {
         "support_evidence_linked",
         "support_fact_linked",
         "verified_step_present",
+    },
+}
+RELIABILITY_SCENARIOS = {
+    "pending_outage": {
+        "evidence_persisted_before_recovery",
+        "jobs_pending_before_recovery",
+        "jobs_done_after_recovery",
+        "evidence_hash_unchanged",
+    },
+    "expired_lease": {
+        "expired_running_job_reclaimed",
+        "attempt_count_incremented",
+        "job_done_after_recovery",
+        "evidence_hash_unchanged",
+    },
+    "sequential_replay": {
+        "single_winner",
+        "single_event",
+        "single_turn",
+        "single_job_set",
+    },
+    "concurrent_replay": {
+        "single_winner",
+        "single_event",
+        "single_turn",
+        "single_job_set",
+    },
+    "pg_dump_restore": {
+        "all_table_counts_match",
+        "evidence_hash_matches",
+        "vault_ciphertext_matches",
+        "vault_decrypts_with_same_root_key",
+        "migration_revision_matches",
     },
 }
 
@@ -430,6 +466,35 @@ def validate_episode_procedure_db_case(case: dict[str, Any]) -> None:
         raise DatasetError(f"episode/procedure DB case {case['case_id']} has invalid invariants")
 
 
+def validate_reliability_case(case: dict[str, Any]) -> None:
+    """Validate one metadata-only worker, idempotency, or restore contract."""
+    if case.get("suite") not in {"worker_recovery", "idempotency", "backup_restore"}:
+        return
+    scenario_input = case["input"]
+    expected = case["expected"]
+    if set(expected) != {"invariants"} or set(scenario_input) not in (
+        {"scenario"},
+        {"attempts", "scenario"},
+    ):
+        raise DatasetError(f"reliability case {case['case_id']} has an invalid schema")
+    scenario = scenario_input.get("scenario")
+    invariants = expected.get("invariants")
+    if (
+        scenario not in RELIABILITY_SCENARIOS
+        or not isinstance(invariants, list)
+        or len(invariants) != len(set(invariants))
+        or set(invariants) != RELIABILITY_SCENARIOS[scenario]
+    ):
+        raise DatasetError(f"reliability case {case['case_id']} has invalid invariants")
+    attempts = scenario_input.get("attempts")
+    if scenario == "sequential_replay" and attempts != 2:
+        raise DatasetError("sequential reliability replay requires two attempts")
+    if scenario == "concurrent_replay" and attempts != 8:
+        raise DatasetError("concurrent reliability replay requires eight attempts")
+    if scenario not in {"sequential_replay", "concurrent_replay"} and attempts is not None:
+        raise DatasetError(f"reliability case {case['case_id']} cannot declare attempts")
+
+
 def load_dataset_snapshot(manifest_path: Path) -> DatasetSnapshot:
     manifest_snapshot = read_file_snapshot(manifest_path)
     try:
@@ -474,6 +539,7 @@ def load_dataset_snapshot(manifest_path: Path) -> DatasetSnapshot:
             validate_evidence_integrity_case(case)
             validate_episode_procedure_db_case(case)
             validate_lifecycle_case(case)
+            validate_reliability_case(case)
         if len(cases) != int(item.get("case_count", -1)):
             raise DatasetError(f"dataset case count mismatch: {relative}")
         declared_suites = set(item.get("suites") or [])

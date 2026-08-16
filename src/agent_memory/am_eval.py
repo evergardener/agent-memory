@@ -15,6 +15,7 @@ from .am_eval_attestation import (
     LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
     QUALITY_ATTESTATION_SCHEMA_VERSION,
     RECALL_ATTESTATION_SCHEMA_VERSION,
+    RELIABILITY_ATTESTATION_SCHEMA_VERSION,
     validate_attested_source,
 )
 from .am_eval_dataset import DatasetError, read_file_snapshot
@@ -36,6 +37,7 @@ ARTIFACT_PRODUCERS = {
     RECALL_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
     EVIDENCE_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
     EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION: ("agent-memory-am-eval-attestation-assembler"),
+    RELIABILITY_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
 }
 
 
@@ -267,6 +269,7 @@ def _validate_artifact(
         RECALL_ATTESTATION_SCHEMA_VERSION,
         EVIDENCE_ATTESTATION_SCHEMA_VERSION,
         EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION,
+        RELIABILITY_ATTESTATION_SCHEMA_VERSION,
     }:
         try:
             source_result = validate_attested_source(artifact)
@@ -460,6 +463,22 @@ def _validate_artifact(
         if artifact.get("scope") != "isolated-episode-procedure":
             raise ValueError("episode/procedure artifact requires isolated-episode-procedure scope")
 
+    if schema_version == RELIABILITY_ATTESTATION_SCHEMA_VERSION:
+        assert source_result is not None
+        if artifact_measurements != {"G07", "G10", "M18", "M19", "M20"}:
+            raise ValueError("reliability artifact has invalid measurement coverage")
+        if (
+            source_result["run_id"] != run["run_id"]
+            or source_result["dataset_id"] != dataset["id"]
+            or source_result["system"]["version"] != system["version"]
+            or source_result["system"]["source_file_count"] != system["source_file_count"]
+        ):
+            raise ValueError("formal reliability source identity binding mismatch")
+        if artifact.get("model_called") is not False:
+            raise ValueError("reliability artifact must not claim a model call")
+        if artifact.get("scope") != "isolated-reliability":
+            raise ValueError("reliability artifact requires isolated-reliability scope")
+
     if (
         not quality_ids
         and not efficiency_ids
@@ -470,6 +489,7 @@ def _validate_artifact(
             RECALL_ATTESTATION_SCHEMA_VERSION,
             EVIDENCE_ATTESTATION_SCHEMA_VERSION,
             EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION,
+            RELIABILITY_ATTESTATION_SCHEMA_VERSION,
         }
     ):
         raise ValueError(f"attestation artifact {artifact_id} is ineligible for its measurements")

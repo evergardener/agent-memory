@@ -81,6 +81,18 @@ from .am_eval_recall import (
 from .am_eval_recall import (
     RECALL_RESULT_SCHEMA_VERSION,
 )
+from .am_eval_reliability import (
+    DATASET_ID as RELIABILITY_DATASET_ID,
+)
+from .am_eval_reliability import (
+    EXPECTED_MANIFEST_SHA256 as RELIABILITY_MANIFEST_SHA256,
+)
+from .am_eval_reliability import (
+    RELIABILITY_RESULT_SCHEMA_VERSION,
+)
+from .am_eval_reliability import (
+    TABLES as RELIABILITY_TABLES,
+)
 
 ASSEMBLER_NAME = "agent-memory-am-eval-attestation-assembler"
 QUALITY_ATTESTATION_SCHEMA_VERSION = "am-eval-atomic-quality-attestation-v2"
@@ -89,6 +101,7 @@ LIFECYCLE_ATTESTATION_SCHEMA_VERSION = "am-eval-lifecycle-attestation-v2"
 RECALL_ATTESTATION_SCHEMA_VERSION = "am-eval-recall-attestation-v1"
 EVIDENCE_ATTESTATION_SCHEMA_VERSION = "am-eval-evidence-integrity-attestation-v1"
 EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION = "am-eval-episode-procedure-attestation-v1"
+RELIABILITY_ATTESTATION_SCHEMA_VERSION = "am-eval-reliability-attestation-v1"
 QUALITY_RESULT_SCHEMA_VERSION = "am-eval-atomic-quality-result-v3"
 EFFICIENCY_RESULT_SCHEMA_VERSION = "am-eval-efficiency-result-v5"
 LIFECYCLE_RESULT_SCHEMA_VERSION = "am-eval-lifecycle-run-v2"
@@ -99,6 +112,7 @@ EVIDENCE_MEASUREMENT_IDS = frozenset({"G01", "G03", "G09"})
 EPISODE_PROCEDURE_MEASUREMENT_IDS = frozenset(
     {"G04", "G08", "M04", "M09", "M10", "M11", "M12", "M13", "M14"}
 )
+RELIABILITY_MEASUREMENT_IDS = frozenset({"G07", "G10", "M18", "M19", "M20"})
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
 
 
@@ -1231,6 +1245,214 @@ def validate_episode_procedure_result(payload: object) -> dict[str, Any]:
     return payload
 
 
+def reliability_measurements(
+    payload: dict[str, Any],
+) -> dict[str, dict[str, float | int]]:
+    counts = payload["counts"]
+    return {
+        "G07": {
+            "sample_count": counts["worker_cases"],
+            "value": counts["evidence_loss_count"],
+        },
+        "G10": {
+            "sample_count": counts["restore_cases"],
+            "value": counts["restore_passed"] / counts["restore_cases"],
+        },
+        "M18": {
+            "sample_count": counts["worker_cases"],
+            "value": counts["worker_recovered"] / counts["worker_cases"],
+        },
+        "M19": {
+            "sample_count": counts["restore_cases"],
+            "value": counts["restore_passed"] / counts["restore_cases"],
+        },
+        "M20": {
+            "sample_count": counts["idempotency_cases"],
+            "value": counts["idempotency_passed"] / counts["idempotency_cases"],
+        },
+    }
+
+
+def validate_reliability_result(payload: object) -> dict[str, Any]:
+    required_keys = {
+        "case_count",
+        "contains_memory_text",
+        "contains_production_data",
+        "counts",
+        "dataset_blind",
+        "dataset_contains_memory_text",
+        "dataset_id",
+        "dataset_validation",
+        "dataset_visibility",
+        "external_data_sent",
+        "idempotency_ledger",
+        "manifest_sha256",
+        "model_called",
+        "prepare_artifact_sha256",
+        "restore_ledger",
+        "run_id",
+        "runner_runtime_environment",
+        "runner_runtime_identity",
+        "schema_version",
+        "status",
+        "system",
+        "worker_ledger",
+    }
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != required_keys
+        or payload.get("schema_version") != RELIABILITY_RESULT_SCHEMA_VERSION
+    ):
+        raise DatasetError("reliability result has an invalid schema")
+    if (
+        payload.get("dataset_id") != RELIABILITY_DATASET_ID
+        or payload.get("manifest_sha256") != RELIABILITY_MANIFEST_SHA256
+        or payload.get("dataset_visibility") != "open"
+        or payload.get("dataset_blind") is not False
+        or payload.get("dataset_contains_memory_text") is not False
+        or payload.get("dataset_validation") != "PASS"
+        or payload.get("contains_memory_text") is not False
+        or payload.get("contains_production_data") is not False
+        or payload.get("external_data_sent") is not False
+        or payload.get("model_called") is not False
+        or payload.get("status") != "PASS"
+        or payload.get("case_count") != 5
+        or not _is_sha256(payload.get("prepare_artifact_sha256"))
+    ):
+        raise DatasetError("reliability result dataset binding is invalid")
+    run_id = _require_string(payload, "run_id", label="reliability result")
+    if not run_id.startswith("hermes:automated-tests:"):
+        raise DatasetError("reliability result requires an automated run ID")
+    expected_counts = {
+        "evidence_loss_count": 0,
+        "idempotency_cases": 2,
+        "idempotency_passed": 2,
+        "restore_cases": 1,
+        "restore_passed": 1,
+        "worker_cases": 2,
+        "worker_recovered": 2,
+    }
+    if payload.get("counts") != expected_counts:
+        raise DatasetError("reliability result counts are incomplete")
+
+    workers = payload.get("worker_ledger")
+    if not isinstance(workers, list) or len(workers) != 2:
+        raise DatasetError("reliability worker ledger is incomplete")
+    workers_by_id = {
+        item.get("case_id"): item for item in workers if isinstance(item, dict)
+    }
+    if set(workers_by_id) != {"worker-outage-001", "expired-lease-001"}:
+        raise DatasetError("reliability worker case IDs are incomplete")
+    outage = workers_by_id["worker-outage-001"]
+    if (
+        set(outage)
+        != {
+            "case_id",
+            "evidence_preserved",
+            "jobs_before_recovery",
+            "jobs_expected",
+            "recovered",
+        }
+        or outage.get("evidence_preserved") is not True
+        or outage.get("jobs_before_recovery") != 2
+        or outage.get("jobs_expected") != 2
+        or outage.get("recovered") is not True
+    ):
+        raise DatasetError("reliability outage ledger did not pass")
+    lease = workers_by_id["expired-lease-001"]
+    if (
+        set(lease)
+        != {
+            "attempt_count_after",
+            "case_id",
+            "evidence_preserved",
+            "reclaimed_exact_job",
+            "recovered",
+        }
+        or lease.get("attempt_count_after") != 2
+        or lease.get("evidence_preserved") is not True
+        or lease.get("reclaimed_exact_job") is not True
+        or lease.get("recovered") is not True
+    ):
+        raise DatasetError("reliability expired lease ledger did not pass")
+
+    idempotency = payload.get("idempotency_ledger")
+    if not isinstance(idempotency, list) or len(idempotency) != 2:
+        raise DatasetError("reliability idempotency ledger is incomplete")
+    replay_by_id = {
+        item.get("case_id"): item for item in idempotency if isinstance(item, dict)
+    }
+    expected_replays = {
+        "idempotency-sequential-001": (2, 1),
+        "idempotency-concurrent-001": (8, 7),
+    }
+    if set(replay_by_id) != set(expected_replays):
+        raise DatasetError("reliability idempotency case IDs are incomplete")
+    replay_keys = {
+        "attempts",
+        "case_id",
+        "duplicate_attempts",
+        "events",
+        "jobs",
+        "passed",
+        "turns",
+        "winner_attempts",
+    }
+    for case_id, (attempts, duplicates) in expected_replays.items():
+        item = replay_by_id[case_id]
+        if (
+            set(item) != replay_keys
+            or item.get("attempts") != attempts
+            or item.get("duplicate_attempts") != duplicates
+            or item.get("winner_attempts") != 1
+            or item.get("events") != 1
+            or item.get("jobs") != 2
+            or item.get("turns") != 1
+            or item.get("passed") is not True
+        ):
+            raise DatasetError("reliability idempotency ledger did not pass")
+
+    restore = payload.get("restore_ledger")
+    restore_keys = {
+        "backup_artifact_sha256",
+        "case_id",
+        "evidence_hash_matches",
+        "migration_revision_matches",
+        "table_counts_match",
+        "table_groups_checked",
+        "vault_ciphertext_matches",
+        "vault_decrypts_in_restore",
+        "vault_decrypts_in_source",
+    }
+    if (
+        not isinstance(restore, dict)
+        or set(restore) != restore_keys
+        or restore.get("case_id") != "backup-restore-001"
+        or not _is_sha256(restore.get("backup_artifact_sha256"))
+        or restore.get("table_groups_checked") != len(RELIABILITY_TABLES)
+        or any(
+            restore.get(key) is not True
+            for key in (
+                "evidence_hash_matches",
+                "migration_revision_matches",
+                "table_counts_match",
+                "vault_ciphertext_matches",
+                "vault_decrypts_in_restore",
+                "vault_decrypts_in_source",
+            )
+        )
+    ):
+        raise DatasetError("reliability restore ledger did not pass")
+    _validate_system_identity(
+        payload.get("system"),
+        payload.get("runner_runtime_identity"),
+        payload.get("runner_runtime_environment"),
+        label="reliability result",
+    )
+    reliability_measurements(payload)
+    return payload
+
+
 def decode_attested_source(artifact: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
     encoded = artifact.get("source_artifact_base64")
     expected_sha256 = artifact.get("source_artifact_sha256")
@@ -1283,6 +1505,10 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
         validated = validate_episode_procedure_result(source)
         measurement_ids = EPISODE_PROCEDURE_MEASUREMENT_IDS
         expected_scope = "isolated-episode-procedure"
+    elif schema == RELIABILITY_ATTESTATION_SCHEMA_VERSION:
+        validated = validate_reliability_result(source)
+        measurement_ids = RELIABILITY_MEASUREMENT_IDS
+        expected_scope = "isolated-reliability"
     else:
         raise DatasetError("unsupported sourced attestation schema")
     if artifact.get("source_artifact_schema_version") != validated["schema_version"]:
@@ -1297,6 +1523,8 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
         source_measurements = evidence_measurements(validated)
     elif schema == EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION:
         source_measurements = episode_procedure_measurements(validated)
+    elif schema == RELIABILITY_ATTESTATION_SCHEMA_VERSION:
+        source_measurements = reliability_measurements(validated)
     else:
         source_measurements = validated["metrics"]
     expected_measurements = {
@@ -1317,6 +1545,7 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
             RECALL_ATTESTATION_SCHEMA_VERSION,
             EVIDENCE_ATTESTATION_SCHEMA_VERSION,
             EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION,
+            RELIABILITY_ATTESTATION_SCHEMA_VERSION,
         }
         else {
             "environment_sha256": validated["system_environment_sha256"],
@@ -1334,6 +1563,7 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
                 RECALL_ATTESTATION_SCHEMA_VERSION,
                 EVIDENCE_ATTESTATION_SCHEMA_VERSION,
                 EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION,
+                RELIABILITY_ATTESTATION_SCHEMA_VERSION,
             }
             else validated["dataset_manifest_sha256"]
         ),
@@ -1348,6 +1578,7 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
         RECALL_ATTESTATION_SCHEMA_VERSION,
         EVIDENCE_ATTESTATION_SCHEMA_VERSION,
         EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION,
+        RELIABILITY_ATTESTATION_SCHEMA_VERSION,
     }:
         source_bindings["execution_plan_sha256"] = validated["execution_plan_sha256"]
     for key, expected in source_bindings.items():
@@ -1423,6 +1654,14 @@ def assemble_attestation(
         system = source["system"]
         source_measurements = episode_procedure_measurements(source)
         source_manifest_sha256 = source["manifest_sha256"]
+    elif kind == "reliability":
+        source = validate_reliability_result(source)
+        schema = RELIABILITY_ATTESTATION_SCHEMA_VERSION
+        selected_measurements = RELIABILITY_MEASUREMENT_IDS
+        scope = "isolated-reliability"
+        system = source["system"]
+        source_measurements = reliability_measurements(source)
+        source_manifest_sha256 = source["manifest_sha256"]
     else:
         raise DatasetError("unsupported attestation source kind")
     if not isinstance(track, str) or not track.strip() or track != track.strip():
@@ -1459,7 +1698,13 @@ def assemble_attestation(
         "model_called": source["model_called"],
         "scope": scope,
     }
-    if kind not in {"lifecycle", "recall", "evidence", "episode-procedure"}:
+    if kind not in {
+        "lifecycle",
+        "recall",
+        "evidence",
+        "episode-procedure",
+        "reliability",
+    }:
         artifact["execution_plan_sha256"] = source["execution_plan_sha256"]
     if kind == "efficiency":
         artifact["terminal_jobs_complete"] = source["job_statuses"] == {
@@ -1482,6 +1727,7 @@ def main() -> None:
             "recall",
             "evidence",
             "episode-procedure",
+            "reliability",
         ),
     )
     parser.add_argument("source_result", type=Path)

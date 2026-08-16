@@ -1,0 +1,29 @@
+{
+  "schema_version": "am-eval-dataset-manifest-v1",
+  "dataset_id": "agent-memory-reliability-gold-v1",
+  "frozen_at": "2026-08-16",
+  "description": "Frozen metadata-only worker recovery, idempotency, and backup restore contracts.",
+  "visibility": "open",
+  "contains_production_data": false,
+  "contains_memory_text": false,
+  "external_data_sent": false,
+  "blind_cases": 0,
+  "case_count": 5,
+  "suite_counts": {
+    "backup_restore": 1,
+    "idempotency": 2,
+    "worker_recovery": 2
+  },
+  "files": [
+    {
+      "path": "cases.jsonl",
+      "sha256": "1bb05791bc75c13bcd097e820fc4607cb27c338fb147124e30d6b29c30ff58ca",
+      "case_count": 5,
+      "suites": [
+        "backup_restore",
+        "idempotency",
+        "worker_recovery"
+      ]
+    }
+  ]
+}

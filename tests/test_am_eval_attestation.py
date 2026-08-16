@@ -15,6 +15,7 @@ from agent_memory.am_eval_attestation import (
     evidence_measurements,
     lifecycle_measurements,
     recall_measurements,
+    reliability_measurements,
     validate_attested_source,
 )
 from agent_memory.am_eval_dataset import DatasetError
@@ -32,6 +33,10 @@ from agent_memory.am_eval_lifecycle import (
     REQUIRED_INVARIANT_COUNTS,
 )
 from agent_memory.am_eval_recall import EXPECTED_MANIFEST_SHA256 as RECALL_MANIFEST_SHA256
+from agent_memory.am_eval_reliability import (
+    EXPECTED_MANIFEST_SHA256 as RELIABILITY_MANIFEST_SHA256,
+)
+from agent_memory.am_eval_reliability import TABLES as RELIABILITY_TABLES
 
 
 def _environment() -> dict:
@@ -461,6 +466,87 @@ def _episode_procedure_result() -> dict:
     }
 
 
+def _reliability_result() -> dict:
+    return {
+        "schema_version": "am-eval-reliability-run-v1",
+        "run_id": "hermes:automated-tests:reliability-formal",
+        "dataset_id": "agent-memory-reliability-gold-v1",
+        "manifest_sha256": RELIABILITY_MANIFEST_SHA256,
+        "dataset_visibility": "open",
+        "dataset_blind": False,
+        "dataset_contains_memory_text": False,
+        "dataset_validation": "PASS",
+        "case_count": 5,
+        "counts": {
+            "evidence_loss_count": 0,
+            "idempotency_cases": 2,
+            "idempotency_passed": 2,
+            "restore_cases": 1,
+            "restore_passed": 1,
+            "worker_cases": 2,
+            "worker_recovered": 2,
+        },
+        "worker_ledger": [
+            {
+                "case_id": "worker-outage-001",
+                "evidence_preserved": True,
+                "jobs_before_recovery": 2,
+                "jobs_expected": 2,
+                "recovered": True,
+            },
+            {
+                "attempt_count_after": 2,
+                "case_id": "expired-lease-001",
+                "evidence_preserved": True,
+                "reclaimed_exact_job": True,
+                "recovered": True,
+            },
+        ],
+        "idempotency_ledger": [
+            {
+                "attempts": 2,
+                "case_id": "idempotency-sequential-001",
+                "duplicate_attempts": 1,
+                "events": 1,
+                "jobs": 2,
+                "passed": True,
+                "turns": 1,
+                "winner_attempts": 1,
+            },
+            {
+                "attempts": 8,
+                "case_id": "idempotency-concurrent-001",
+                "duplicate_attempts": 7,
+                "events": 1,
+                "jobs": 2,
+                "passed": True,
+                "turns": 1,
+                "winner_attempts": 1,
+            },
+        ],
+        "restore_ledger": {
+            "backup_artifact_sha256": "c" * 64,
+            "case_id": "backup-restore-001",
+            "evidence_hash_matches": True,
+            "migration_revision_matches": True,
+            "table_counts_match": True,
+            "table_groups_checked": len(RELIABILITY_TABLES),
+            "vault_ciphertext_matches": True,
+            "vault_decrypts_in_restore": True,
+            "vault_decrypts_in_source": True,
+        },
+        "prepare_artifact_sha256": "d" * 64,
+        "status": "PASS",
+        "contains_memory_text": False,
+        "contains_production_data": False,
+        "external_data_sent": False,
+        "model_called": False,
+        "system": _system(),
+        "runner_runtime_identity": _scorer_identity(),
+        "runner_runtime_environment": _environment(),
+    }
+
+
 def _payload(value: dict) -> bytes:
     return json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
 
@@ -772,6 +858,73 @@ def test_formal_artifact_validator_accepts_episode_procedure_measurements() -> N
         "M13",
         "M14",
     }
+
+
+def test_reliability_attestation_derives_recovery_restore_and_idempotency() -> None:
+    source = _reliability_result()
+    artifact = _assemble(source, kind="reliability", track="deterministic-reliability")
+
+    validate_attested_source(artifact)
+
+    assert artifact["measurement_ids"] == ["G07", "G10", "M18", "M19", "M20"]
+    assert artifact["measurements"] == reliability_measurements(source)
+    assert artifact["measurements"]["G07"] == {"sample_count": 2, "value": 0}
+    assert artifact["measurements"]["M19"] == {"sample_count": 1, "value": 1.0}
+
+
+def test_reliability_attestation_rejects_ledger_and_count_retyping() -> None:
+    source = _reliability_result()
+    source["worker_ledger"][1]["reclaimed_exact_job"] = False
+    with pytest.raises(DatasetError, match="expired lease ledger"):
+        _assemble(source, kind="reliability")
+
+    source = _reliability_result()
+    source["idempotency_ledger"][1]["duplicate_attempts"] = 6
+    with pytest.raises(DatasetError, match="idempotency ledger"):
+        _assemble(source, kind="reliability")
+
+    source = _reliability_result()
+    source["restore_ledger"]["vault_decrypts_in_restore"] = False
+    with pytest.raises(DatasetError, match="restore ledger"):
+        _assemble(source, kind="reliability")
+
+    source = _reliability_result()
+    source["counts"]["restore_passed"] = 0
+    with pytest.raises(DatasetError, match="counts are incomplete"):
+        _assemble(source, kind="reliability")
+
+
+def test_formal_artifact_validator_accepts_reliability_measurements() -> None:
+    source = _reliability_result()
+    artifact = _assemble(source, kind="reliability", track="deterministic-reliability")
+    payload = _payload(artifact)
+    measurements = reliability_measurements(source)
+    run = {
+        "run_id": source["run_id"],
+        "track": "deterministic-reliability",
+        "system": _system(),
+        "dataset": {
+            "id": source["dataset_id"],
+            "sha256": RELIABILITY_MANIFEST_SHA256,
+            "visibility": "open",
+            "blind": False,
+        },
+        "execution_artifact": {
+            "image_name": "ghcr.io/evergardener/agent-memory-api",
+            "manifest_digest": "sha256:" + "9" * 64,
+            "platform": "linux/arm64",
+        },
+    }
+
+    covered = am_eval._validate_artifact(
+        "reliability",
+        {"sha256": hashlib.sha256(payload).hexdigest()},
+        payload,
+        run=run,
+        supplied_measurements=measurements,
+    )
+
+    assert covered == {"G07", "G10", "M18", "M19", "M20"}
 
 
 def test_assembler_requires_confirmed_source_and_exact_oci_digest() -> None:

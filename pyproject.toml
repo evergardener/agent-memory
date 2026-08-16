@@ -66,6 +66,7 @@ agent-memory-run-lifecycle-benchmark = "agent_memory.am_eval_lifecycle:main"
 agent-memory-run-recall-benchmark = "agent_memory.am_eval_recall:main"
 agent-memory-run-evidence-benchmark = "agent_memory.am_eval_evidence:main"
 agent-memory-run-episode-procedure-benchmark = "agent_memory.am_eval_episode:main"
+agent-memory-run-reliability-benchmark = "agent_memory.am_eval_reliability:main"
 agent-memory-write-build-identity = "agent_memory.am_eval_atomic_runner:build_identity_main"
 
 [tool.hatch.build.targets.wheel]
