@@ -1,0 +1,73 @@
+{
+  "schema_version": "am-eval-full-integration-gate-v1",
+  "run_id": "hermes:automated-tests:full-integration-r20-20260816",
+  "recorded_at": "2026-08-16",
+  "scope": {
+    "production_touched": false,
+    "external_model_called": false,
+    "contains_memory_text": false,
+    "contains_production_data": false,
+    "database_endpoint": "127.0.0.1:55438",
+    "api_endpoint": "127.0.0.1:57788",
+    "api_exposure": "loopback-only",
+    "namespace_prefix": "hermes:automated-tests:"
+  },
+  "runtime_identity": {
+    "provenance": "clean-git-checkout",
+    "revision": "a21a4172d56053e1bbfae9c72245846186ead551",
+    "source_file_count": 80,
+    "source_sha256": "3ee66f872951393a303f6dce4d3c9b2f659af94f3edeef52c273e8986ea3dc59"
+  },
+  "isolated_runtime": {
+    "migration_revision": "0019_review_queue_indexes",
+    "api_ready": true,
+    "core_worker_started": true,
+    "model_enabled": false,
+    "temporary_role_had_createdb": true,
+    "per_case_database_fixture": true
+  },
+  "initial_run": {
+    "passed": 44,
+    "failed": 2,
+    "deselected": 524,
+    "failure_class": "two database-destructive runners reused a non-empty shared integration database"
+  },
+  "remediation": {
+    "commit": "a21a4172d56053e1bbfae9c72245846186ead551",
+    "change": "episode/procedure and reliability integration cases now create, migrate, and force-drop independent loopback databases",
+    "targeted_result": "2 passed"
+  },
+  "final_gates": {
+    "python_integration": "46 passed, 524 deselected",
+    "python_non_integration": "524 passed, 46 deselected",
+    "python_total_passed": 570,
+    "ruff": "PASS",
+    "frontend_tests": "6 passed",
+    "frontend_typecheck": "PASS",
+    "frontend_build": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "cleanup": {
+    "temporary_case_database_residue": 0,
+    "round_database_removed": true,
+    "temporary_role_removed": true,
+    "api_listener_removed": true,
+    "core_worker_removed": true,
+    "vault_root_key_removed": true,
+    "private_cache_directory_removed": true,
+    "production_containers_modified": false
+  },
+  "formal_evaluation": {
+    "official_metrics_updated": false,
+    "decision_remains": "INCOMPLETE",
+    "reason": "this round validates the full isolated integration surface but does not add private-blind real-model quality or production-shadow evidence",
+    "missing_required_metric_ids": [
+      "M01",
+      "M02",
+      "M03",
+      "M07",
+      "M22",
+      "M23"
+    ]
+  }
+}

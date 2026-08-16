@@ -82,6 +82,12 @@ pg_dump/pg_restore，将 G07、G10、M18–M20 从 job ledger、47 表快照、e
 [`../../docs/V1.0-AM-Eval第十九轮同镜像统一来源证明门禁报告.md`](../../docs/V1.0-AM-Eval第十九轮同镜像统一来源证明门禁报告.md)，
 复现边界见
 [`../../docs/V1.0-AM-Eval多数据集统一镜像Gate运行手册.md`](../../docs/V1.0-AM-Eval多数据集统一镜像Gate运行手册.md)。
+第二十轮在 clean Git checkout、loopback PostgreSQL/API 和 core worker 上执行全部 46 项 integration
+用例，发现并修复两个数据库破坏型用例复用共享库的问题；修复后 integration 46/46、
+non-integration 524/524、前端与静态 Gate 全部通过，且所有临时库、角色、进程和凭据均已清理。
+本轮只提升完整测试面的可重复性，不更新正式指标。证据见
+[`round-20-full-integration-gate.json`](round-20-full-integration-gate.json) 及
+[`../../docs/V1.0-AM-Eval第二十轮完整集成门禁报告.md`](../../docs/V1.0-AM-Eval第二十轮完整集成门禁报告.md)。
 
 验证冻结数据集：
 

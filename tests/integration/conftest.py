@@ -10,6 +10,8 @@ import psycopg
 import pytest
 from psycopg import sql
 
+from agent_memory.config import get_settings
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -21,7 +23,7 @@ def _database_url(base_url: str, database: str) -> str:
 
 
 @pytest.fixture
-def isolated_migrated_database_url() -> Iterator[str]:
+def isolated_migrated_database_url(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     base_url = os.getenv("AGENT_MEMORY_DATABASE_URL", "")
     if not base_url:
         pytest.skip("set AGENT_MEMORY_DATABASE_URL to an isolated PostgreSQL server")
@@ -32,16 +34,14 @@ def isolated_migrated_database_url() -> Iterator[str]:
     with psycopg.connect(admin_url, autocommit=True) as admin:
         admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database)))
     try:
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "AGENT_MEMORY_DATABASE_URL": database_url,
-                "AGENT_MEMORY_SERVICE_TOKEN": "integration-fixture-service-token",
-                "AGENT_MEMORY_UI_SESSION_SECRET": (
-                    "integration-fixture-session-secret-000000000000"
-                ),
-            }
+        monkeypatch.setenv("AGENT_MEMORY_DATABASE_URL", database_url)
+        monkeypatch.setenv("AGENT_MEMORY_SERVICE_TOKEN", "integration-fixture-service-token")
+        monkeypatch.setenv(
+            "AGENT_MEMORY_UI_SESSION_SECRET",
+            "integration-fixture-session-secret-000000000000",
         )
+        get_settings.cache_clear()
+        environment = os.environ.copy()
         subprocess.run(
             [sys.executable, "-m", "alembic", "upgrade", "head"],
             cwd=ROOT,
@@ -52,6 +52,7 @@ def isolated_migrated_database_url() -> Iterator[str]:
         )
         yield database_url
     finally:
+        get_settings.cache_clear()
         with psycopg.connect(admin_url, autocommit=True) as admin:
             admin.execute(
                 sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(database))
