@@ -1,0 +1,137 @@
+{
+  "schema_version": "am-eval-measurement-provenance-gate-v1",
+  "run_id": "agent-memory-1.0.0rc9-measurement-provenance-r12-20260816",
+  "system_revision": "955960a65c45a80d272b1c6c2b8a910b7f2039df",
+  "system_version": "1.0.0-rc.9",
+  "source_file_count": 74,
+  "source_sha256": "ee0c171d3fda7fdccf6c2f4beffb01918674faec0a8db3e0d96ab7312d2dfd43",
+  "runtime_environment": {
+    "schema_version": "am-eval-runtime-environment-v1",
+    "sha256": "25c191d909d83e3f5d8c320a59c671bf772c11e2db481816ee0611dd9e7f02ca",
+    "python_implementation": "cpython",
+    "python_version": "3.12.11",
+    "python_cache_tag": "cpython-312",
+    "critical_distribution_count": 16,
+    "content_hashes_included": true
+  },
+  "status": "MEASUREMENT_PROVENANCE_GATE_PASS_OFFICIAL_METRICS_UNCHANGED_REMOTE_CI_PENDING",
+  "official_metrics_updated": false,
+  "official_baseline": {
+    "source_run": "round-2-agent-memory.json",
+    "hard_gates_passed": 10,
+    "hard_gates_failed": 0,
+    "coverage_percent": 73,
+    "decision": "INCOMPLETE",
+    "missing_metric_ids": ["M01", "M02", "M03", "M07", "M22", "M23"]
+  },
+  "verification": {
+    "python_non_integration": {
+      "collected": 518,
+      "passed": 476,
+      "skipped_integration": 42,
+      "failed": 0
+    },
+    "isolated_postgresql": {
+      "binding": "127.0.0.1:55438",
+      "database_tests_passed": 2,
+      "cli_tests_passed": 1,
+      "temporary_database_pattern": "am_eval_*",
+      "temporary_database_residue": 0,
+      "production_namespace_connected": false
+    },
+    "loopback_model": {
+      "implementation": "real LiteLLM against an ephemeral OpenAI-compatible loopback endpoint",
+      "calls": 2,
+      "supplier_calls": 0,
+      "external_data_sent": false,
+      "quality_scorer_cli": "PASS",
+      "efficiency_scorer_cli": "PASS",
+      "wrong_quality_input_sha": "PASS_FAIL_CLOSED",
+      "wrong_efficiency_input_sha": "PASS_FAIL_CLOSED",
+      "tampered_governance_output": "PASS_FAIL_CLOSED",
+      "tampered_plan_schema": "PASS_FAIL_CLOSED"
+    },
+    "frontend": {
+      "tests_passed": 6,
+      "typecheck": "PASS",
+      "production_build": "PASS"
+    },
+    "static_gates": {
+      "ruff": "PASS",
+      "uv_lock": "PASS",
+      "shell_syntax": "PASS",
+      "git_diff_check": "PASS"
+    },
+    "review": {
+      "failed_run_scoreability": "PASS_FAIL_CLOSED",
+      "counter_inflation": "PASS_FAIL_CLOSED",
+      "dataset_hash_read_toctou": "PASS_FAIL_CLOSED",
+      "private_output_parent_toctou": "PASS_FAIL_CLOSED",
+      "settings_reload_drift": "PASS_FAIL_CLOSED",
+      "dependency_content_drift": "PASS_FAIL_CLOSED",
+      "oversized_snapshot": "PASS_FAIL_CLOSED",
+      "checkout_formal_scoring": "PASS_FAIL_CLOSED",
+      "oci_digest_confirmation_drift": "PASS_FAIL_CLOSED",
+      "remaining_reproducible_p0_p1": 0
+    }
+  },
+  "implemented_gates": [
+    "runner output v4 binds run status terminal job counts and actual model invocation counts to the frozen case count",
+    "failed runs emit a metadata-only unscoreable failure receipt and exit nonzero",
+    "quality scoring requires every planned case to be done and rejects failed or incomplete runs",
+    "isolated efficiency denominators are derived from and bounded by the same run ledger and fact limit",
+    "manifest JSONL plan scorer input and distribution files are hashed and parsed from one descriptor snapshot",
+    "private outputs retain a validated parent directory descriptor and use openat O_EXCL O_NOFOLLOW with inode revalidation",
+    "preflight freezes one Settings instance and worker policy reads reuse that validated instance",
+    "plan output and scorers bind Python platform and sixteen critical distribution versions file counts and content hashes",
+    "quality and efficiency CLI require explicit SHA confirmation of their direct input artifacts",
+    "formal aggregate input requires exact schemas actual artifact bytes current scorer identity and environment",
+    "formal PASS requires image-build-metadata provenance plus confirmed immutable OCI manifest reference and platform",
+    "main publication exports its Buildx manifest digest and downstream verification pulls and records name at digest identities"
+  ],
+  "schemas": {
+    "execution_plan": "am-eval-atomic-execution-plan-v6",
+    "runner": "am-eval-atomic-runner-v7",
+    "atomic_output": "am-eval-atomic-output-v4",
+    "failure_receipt": "am-eval-atomic-failure-receipt-v1",
+    "quality_result": "am-eval-atomic-quality-result-v2",
+    "efficiency_input": "am-eval-efficiency-input-v4",
+    "efficiency_result": "am-eval-efficiency-result-v4",
+    "runtime_environment": "am-eval-runtime-environment-v1",
+    "formal_run": "am-eval-run-v2",
+    "formal_attestation": "am-eval-run-attestation-v1",
+    "formal_result": "am-eval-result-v2",
+    "database": "0019_review_queue_indexes"
+  },
+  "remote_ci": {
+    "branch": "codex/review-queue-feedback",
+    "tested_code_revision": "955960a65c45a80d272b1c6c2b8a910b7f2039df",
+    "pull_request_created": false,
+    "workflow_triggered_for_head": false,
+    "image_contract_status": "REMOTE_CI_PENDING",
+    "images_published": false,
+    "production_deployed": false
+  },
+  "boundaries": {
+    "production_data_read": false,
+    "production_api_or_database_connected": false,
+    "production_namespace_connected": false,
+    "production_container_inventory_read": true,
+    "production_container_configuration_inspected": false,
+    "production_modified": false,
+    "external_model_called": false,
+    "external_data_sent": false,
+    "real_api_key_read": false,
+    "repository_contains_real_api_key": false
+  },
+  "remaining_requirements": [
+    "create or authorize a pull request to run source-and-unit and image-contract on GitHub-hosted runners without merging",
+    "build or publish the final revision and retain the exact OCI manifest digest evidence artifact",
+    "create and independently review a private blind dataset outside the repository",
+    "provide a repository-outside non-production model key and exact synthetic external-data confirmation before supplier shakedown",
+    "run the 24-case public synthetic supplier diagnostic in a fresh loopback database",
+    "authorize private blind external transmission separately before measuring M01 M02 M03 and M07",
+    "authorize a production-shadow observation window separately before measuring official M22",
+    "measure M23 from the same bound terminal-job window and assemble formal attestation artifacts"
+  ]
+}

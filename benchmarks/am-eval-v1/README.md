@@ -41,6 +41,10 @@
 第十一轮将 Git checkout、实际执行 package、镜像 build identity、plan/output 和评分器绑定到同一个
 运行源身份，证据见 [`round-11-runtime-identity-gate.json`](round-11-runtime-identity-gate.json) 及
 [`../../docs/V1.0-AM-Eval第十一轮运行身份绑定门禁报告.md`](../../docs/V1.0-AM-Eval第十一轮运行身份绑定门禁报告.md)。
+第十二轮将任务终态与实际模型调用账本、数据集/输出文件描述符快照、评分输入 SHA、Python/依赖文件
+指纹、正式测量 attestation 和精确 OCI digest 绑定纳入 fail-closed Gate，证据见
+[`round-12-measurement-provenance-gate.json`](round-12-measurement-provenance-gate.json) 及
+[`../../docs/V1.0-AM-Eval第十二轮测量来源与执行完整性门禁报告.md`](../../docs/V1.0-AM-Eval第十二轮测量来源与执行完整性门禁报告.md)。
 
 验证冻结数据集：
 
@@ -56,8 +60,8 @@ uv run agent-memory-validate-benchmark-dataset \
 ```
 
 M01/M02/M03/M07 使用
-`agent-memory-score-atomic-quality <manifest> <output> --plan <plan> --confirm-plan-sha256 <sha> --confirm-source-sha256 <sha>`；M22/M23 使用
-`agent-memory-score-efficiency <aggregate-input> --manifest <manifest> --plan <plan> --confirm-plan-sha256 <sha> --confirm-source-sha256 <sha>`。两个评分器都会完整校验 plan，并核对当前评分代码、run/model/policy、数据治理字段与输出身份。合成 oracle 只验证评分器
+`agent-memory-score-atomic-quality <manifest> <output> --plan <plan> --confirm-plan-sha256 <sha> --confirm-source-sha256 <sha> --confirm-output-sha256 <sha>`；M22/M23 使用
+`agent-memory-score-efficiency <aggregate-input> --manifest <manifest> --plan <plan> --confirm-plan-sha256 <sha> --confirm-source-sha256 <sha> --confirm-input-sha256 <sha>`。两个评分器都会完整校验 plan，并核对当前评分代码、Python/关键依赖实际安装文件、run/model/policy、数据治理字段与输入工件 SHA。合成 oracle 只验证评分器
 算术，不能写入正式 run。真实外部模型运行必须先用 `agent-memory-plan-atomic-benchmark` 在仓库外生成
 metadata-only execution plan，再以 `agent-memory-preflight-atomic-benchmark` 完成零网络预检，最后由
 `agent-memory-run-atomic-benchmark` 在全新 `am_eval_` 隔离数据库执行；合成与生产派生数据使用不同
@@ -68,9 +72,13 @@ metadata-only execution plan，再以 `agent-memory-preflight-atomic-benchmark` 
 运行评分器：
 
 ```bash
+SPEC_SHA="$(shasum -a 256 benchmarks/am-eval-v1/spec.json | awk '{print $1}')"
+RUN_SHA="$(shasum -a 256 benchmarks/am-eval-v1/round-2-agent-memory.json | awk '{print $1}')"
 uv run agent-memory-benchmark \
   benchmarks/am-eval-v1/spec.json \
-  benchmarks/am-eval-v1/round-2-agent-memory.json
+  benchmarks/am-eval-v1/round-2-agent-memory.json \
+  --confirm-spec-sha256 "$SPEC_SHA" \
+  --confirm-run-sha256 "$RUN_SHA"
 ```
 
 规则：
@@ -81,3 +89,5 @@ uv run agent-memory-benchmark \
 - 不在本目录保存生产消息正文、模型 prompt/response、凭据或 Vault 明文。
 - 公开 development/validation 样本只用于回归，不得计为 blind benchmark。
 - 真实/生产派生 blind 数据只能保存在私有、受限目录；公开仓库只提交 manifest 摘要和聚合结果。
+- 完整正式 run 只能在 `image-build-metadata` 运行身份下评分，并必须由操作员再次确认
+  `name@sha256:<manifest-digest>` 与 `linux/amd64|linux/arm64`；Git checkout 只用于诊断。
