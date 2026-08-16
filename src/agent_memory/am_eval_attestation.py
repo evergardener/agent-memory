@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import math
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -16,13 +17,31 @@ from .am_eval_atomic_runner import (
 )
 from .am_eval_dataset import DatasetError, read_file_snapshot
 from .am_eval_environment import validate_runtime_environment_identity
+from .am_eval_lifecycle import (
+    DATASET_ID as LIFECYCLE_DATASET_ID,
+)
+from .am_eval_lifecycle import (
+    EXPECTED_CASE_COUNT as LIFECYCLE_CASE_COUNT,
+)
+from .am_eval_lifecycle import (
+    EXPECTED_MANIFEST_SHA256 as LIFECYCLE_MANIFEST_SHA256,
+)
+from .am_eval_lifecycle import (
+    REQUIRED_ACTION_COUNTS as LIFECYCLE_ACTION_COUNTS,
+)
+from .am_eval_lifecycle import (
+    REQUIRED_INVARIANT_COUNTS as LIFECYCLE_INVARIANT_COUNTS,
+)
 
 ASSEMBLER_NAME = "agent-memory-am-eval-attestation-assembler"
 QUALITY_ATTESTATION_SCHEMA_VERSION = "am-eval-atomic-quality-attestation-v2"
 EFFICIENCY_ATTESTATION_SCHEMA_VERSION = "am-eval-efficiency-attestation-v2"
+LIFECYCLE_ATTESTATION_SCHEMA_VERSION = "am-eval-lifecycle-attestation-v2"
 QUALITY_RESULT_SCHEMA_VERSION = "am-eval-atomic-quality-result-v3"
 EFFICIENCY_RESULT_SCHEMA_VERSION = "am-eval-efficiency-result-v5"
+LIFECYCLE_RESULT_SCHEMA_VERSION = "am-eval-lifecycle-run-v2"
 QUALITY_METRIC_IDS = frozenset({"M01", "M02", "M03", "M07"})
+LIFECYCLE_MEASUREMENT_IDS = frozenset({"G05", "G06", "M15", "M16", "M17"})
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
 
 
@@ -381,6 +400,120 @@ def validate_efficiency_result(payload: object) -> dict[str, Any]:
     return payload
 
 
+def lifecycle_measurements(payload: dict[str, Any]) -> dict[str, dict[str, float | int]]:
+    invariant_counts = payload["invariant_pass_counts"]
+    namespace_expected = LIFECYCLE_INVARIANT_COUNTS["namespace_denied"]
+    current_expected = LIFECYCLE_INVARIANT_COUNTS["current_hidden"]
+    purge_expected = LIFECYCLE_INVARIANT_COUNTS["purge_residue_zero"]
+    purge_cases = sum(item["action"] == "purge" for item in payload["cases"])
+    purge_passed = sum(
+        item["action"] == "purge" and item["status"] == "PASS" for item in payload["cases"]
+    )
+    return {
+        "G05": {
+            "sample_count": current_expected,
+            "value": current_expected - invariant_counts["current_hidden"],
+        },
+        "G06": {
+            "sample_count": purge_expected,
+            "value": purge_expected - invariant_counts["purge_residue_zero"],
+        },
+        "M15": {
+            "sample_count": payload["case_count"],
+            "value": payload["passed"] / payload["case_count"],
+        },
+        "M16": {
+            "sample_count": purge_cases,
+            "value": purge_passed / purge_cases,
+        },
+        "M17": {
+            "sample_count": namespace_expected,
+            "value": invariant_counts["namespace_denied"] / namespace_expected,
+        },
+    }
+
+
+def validate_lifecycle_result(payload: object) -> dict[str, Any]:
+    required_keys = {
+        "action_counts",
+        "case_count",
+        "cases",
+        "contains_memory_text",
+        "contains_production_data",
+        "dataset_blind",
+        "dataset_id",
+        "dataset_validation",
+        "dataset_visibility",
+        "external_data_sent",
+        "failed",
+        "invariant_pass_counts",
+        "manifest_sha256",
+        "model_called",
+        "passed",
+        "run_id",
+        "runner_runtime_environment",
+        "runner_runtime_identity",
+        "schema_version",
+        "status",
+        "system",
+    }
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != required_keys
+        or payload.get("schema_version") != LIFECYCLE_RESULT_SCHEMA_VERSION
+    ):
+        raise DatasetError("lifecycle result has an invalid schema")
+    if (
+        payload.get("dataset_id") != LIFECYCLE_DATASET_ID
+        or payload.get("manifest_sha256") != LIFECYCLE_MANIFEST_SHA256
+        or payload.get("dataset_visibility") != "open"
+        or payload.get("dataset_blind") is not False
+        or payload.get("dataset_validation") != "PASS"
+        or payload.get("contains_memory_text") is not False
+        or payload.get("contains_production_data") is not False
+        or payload.get("external_data_sent") is not False
+        or payload.get("model_called") is not False
+    ):
+        raise DatasetError("lifecycle result dataset or data-governance binding is invalid")
+    _require_string(payload, "run_id", label="lifecycle result")
+    if (
+        payload.get("case_count") != LIFECYCLE_CASE_COUNT
+        or payload.get("passed") != LIFECYCLE_CASE_COUNT
+        or payload.get("failed") != 0
+        or payload.get("status") != "PASS"
+        or payload.get("action_counts") != LIFECYCLE_ACTION_COUNTS
+        or payload.get("invariant_pass_counts") != LIFECYCLE_INVARIANT_COUNTS
+    ):
+        raise DatasetError("lifecycle result is not a complete frozen lifecycle run")
+    cases = payload.get("cases")
+    if (
+        not isinstance(cases, list)
+        or len(cases) != LIFECYCLE_CASE_COUNT
+        or any(
+            not isinstance(item, dict)
+            or set(item) != {"action", "case_id", "error_code", "status"}
+            or not isinstance(item.get("case_id"), str)
+            or not item["case_id"]
+            or item.get("action") not in LIFECYCLE_ACTION_COUNTS
+            or item.get("status") != "PASS"
+            or item.get("error_code") is not None
+            for item in cases
+        )
+        or len({item["case_id"] for item in cases}) != LIFECYCLE_CASE_COUNT
+        or dict(sorted(Counter(item["action"] for item in cases).items()))
+        != LIFECYCLE_ACTION_COUNTS
+    ):
+        raise DatasetError("lifecycle result cases are incomplete")
+    _validate_system_identity(
+        payload.get("system"),
+        payload.get("runner_runtime_identity"),
+        payload.get("runner_runtime_environment"),
+        label="lifecycle result",
+    )
+    lifecycle_measurements(payload)
+    return payload
+
+
 def decode_attested_source(artifact: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
     encoded = artifact.get("source_artifact_base64")
     expected_sha256 = artifact.get("source_artifact_sha256")
@@ -417,14 +550,23 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
         validated = validate_efficiency_result(source)
         measurement_ids = frozenset({"M23"})
         expected_scope = "isolated"
+    elif schema == LIFECYCLE_ATTESTATION_SCHEMA_VERSION:
+        validated = validate_lifecycle_result(source)
+        measurement_ids = LIFECYCLE_MEASUREMENT_IDS
+        expected_scope = "isolated-lifecycle"
     else:
         raise DatasetError("unsupported sourced attestation schema")
     if artifact.get("source_artifact_schema_version") != validated["schema_version"]:
         raise DatasetError("attestation source schema binding mismatch")
     if artifact.get("source_artifact_sha256") != hashlib.sha256(payload).hexdigest():
         raise DatasetError("attestation source SHA-256 binding mismatch")
+    source_measurements = (
+        lifecycle_measurements(validated)
+        if schema == LIFECYCLE_ATTESTATION_SCHEMA_VERSION
+        else validated["metrics"]
+    )
     expected_measurements = {
-        metric_id: validated["metrics"][metric_id] for metric_id in measurement_ids
+        metric_id: source_measurements[metric_id] for metric_id in measurement_ids
     }
     if artifact.get("measurement_ids") != sorted(measurement_ids):
         raise DatasetError("attestation measurement IDs differ from the source result")
@@ -434,7 +576,7 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
         raise DatasetError("attestation scope differs from the source result")
     source_system = (
         validated["system"]
-        if schema == QUALITY_ATTESTATION_SCHEMA_VERSION
+        if schema in {QUALITY_ATTESTATION_SCHEMA_VERSION, LIFECYCLE_ATTESTATION_SCHEMA_VERSION}
         else {
             "environment_sha256": validated["system_environment_sha256"],
             "revision": validated["system_revision"],
@@ -443,14 +585,19 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
     )
     source_bindings = {
         "blind": validated["dataset_blind"],
-        "dataset_manifest_sha256": validated["dataset_manifest_sha256"],
+        "dataset_manifest_sha256": (
+            validated["manifest_sha256"]
+            if schema == LIFECYCLE_ATTESTATION_SCHEMA_VERSION
+            else validated["dataset_manifest_sha256"]
+        ),
         "dataset_visibility": validated["dataset_visibility"],
-        "execution_plan_sha256": validated["execution_plan_sha256"],
         "model_called": validated["model_called"],
         "system_environment_sha256": source_system["environment_sha256"],
         "system_revision": source_system["revision"],
         "system_source_sha256": source_system["source_sha256"],
     }
+    if schema != LIFECYCLE_ATTESTATION_SCHEMA_VERSION:
+        source_bindings["execution_plan_sha256"] = validated["execution_plan_sha256"]
     for key, expected in source_bindings.items():
         if artifact.get(key) != expected:
             raise DatasetError(f"attestation {key} differs from the source result")
@@ -478,6 +625,8 @@ def assemble_attestation(
             raise DatasetError("quality attestation has invalid measurement IDs")
         scope = "private-blind"
         system = source["system"]
+        source_measurements = source["metrics"]
+        source_manifest_sha256 = source["dataset_manifest_sha256"]
     elif kind == "efficiency":
         source = validate_efficiency_result(source)
         schema = EFFICIENCY_ATTESTATION_SCHEMA_VERSION
@@ -488,6 +637,16 @@ def assemble_attestation(
             "revision": source["system_revision"],
             "source_sha256": source["system_source_sha256"],
         }
+        source_measurements = source["metrics"]
+        source_manifest_sha256 = source["dataset_manifest_sha256"]
+    elif kind == "lifecycle":
+        source = validate_lifecycle_result(source)
+        schema = LIFECYCLE_ATTESTATION_SCHEMA_VERSION
+        selected_measurements = LIFECYCLE_MEASUREMENT_IDS
+        scope = "isolated-lifecycle"
+        system = source["system"]
+        source_measurements = lifecycle_measurements(source)
+        source_manifest_sha256 = source["manifest_sha256"]
     else:
         raise DatasetError("unsupported attestation source kind")
     if not isinstance(track, str) or not track.strip() or track != track.strip():
@@ -509,12 +668,12 @@ def assemble_attestation(
         "source_artifact_base64": base64.b64encode(source_payload).decode("ascii"),
         "measurement_ids": sorted(selected_measurements),
         "measurements": {
-            metric_id: source["metrics"][metric_id] for metric_id in sorted(selected_measurements)
+            metric_id: source_measurements[metric_id] for metric_id in sorted(selected_measurements)
         },
         "system_environment_sha256": system["environment_sha256"],
         "system_revision": system["revision"],
         "system_source_sha256": system["source_sha256"],
-        "dataset_manifest_sha256": source["dataset_manifest_sha256"],
+        "dataset_manifest_sha256": source_manifest_sha256,
         "track": track,
         "dataset_visibility": source["dataset_visibility"],
         "blind": source["dataset_blind"],
@@ -523,8 +682,9 @@ def assemble_attestation(
         "contains_memory_text": False,
         "model_called": source["model_called"],
         "scope": scope,
-        "execution_plan_sha256": source["execution_plan_sha256"],
     }
+    if kind != "lifecycle":
+        artifact["execution_plan_sha256"] = source["execution_plan_sha256"]
     if kind == "efficiency":
         artifact["terminal_jobs_complete"] = source["job_statuses"] == {
             "done": source["case_count"]
@@ -537,7 +697,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Bind a verified AM-Eval scorer result into a sourced attestation."
     )
-    parser.add_argument("kind", choices=("quality", "efficiency"))
+    parser.add_argument("kind", choices=("quality", "efficiency", "lifecycle"))
     parser.add_argument("source_result", type=Path)
     parser.add_argument("--confirm-source-sha256", required=True)
     parser.add_argument("--track", required=True)

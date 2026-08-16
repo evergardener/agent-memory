@@ -10,8 +10,7 @@ import psycopg
 import pytest
 from psycopg import sql
 
-from agent_memory.am_eval_dataset import load_dataset
-from agent_memory.am_eval_lifecycle import run_lifecycle_cases, validate_lifecycle_dataset
+from agent_memory.am_eval_dataset import sha256_file
 
 pytestmark = [
     pytest.mark.integration,
@@ -33,7 +32,7 @@ def _database_url(base_url: str, database: str) -> str:
     return urlunsplit(parsed._replace(path=f"/{database}"))
 
 
-def test_all_frozen_lifecycle_cases_pass_in_a_dedicated_database() -> None:
+def test_all_frozen_lifecycle_cases_pass_in_a_dedicated_database(tmp_path: Path) -> None:
     if not BASE_DATABASE_URL:
         pytest.skip("set AGENT_MEMORY_DATABASE_URL to an isolated PostgreSQL server")
     database = f"am_eval_lifecycle_{uuid4().hex}"
@@ -60,21 +59,41 @@ def test_all_frozen_lifecycle_cases_pass_in_a_dedicated_database() -> None:
             capture_output=True,
             text=True,
         )
-        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-        cases = load_dataset(MANIFEST_PATH)
-        validate_lifecycle_dataset(manifest, cases)
-        with psycopg.connect(database_url) as connection:
-            result = run_lifecycle_cases(
-                connection,
-                cases=cases,
-                namespace_prefix="hermes:automated-tests:am-eval-lifecycle-integration",
-            )
+        tmp_path.chmod(0o700)
+        output_path = tmp_path / "lifecycle-output.json"
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "agent_memory.am_eval_lifecycle",
+                str(MANIFEST_PATH),
+                "--output",
+                str(output_path),
+                "--namespace-prefix",
+                "hermes:automated-tests:am-eval-lifecycle-integration",
+                "--confirm-sha256",
+                sha256_file(MANIFEST_PATH),
+            ],
+            cwd=ROOT,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0, completed.stderr
+        result = json.loads(output_path.read_text(encoding="utf-8"))
 
         assert result["status"] == "PASS"
+        assert result["schema_version"] == "am-eval-lifecycle-run-v2"
         assert result["passed"] == result["case_count"] == 20
         assert result["failed"] == 0
         assert result["contains_memory_text"] is False
         assert result["external_data_sent"] is False
+        assert result["runner_runtime_identity"]["provenance"] == "clean-git-checkout"
+        assert (
+            result["runner_runtime_environment"]["sha256"] == result["system"]["environment_sha256"]
+        )
+        assert output_path.stat().st_mode & 0o777 == 0o600
     finally:
         with psycopg.connect(admin_url, autocommit=True) as admin:
             admin.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(database)))

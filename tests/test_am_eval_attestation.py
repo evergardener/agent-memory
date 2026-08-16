@@ -11,12 +11,18 @@ from agent_memory.am_eval import evaluate_run, formal_run_payload_sha256
 from agent_memory.am_eval_atomic_runner import RuntimeIdentity
 from agent_memory.am_eval_attestation import (
     assemble_attestation,
+    lifecycle_measurements,
     validate_attested_source,
 )
 from agent_memory.am_eval_dataset import DatasetError
 from agent_memory.am_eval_environment import (
     RUNTIME_DISTRIBUTIONS,
     build_runtime_environment_identity,
+)
+from agent_memory.am_eval_lifecycle import (
+    EXPECTED_MANIFEST_SHA256,
+    REQUIRED_ACTION_COUNTS,
+    REQUIRED_INVARIANT_COUNTS,
 )
 
 
@@ -153,17 +159,56 @@ def _efficiency_result() -> dict:
     }
 
 
+def _lifecycle_result() -> dict:
+    cases = []
+    index = 0
+    for action, count in REQUIRED_ACTION_COUNTS.items():
+        for _offset in range(count):
+            index += 1
+            cases.append(
+                {
+                    "case_id": f"lifecycle-{index:03d}",
+                    "action": action,
+                    "status": "PASS",
+                    "error_code": None,
+                }
+            )
+    return {
+        "schema_version": "am-eval-lifecycle-run-v2",
+        "run_id": "formal-run-1",
+        "case_count": 20,
+        "passed": 20,
+        "failed": 0,
+        "action_counts": dict(REQUIRED_ACTION_COUNTS),
+        "invariant_pass_counts": dict(REQUIRED_INVARIANT_COUNTS),
+        "cases": cases,
+        "status": "PASS",
+        "contains_memory_text": False,
+        "contains_production_data": False,
+        "external_data_sent": False,
+        "dataset_id": "agent-memory-lifecycle-gold-v1",
+        "manifest_sha256": EXPECTED_MANIFEST_SHA256,
+        "dataset_visibility": "open",
+        "dataset_blind": False,
+        "dataset_validation": "PASS",
+        "model_called": False,
+        "system": _system(),
+        "runner_runtime_identity": _scorer_identity(),
+        "runner_runtime_environment": _environment(),
+    }
+
+
 def _payload(value: dict) -> bytes:
     return json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
 
 
-def _assemble(source: dict, *, kind: str) -> dict:
+def _assemble(source: dict, *, kind: str, track: str = "recommended-product") -> dict:
     payload = _payload(source)
     return assemble_attestation(
         payload,
         source_sha256=hashlib.sha256(payload).hexdigest(),
         kind=kind,
-        track="recommended-product",
+        track=track,
         image_reference="ghcr.io/evergardener/agent-memory-api@sha256:" + "9" * 64,
         image_platform="linux/arm64",
     )
@@ -225,6 +270,26 @@ def test_efficiency_result_metric_must_match_bound_counts() -> None:
 
     with pytest.raises(DatasetError, match="M23 differs from scorer counts"):
         _assemble(source, kind="efficiency")
+
+
+def test_lifecycle_attestation_derives_frozen_gates_and_governance_metrics() -> None:
+    source = _lifecycle_result()
+    artifact = _assemble(source, kind="lifecycle", track="deterministic-lifecycle")
+
+    validate_attested_source(artifact)
+
+    assert artifact["measurement_ids"] == ["G05", "G06", "M15", "M16", "M17"]
+    assert artifact["measurements"] == lifecycle_measurements(source)
+    assert artifact["measurements"]["G05"] == {"sample_count": 3, "value": 0}
+    assert artifact["measurements"]["M15"] == {"sample_count": 20, "value": 1.0}
+
+
+def test_lifecycle_attestation_rejects_invariant_counter_retyping() -> None:
+    source = _lifecycle_result()
+    source["invariant_pass_counts"]["namespace_denied"] = 5
+
+    with pytest.raises(DatasetError, match="complete frozen lifecycle run"):
+        _assemble(source, kind="lifecycle")
 
 
 def test_assembler_requires_confirmed_source_and_exact_oci_digest() -> None:
@@ -374,3 +439,107 @@ def test_formal_run_accepts_sourced_isolated_m23_artifact(
 
     assert result["decision"] == "PASS"
     assert result["attestation"]["status"] == "verified"
+
+
+def test_formal_run_accepts_sourced_lifecycle_measurements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _lifecycle_result()
+    artifact = _assemble(source, kind="lifecycle", track="deterministic-lifecycle")
+    artifact_payload = _payload(artifact)
+    system = _system()
+    image_name = "ghcr.io/evergardener/agent-memory-api"
+    manifest_digest = "sha256:" + "9" * 64
+    image_reference = f"{image_name}@{manifest_digest}"
+    measurements = lifecycle_measurements(source)
+    run = {
+        "schema_version": "am-eval-run-v2",
+        "benchmark_id": "am-eval-lifecycle-test",
+        "run_id": "formal-run-1",
+        "system": system,
+        "track": "deterministic-lifecycle",
+        "dataset": {
+            "id": "agent-memory-lifecycle-gold-v1",
+            "sha256": EXPECTED_MANIFEST_SHA256,
+            "visibility": "open",
+            "blind": False,
+        },
+        "execution_artifact": {
+            "type": "oci-image",
+            "image_name": image_name,
+            "manifest_digest": manifest_digest,
+            "platform": "linux/arm64",
+        },
+        "hard_gates": {
+            item_id: {**measurements[item_id], "evidence": ["lifecycle"]}
+            for item_id in ("G05", "G06")
+        },
+        "metrics": {
+            item_id: {**measurements[item_id], "evidence": ["lifecycle"]}
+            for item_id in ("M15", "M16", "M17")
+        },
+        "attestation": {
+            "schema_version": "am-eval-run-attestation-v1",
+            "claim": "OFFICIAL_AM_EVAL_RUN",
+            "system_environment_sha256": system["environment_sha256"],
+            "system_revision": system["revision"],
+            "system_source_sha256": system["source_sha256"],
+            "dataset_manifest_sha256": EXPECTED_MANIFEST_SHA256,
+            "track": "deterministic-lifecycle",
+            "image_reference": image_reference,
+            "image_platform": "linux/arm64",
+            "artifacts": {"lifecycle": {"sha256": hashlib.sha256(artifact_payload).hexdigest()}},
+        },
+    }
+    run["attestation"]["run_payload_sha256"] = formal_run_payload_sha256(run)
+    spec = {
+        "benchmark_id": "am-eval-lifecycle-test",
+        "hard_gates": [
+            {
+                "id": item_id,
+                "name": item_id,
+                "operator": "eq",
+                "threshold": 0,
+                "required": True,
+            }
+            for item_id in ("G05", "G06")
+        ],
+        "metrics": [
+            {
+                "id": item_id,
+                "name": item_id,
+                "dimension": "lifecycle",
+                "weight": weight,
+                "required": True,
+                "minimum": 0,
+                "maximum": 1,
+                "scoring": {"mode": "higher", "target": 1.0},
+            }
+            for item_id, weight in (("M15", 34), ("M16", 33), ("M17", 33))
+        ],
+        "release_policy": {"minimum_score": 85},
+    }
+    monkeypatch.setattr(
+        am_eval,
+        "resolve_runtime_identity",
+        lambda: RuntimeIdentity(
+            revision=system["revision"],
+            version=system["version"],
+            source_sha256=system["source_sha256"],
+            source_file_count=system["source_file_count"],
+            provenance="image-build-metadata",
+            source_root=am_eval.Path("/private/tmp/am-eval-test"),
+        ),
+    )
+    monkeypatch.setattr(am_eval, "runtime_environment_identity", _environment)
+
+    result = evaluate_run(
+        spec,
+        run,
+        artifact_payloads={"lifecycle": artifact_payload},
+        confirm_image_reference=image_reference,
+        confirm_image_platform="linux/arm64",
+    )
+
+    assert result["decision"] == "PASS"
+    assert result["hard_gate_summary"]["passed"] == 2

@@ -13,11 +13,18 @@ from uuid import UUID, uuid4
 from psycopg import Connection, connect
 
 from .am_eval_atomic_runner import (
+    discover_runtime_source_root,
+    resolve_runtime_identity,
     validate_isolated_database_url,
     validate_private_output,
     write_private_json,
 )
-from .am_eval_dataset import DatasetError, load_dataset, sha256_file, validate_lifecycle_case
+from .am_eval_dataset import (
+    DatasetError,
+    load_dataset_snapshot,
+    validate_lifecycle_case,
+)
+from .am_eval_environment import runtime_environment_identity
 from .current_state import expire_due_current_items, transition_current_item, upsert_current_item
 from .ids import stable_uuid
 from .repository import (
@@ -41,6 +48,7 @@ from .schemas import (
 from .worker import process_purge
 
 DATASET_ID = "agent-memory-lifecycle-gold-v1"
+EXPECTED_MANIFEST_SHA256 = "fe14754d58113181fb0b49a42169a5cd1acf52ccea75a3ce40d5375ccbc757c5"
 EXPECTED_CASE_FILE_SHA256 = "62cb844821ce7ba4c211d20af7650583ab8ab8bc04b1b8ffd9c3591a4db114d0"
 REQUIRED_ACTION_COUNTS = {
     "confirm": 2,
@@ -56,6 +64,19 @@ REQUIRED_ACTION_COUNTS = {
 }
 EXPECTED_CASE_COUNT = sum(REQUIRED_ACTION_COUNTS.values())
 EXPECTED_SPLIT_COUNTS = {"development": 10, "validation": 10}
+REQUIRED_INVARIANT_COUNTS = {
+    "action_audited": 12,
+    "correction_evidence_preserved": 2,
+    "current_hidden": 3,
+    "entity_links_preserved": 3,
+    "evidence_preserved": 2,
+    "namespace_denied": 6,
+    "purge_confirmation_required": 1,
+    "purge_residue_zero": 1,
+    "recall_excluded": 6,
+    "stale_version_rejected": 1,
+    "state_changed": 11,
+}
 
 
 def _validate_lifecycle_case_coverage(
@@ -814,12 +835,14 @@ def main() -> None:
     parser.add_argument("--confirm-sha256", required=True)
     arguments = parser.parse_args()
     try:
-        manifest_path = arguments.manifest.expanduser().resolve()
-        manifest_sha256 = sha256_file(manifest_path)
+        dataset = load_dataset_snapshot(arguments.manifest)
+        manifest_sha256 = dataset.manifest_sha256
         if arguments.confirm_sha256.casefold() != manifest_sha256:
             raise DatasetError("--confirm-sha256 does not match the frozen manifest")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        cases = load_dataset(manifest_path)
+        if manifest_sha256 != EXPECTED_MANIFEST_SHA256:
+            raise DatasetError("lifecycle manifest differs from the official frozen dataset")
+        manifest = dataset.manifest
+        cases = dataset.cases
         validation = validate_lifecycle_dataset(manifest, cases)
         database_url = os.getenv("AGENT_MEMORY_DATABASE_URL", "")
         if not database_url:
@@ -827,8 +850,10 @@ def main() -> None:
         validate_isolated_database_url(database_url)
         output_path = validate_private_output(
             arguments.output,
-            forbidden_root=Path(__file__).parents[2],
+            forbidden_root=discover_runtime_source_root(),
         )
+        runtime_identity = resolve_runtime_identity()
+        runtime_environment = runtime_environment_identity()
         with connect(database_url) as connection:
             result = run_lifecycle_cases(
                 connection,
@@ -837,9 +862,30 @@ def main() -> None:
             )
         output = {
             **result,
+            "schema_version": "am-eval-lifecycle-run-v2",
+            "run_id": arguments.namespace_prefix,
             "dataset_id": DATASET_ID,
             "manifest_sha256": manifest_sha256,
+            "dataset_visibility": manifest["visibility"],
+            "dataset_blind": False,
             "dataset_validation": validation["status"],
+            "model_called": False,
+            "system": {
+                "environment_sha256": runtime_environment["sha256"],
+                "name": "agent-memory",
+                "revision": runtime_identity.revision,
+                "source_file_count": runtime_identity.source_file_count,
+                "source_sha256": runtime_identity.source_sha256,
+                "version": runtime_identity.version,
+            },
+            "runner_runtime_identity": {
+                "provenance": runtime_identity.provenance,
+                "revision": runtime_identity.revision,
+                "source_file_count": runtime_identity.source_file_count,
+                "source_sha256": runtime_identity.source_sha256,
+                "version": runtime_identity.version,
+            },
+            "runner_runtime_environment": runtime_environment,
         }
         write_private_json(output_path, output)
     except (DatasetError, json.JSONDecodeError, OSError) as error:

@@ -10,6 +10,7 @@ from typing import Any
 from .am_eval_atomic_runner import resolve_runtime_identity
 from .am_eval_attestation import (
     EFFICIENCY_ATTESTATION_SCHEMA_VERSION,
+    LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
     QUALITY_ATTESTATION_SCHEMA_VERSION,
     validate_attested_source,
 )
@@ -28,7 +29,7 @@ ARTIFACT_PRODUCERS = {
     "am-eval-measurement-attestation-v1": "agent-memory-am-eval-attestation-assembler",
     QUALITY_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
     EFFICIENCY_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
-    "am-eval-lifecycle-attestation-v1": "agent-memory-am-eval-attestation-assembler",
+    LIFECYCLE_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
 }
 
 
@@ -256,6 +257,7 @@ def _validate_artifact(
     if schema_version in {
         QUALITY_ATTESTATION_SCHEMA_VERSION,
         EFFICIENCY_ATTESTATION_SCHEMA_VERSION,
+        LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
     }:
         try:
             source_result = validate_attested_source(artifact)
@@ -371,13 +373,33 @@ def _validate_artifact(
     elif schema_version == EFFICIENCY_ATTESTATION_SCHEMA_VERSION:
         raise ValueError("efficiency artifact must attest M22 or M23")
 
+    if schema_version == LIFECYCLE_ATTESTATION_SCHEMA_VERSION:
+        assert source_result is not None
+        if artifact_measurements != {
+            "G05",
+            "G06",
+            "M15",
+            "M16",
+            "M17",
+        }:
+            raise ValueError("lifecycle artifact has invalid measurement coverage")
+        if (
+            source_result["run_id"] != run["run_id"]
+            or source_result["dataset_id"] != dataset["id"]
+            or source_result["system"]["version"] != system["version"]
+            or source_result["system"]["source_file_count"] != system["source_file_count"]
+        ):
+            raise ValueError("formal lifecycle source identity binding mismatch")
+        if artifact.get("model_called") is not False:
+            raise ValueError("lifecycle artifact must not claim a model call")
+
     if (
         not quality_ids
         and not efficiency_ids
         and schema_version
         not in {
             "am-eval-measurement-attestation-v1",
-            "am-eval-lifecycle-attestation-v1",
+            LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
         }
     ):
         raise ValueError(f"attestation artifact {artifact_id} is ineligible for its measurements")
