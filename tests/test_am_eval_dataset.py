@@ -13,6 +13,7 @@ from agent_memory.am_eval_dataset import (
     load_dataset,
     load_dataset_snapshot,
     load_jsonl,
+    read_file_snapshot,
     sha256_file,
     validate_atomic_fact_case,
 )
@@ -424,6 +425,26 @@ def test_snapshot_reader_rejects_oversized_files_before_reading(tmp_path: Path) 
 
     with pytest.raises(DatasetError, match="snapshot size limit"):
         sha256_file(oversized)
+
+
+def test_snapshot_reader_only_allows_non_owner_read_only_runtime_hardlinks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = tmp_path / "runtime-metadata"
+    linked = tmp_path / "runtime-metadata-link"
+    original.write_bytes(b"immutable-runtime-metadata")
+    linked.hardlink_to(original)
+    original.chmod(0o444)
+
+    with pytest.raises(DatasetError, match="single-link"):
+        read_file_snapshot(original)
+    with pytest.raises(DatasetError, match="single-link"):
+        read_file_snapshot(original, allow_read_only_hardlinks=True)
+
+    monkeypatch.setattr(dataset_module.os, "geteuid", lambda: original.stat().st_uid + 1)
+    snapshot = read_file_snapshot(original, allow_read_only_hardlinks=True)
+
+    assert snapshot.payload == b"immutable-runtime-metadata"
 
 
 def test_atomic_fact_gold_rejects_multiple_user_messages() -> None:

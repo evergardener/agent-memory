@@ -180,11 +180,21 @@ def _payload_sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def read_file_snapshot(path: Path | PathLike) -> FileSnapshot:
+def read_file_snapshot(
+    path: Path | PathLike, *, allow_read_only_hardlinks: bool = False
+) -> FileSnapshot:
     absolute, descriptor = _open_snapshot_file(path)
     try:
         before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        hardlink_is_read_only_runtime_file = (
+            allow_read_only_hardlinks
+            and before.st_nlink > 1
+            and before.st_uid != os.geteuid()
+            and stat.S_IMODE(before.st_mode) & 0o022 == 0
+        )
+        if not stat.S_ISREG(before.st_mode) or (
+            before.st_nlink != 1 and not hardlink_is_read_only_runtime_file
+        ):
             raise DatasetError(f"dataset path must be a single-link regular file: {absolute}")
         if before.st_size > MAX_SNAPSHOT_BYTES:
             raise DatasetError(f"dataset file exceeds the snapshot size limit: {absolute}")

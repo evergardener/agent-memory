@@ -60,7 +60,10 @@ def _distribution_identity(name: str) -> dict[str, Any]:
         canonical_name = relative.as_posix()
         if not canonical_name or "\x00" in canonical_name:
             raise DatasetError(f"AM-Eval runtime distribution has an invalid file name: {name}")
-        snapshot = read_file_snapshot(installed.locate_file(relative))
+        snapshot = read_file_snapshot(
+            installed.locate_file(relative),
+            allow_read_only_hardlinks=True,
+        )
         digest.update(canonical_name.encode("utf-8"))
         digest.update(b"\0")
         digest.update(snapshot.payload)
