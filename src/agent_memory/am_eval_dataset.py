@@ -41,6 +41,7 @@ ALLOWED_CASE_SUITES = {
     "atomic_fact",
     "date_range",
     "episode",
+    "episode_procedure_db",
     "evidence_integrity",
     "preference",
     "procedure",
@@ -84,6 +85,28 @@ EVIDENCE_FINDING_KINDS = {
     "private_key",
     "provider_api_key",
 }
+EPISODE_PROCEDURE_DB_SCENARIOS = {
+    "current_supersession": {
+        "current_audit_preserved",
+        "new_fact_active",
+        "old_fact_dormant",
+        "single_current_item",
+    },
+    "preference_supersession": {
+        "preference_evidence_preserved",
+        "prior_preference_superseded",
+        "replacement_preference_active",
+        "supersedes_link_exact",
+    },
+    "procedure_lineage": {
+        "procedure_active",
+        "procedure_auto_apply_false",
+        "support_episode_active",
+        "support_evidence_linked",
+        "support_fact_linked",
+        "verified_step_present",
+    },
+}
 
 
 def _absolute_path(path: Path | PathLike) -> Path:
@@ -101,9 +124,7 @@ def _open_snapshot_file(path: Path | PathLike) -> tuple[Path, int]:
         | getattr(os, "O_NOFOLLOW", 0)
         | getattr(os, "O_CLOEXEC", 0)
     )
-    file_flags = (
-        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-    )
+    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     directory_fd = os.open(absolute.anchor, directory_flags)
     try:
         for component in components[:-1]:
@@ -197,9 +218,7 @@ def _parse_jsonl(payload: bytes, *, path: Path) -> tuple[dict[str, Any], ...]:
         split = str(case.get("split") or "")
         if split not in ALLOWED_SPLITS:
             raise DatasetError(f"unsupported split {split!r} at {path}:{line_number}")
-        if not isinstance(case.get("input"), dict) or not isinstance(
-            case.get("expected"), dict
-        ):
+        if not isinstance(case.get("input"), dict) or not isinstance(case.get("expected"), dict):
             raise DatasetError(f"case {case_id} requires input and expected objects")
         seen_ids.add(case_id)
         cases.append(case)
@@ -392,6 +411,25 @@ def validate_evidence_integrity_case(case: dict[str, Any]) -> None:
         raise DatasetError(f"evidence integrity case {case['case_id']} has invalid expectations")
 
 
+def validate_episode_procedure_db_case(case: dict[str, Any]) -> None:
+    """Validate one metadata-only database scenario for temporal/procedure scoring."""
+    if case.get("suite") != "episode_procedure_db":
+        return
+    scenario_input = case["input"]
+    expected = case["expected"]
+    if set(scenario_input) != {"scenario"} or set(expected) != {"invariants"}:
+        raise DatasetError(f"episode/procedure DB case {case['case_id']} has an invalid schema")
+    scenario = scenario_input.get("scenario")
+    invariants = expected.get("invariants")
+    if (
+        scenario not in EPISODE_PROCEDURE_DB_SCENARIOS
+        or not isinstance(invariants, list)
+        or len(invariants) != len(set(invariants))
+        or set(invariants) != EPISODE_PROCEDURE_DB_SCENARIOS[scenario]
+    ):
+        raise DatasetError(f"episode/procedure DB case {case['case_id']} has invalid invariants")
+
+
 def load_dataset_snapshot(manifest_path: Path) -> DatasetSnapshot:
     manifest_snapshot = read_file_snapshot(manifest_path)
     try:
@@ -434,6 +472,7 @@ def load_dataset_snapshot(manifest_path: Path) -> DatasetSnapshot:
         for case in cases:
             validate_atomic_fact_case(case)
             validate_evidence_integrity_case(case)
+            validate_episode_procedure_db_case(case)
             validate_lifecycle_case(case)
         if len(cases) != int(item.get("case_count", -1)):
             raise DatasetError(f"dataset case count mismatch: {relative}")
@@ -492,12 +531,8 @@ def dataset_summary(manifest_path: Path) -> dict[str, Any]:
         "dataset_id": snapshot.manifest["dataset_id"],
         "manifest_sha256": snapshot.manifest_sha256,
         "case_count": len(snapshot.cases),
-        "suite_counts": dict(
-            sorted(Counter(case["suite"] for case in snapshot.cases).items())
-        ),
-        "split_counts": dict(
-            sorted(Counter(case["split"] for case in snapshot.cases).items())
-        ),
+        "suite_counts": dict(sorted(Counter(case["suite"] for case in snapshot.cases).items())),
+        "split_counts": dict(sorted(Counter(case["split"] for case in snapshot.cases).items())),
         "status": "PASS",
     }
 

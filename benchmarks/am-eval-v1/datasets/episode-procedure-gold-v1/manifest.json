@@ -1,0 +1,37 @@
+{
+  "schema_version": "am-eval-dataset-manifest-v1",
+  "dataset_id": "agent-memory-episode-procedure-gold-v1",
+  "frozen_at": "2026-08-16",
+  "case_count": 21,
+  "contains_production_data": false,
+  "contains_memory_text": true,
+  "external_data_sent": false,
+  "visibility": "open",
+  "blind_cases": 0,
+  "files": [
+    {
+      "path": "cases.jsonl",
+      "sha256": "6e85413ef239ab46cf5caf9fb8057f0935b5976f3cb3380c2e500df27f8c0b6f",
+      "case_count": 21,
+      "suites": [
+        "date_range",
+        "episode",
+        "episode_procedure_db",
+        "procedure",
+        "temporal_rule"
+      ]
+    }
+  ],
+  "suite_counts": {
+    "date_range": 6,
+    "episode": 4,
+    "episode_procedure_db": 3,
+    "procedure": 4,
+    "temporal_rule": 4
+  },
+  "notes": [
+    "All cases are synthetic or project-authored fixtures; no production transcript was copied.",
+    "The three database scenarios contain metadata-only action names and invariant labels.",
+    "Open development and validation cases prevent regressions but do not qualify as a blind benchmark."
+  ]
+}

@@ -17,8 +17,22 @@ from .am_eval_atomic_runner import (
     validate_private_output,
     write_private_json,
 )
-from .am_eval_dataset import EVIDENCE_FINDING_KINDS, DatasetError, read_file_snapshot
+from .am_eval_dataset import (
+    EPISODE_PROCEDURE_DB_SCENARIOS,
+    EVIDENCE_FINDING_KINDS,
+    DatasetError,
+    read_file_snapshot,
+)
 from .am_eval_environment import validate_runtime_environment_identity
+from .am_eval_episode import (
+    DATASET_ID as EPISODE_PROCEDURE_DATASET_ID,
+)
+from .am_eval_episode import (
+    EPISODE_PROCEDURE_RESULT_SCHEMA_VERSION,
+)
+from .am_eval_episode import (
+    EXPECTED_MANIFEST_SHA256 as EPISODE_PROCEDURE_MANIFEST_SHA256,
+)
 from .am_eval_evidence import (
     DATASET_ID as EVIDENCE_DATASET_ID,
 )
@@ -74,6 +88,7 @@ EFFICIENCY_ATTESTATION_SCHEMA_VERSION = "am-eval-efficiency-attestation-v2"
 LIFECYCLE_ATTESTATION_SCHEMA_VERSION = "am-eval-lifecycle-attestation-v2"
 RECALL_ATTESTATION_SCHEMA_VERSION = "am-eval-recall-attestation-v1"
 EVIDENCE_ATTESTATION_SCHEMA_VERSION = "am-eval-evidence-integrity-attestation-v1"
+EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION = "am-eval-episode-procedure-attestation-v1"
 QUALITY_RESULT_SCHEMA_VERSION = "am-eval-atomic-quality-result-v3"
 EFFICIENCY_RESULT_SCHEMA_VERSION = "am-eval-efficiency-result-v5"
 LIFECYCLE_RESULT_SCHEMA_VERSION = "am-eval-lifecycle-run-v2"
@@ -81,6 +96,9 @@ QUALITY_METRIC_IDS = frozenset({"M01", "M02", "M03", "M07"})
 LIFECYCLE_MEASUREMENT_IDS = frozenset({"G05", "G06", "M15", "M16", "M17"})
 RECALL_MEASUREMENT_IDS = frozenset({"G02", "M05", "M06", "M08", "M21"})
 EVIDENCE_MEASUREMENT_IDS = frozenset({"G01", "G03", "G09"})
+EPISODE_PROCEDURE_MEASUREMENT_IDS = frozenset(
+    {"G04", "G08", "M04", "M09", "M10", "M11", "M12", "M13", "M14"}
+)
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
 
 
@@ -691,8 +709,7 @@ def validate_recall_result(payload: object) -> dict[str, Any]:
                 or not isinstance(item.get("top1_match"), bool)
                 or not isinstance(item.get("recall_at_5_match"), bool)
                 or item.get("false_match") is not None
-                or item["top1_match"]
-                != bool(returned and returned[0] == expected_memory_id)
+                or item["top1_match"] != bool(returned and returned[0] == expected_memory_id)
                 or item["recall_at_5_match"] != (expected_memory_id in returned)
             ):
                 raise DatasetError("recall result positive query ledger is inconsistent")
@@ -962,6 +979,258 @@ def validate_evidence_result(payload: object) -> dict[str, Any]:
     return payload
 
 
+def episode_procedure_measurements(
+    payload: dict[str, Any],
+) -> dict[str, dict[str, float | int]]:
+    counts = payload["counts"]
+    entity_denominator = counts["entity_role_expected"] + counts["entity_role_unexpected"]
+    return {
+        "G04": {
+            "sample_count": counts["selected_episode_cases"],
+            "value": counts["profile_subject_confusions"],
+        },
+        "G08": {
+            "sample_count": counts["procedure_cases"],
+            "value": counts["unauthorized_auto_apply"],
+        },
+        "M04": {
+            "sample_count": entity_denominator,
+            "value": counts["entity_role_correct"] / entity_denominator,
+        },
+        "M09": {
+            "sample_count": counts["temporal_cases"],
+            "value": counts["temporal_passed"] / counts["temporal_cases"],
+        },
+        "M10": {
+            "sample_count": counts["supersession_cases"],
+            "value": counts["supersession_passed"] / counts["supersession_cases"],
+        },
+        "M11": {
+            "sample_count": counts["episode_cases"],
+            "value": counts["episode_passed"] / counts["episode_cases"],
+        },
+        "M12": {
+            "sample_count": counts["procedure_cases"],
+            "value": counts["procedure_status_passed"] / counts["procedure_cases"],
+        },
+        "M13": {
+            "sample_count": counts["dangerous_procedure_cases"],
+            "value": counts["dangerous_auto_apply"] / counts["dangerous_procedure_cases"],
+        },
+        "M14": {
+            "sample_count": counts["procedure_lineage_cases"],
+            "value": counts["procedure_lineage_passed"] / counts["procedure_lineage_cases"],
+        },
+    }
+
+
+def validate_episode_procedure_result(payload: object) -> dict[str, Any]:
+    required_keys = {
+        "case_count",
+        "contains_memory_text",
+        "contains_production_data",
+        "counts",
+        "database_ledger",
+        "dataset_blind",
+        "dataset_contains_memory_text",
+        "dataset_id",
+        "dataset_validation",
+        "dataset_visibility",
+        "episode_ledger",
+        "external_data_sent",
+        "manifest_sha256",
+        "model_called",
+        "procedure_ledger",
+        "run_id",
+        "runner_runtime_environment",
+        "runner_runtime_identity",
+        "schema_version",
+        "status",
+        "system",
+        "temporal_ledger",
+    }
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != required_keys
+        or payload.get("schema_version") != EPISODE_PROCEDURE_RESULT_SCHEMA_VERSION
+    ):
+        raise DatasetError("episode/procedure result has an invalid schema")
+    if (
+        payload.get("dataset_id") != EPISODE_PROCEDURE_DATASET_ID
+        or payload.get("manifest_sha256") != EPISODE_PROCEDURE_MANIFEST_SHA256
+        or payload.get("dataset_visibility") != "open"
+        or payload.get("dataset_blind") is not False
+        or payload.get("dataset_contains_memory_text") is not True
+        or payload.get("dataset_validation") != "PASS"
+        or payload.get("contains_memory_text") is not False
+        or payload.get("contains_production_data") is not False
+        or payload.get("external_data_sent") is not False
+        or payload.get("model_called") is not False
+        or payload.get("status") != "PASS"
+        or payload.get("case_count") != 21
+    ):
+        raise DatasetError("episode/procedure result dataset binding is invalid")
+    run_id = _require_string(payload, "run_id", label="episode/procedure result")
+    if not run_id.startswith("hermes:automated-tests:"):
+        raise DatasetError("episode/procedure result requires an automated run ID")
+
+    temporal = payload.get("temporal_ledger")
+    temporal_keys = {"case_id", "passed", "suite"}
+    expected_temporal = {
+        *(f"date-{index:03d}" for index in range(1, 7)),
+        *(f"time-{index:03d}" for index in range(1, 5)),
+    }
+    if (
+        not isinstance(temporal, list)
+        or len(temporal) != 10
+        or any(
+            not isinstance(item, dict)
+            or set(item) != temporal_keys
+            or not isinstance(item.get("case_id"), str)
+            or item.get("suite") not in {"date_range", "temporal_rule"}
+            or item.get("passed") is not True
+            for item in temporal
+        )
+    ):
+        raise DatasetError("episode/procedure temporal ledger is incomplete")
+    if {item["case_id"] for item in temporal} != expected_temporal:
+        raise DatasetError("episode/procedure temporal ledger is incomplete")
+
+    episodes = payload.get("episode_ledger")
+    episode_keys = {
+        "case_id",
+        "entity_role_correct",
+        "entity_role_expected",
+        "entity_role_unexpected",
+        "selected",
+        "source_profile_confused",
+        "structure_exact",
+    }
+    expected_episode_rows = {
+        "episode-001": (True, 4),
+        "episode-002": (True, 2),
+        "episode-003": (False, 0),
+        "episode-004": (False, 0),
+    }
+    if not isinstance(episodes, list) or len(episodes) != 4:
+        raise DatasetError("episode/procedure episode ledger is incomplete")
+    seen_episode_ids: set[str] = set()
+    for item in episodes:
+        if not isinstance(item, dict) or set(item) != episode_keys:
+            raise DatasetError("episode/procedure episode ledger has an invalid schema")
+        case_id = item.get("case_id")
+        if (
+            not isinstance(case_id, str)
+            or case_id not in expected_episode_rows
+            or case_id in seen_episode_ids
+        ):
+            raise DatasetError("episode/procedure episode IDs are invalid")
+        selected, expected_entities = expected_episode_rows[case_id]
+        if (
+            item.get("selected") is not selected
+            or item.get("entity_role_expected") != expected_entities
+            or item.get("entity_role_correct") != expected_entities
+            or item.get("entity_role_unexpected") != 0
+            or item.get("source_profile_confused") is not False
+            or item.get("structure_exact") is not True
+        ):
+            raise DatasetError("episode/procedure episode ledger did not match gold")
+        seen_episode_ids.add(case_id)
+
+    procedures = payload.get("procedure_ledger")
+    procedure_keys = {
+        "auto_apply",
+        "case_id",
+        "expected_status",
+        "status",
+        "status_exact",
+    }
+    expected_statuses = {
+        "procedure-001": "applicable",
+        "procedure-002": "incompatible",
+        "procedure-003": "unknown",
+        "procedure-004": "expired",
+    }
+    if not isinstance(procedures, list) or len(procedures) != 4:
+        raise DatasetError("episode/procedure applicability ledger is incomplete")
+    seen_procedure_ids: set[str] = set()
+    for item in procedures:
+        if not isinstance(item, dict) or set(item) != procedure_keys:
+            raise DatasetError("episode/procedure applicability ledger has an invalid schema")
+        case_id = item.get("case_id")
+        expected_status = expected_statuses.get(case_id) if isinstance(case_id, str) else None
+        if (
+            expected_status is None
+            or case_id in seen_procedure_ids
+            or item.get("expected_status") != expected_status
+            or item.get("status") != expected_status
+            or item.get("status_exact") is not True
+            or item.get("auto_apply") is not False
+        ):
+            raise DatasetError("episode/procedure applicability ledger did not match gold")
+        seen_procedure_ids.add(case_id)
+
+    database = payload.get("database_ledger")
+    database_keys = {"case_id", "invariants", "passed", "scenario"}
+    expected_db_ids = {
+        "current_supersession": "supersession-current-001",
+        "preference_supersession": "supersession-preference-001",
+        "procedure_lineage": "lineage-procedure-001",
+    }
+    if not isinstance(database, list) or len(database) != 3:
+        raise DatasetError("episode/procedure database ledger is incomplete")
+    seen_scenarios: set[str] = set()
+    for item in database:
+        if not isinstance(item, dict) or set(item) != database_keys:
+            raise DatasetError("episode/procedure database ledger has an invalid schema")
+        scenario = item.get("scenario")
+        expected_invariants = (
+            EPISODE_PROCEDURE_DB_SCENARIOS.get(scenario) if isinstance(scenario, str) else None
+        )
+        if (
+            expected_invariants is None
+            or scenario in seen_scenarios
+            or item.get("case_id") != expected_db_ids[scenario]
+            or item.get("invariants") != {name: True for name in sorted(expected_invariants)}
+            or item.get("passed") is not True
+        ):
+            raise DatasetError("episode/procedure database ledger did not pass")
+        seen_scenarios.add(scenario)
+
+    expected_counts = {
+        "temporal_cases": 10,
+        "temporal_passed": 10,
+        "episode_cases": 4,
+        "episode_passed": 4,
+        "selected_episode_cases": 2,
+        "profile_subject_confusions": 0,
+        "entity_role_expected": 6,
+        "entity_role_correct": 6,
+        "entity_role_unexpected": 0,
+        "procedure_cases": 4,
+        "procedure_status_passed": 4,
+        "unauthorized_auto_apply": 0,
+        "dangerous_procedure_cases": 3,
+        "dangerous_auto_apply": 0,
+        "database_cases": 3,
+        "database_passed": 3,
+        "supersession_cases": 2,
+        "supersession_passed": 2,
+        "procedure_lineage_cases": 1,
+        "procedure_lineage_passed": 1,
+    }
+    if payload.get("counts") != expected_counts:
+        raise DatasetError("episode/procedure counts differ from the ledgers")
+    _validate_system_identity(
+        payload.get("system"),
+        payload.get("runner_runtime_identity"),
+        payload.get("runner_runtime_environment"),
+        label="episode/procedure result",
+    )
+    episode_procedure_measurements(payload)
+    return payload
+
+
 def decode_attested_source(artifact: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
     encoded = artifact.get("source_artifact_base64")
     expected_sha256 = artifact.get("source_artifact_sha256")
@@ -1010,6 +1279,10 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
         validated = validate_evidence_result(source)
         measurement_ids = EVIDENCE_MEASUREMENT_IDS
         expected_scope = "isolated-evidence"
+    elif schema == EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION:
+        validated = validate_episode_procedure_result(source)
+        measurement_ids = EPISODE_PROCEDURE_MEASUREMENT_IDS
+        expected_scope = "isolated-episode-procedure"
     else:
         raise DatasetError("unsupported sourced attestation schema")
     if artifact.get("source_artifact_schema_version") != validated["schema_version"]:
@@ -1022,6 +1295,8 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
         source_measurements = recall_measurements(validated)
     elif schema == EVIDENCE_ATTESTATION_SCHEMA_VERSION:
         source_measurements = evidence_measurements(validated)
+    elif schema == EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION:
+        source_measurements = episode_procedure_measurements(validated)
     else:
         source_measurements = validated["metrics"]
     expected_measurements = {
@@ -1041,6 +1316,7 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
             LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
             RECALL_ATTESTATION_SCHEMA_VERSION,
             EVIDENCE_ATTESTATION_SCHEMA_VERSION,
+            EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION,
         }
         else {
             "environment_sha256": validated["system_environment_sha256"],
@@ -1057,6 +1333,7 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
                 LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
                 RECALL_ATTESTATION_SCHEMA_VERSION,
                 EVIDENCE_ATTESTATION_SCHEMA_VERSION,
+                EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION,
             }
             else validated["dataset_manifest_sha256"]
         ),
@@ -1070,6 +1347,7 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
         LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
         RECALL_ATTESTATION_SCHEMA_VERSION,
         EVIDENCE_ATTESTATION_SCHEMA_VERSION,
+        EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION,
     }:
         source_bindings["execution_plan_sha256"] = validated["execution_plan_sha256"]
     for key, expected in source_bindings.items():
@@ -1137,6 +1415,14 @@ def assemble_attestation(
         system = source["system"]
         source_measurements = evidence_measurements(source)
         source_manifest_sha256 = source["manifest_sha256"]
+    elif kind == "episode-procedure":
+        source = validate_episode_procedure_result(source)
+        schema = EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION
+        selected_measurements = EPISODE_PROCEDURE_MEASUREMENT_IDS
+        scope = "isolated-episode-procedure"
+        system = source["system"]
+        source_measurements = episode_procedure_measurements(source)
+        source_manifest_sha256 = source["manifest_sha256"]
     else:
         raise DatasetError("unsupported attestation source kind")
     if not isinstance(track, str) or not track.strip() or track != track.strip():
@@ -1173,7 +1459,7 @@ def assemble_attestation(
         "model_called": source["model_called"],
         "scope": scope,
     }
-    if kind not in {"lifecycle", "recall", "evidence"}:
+    if kind not in {"lifecycle", "recall", "evidence", "episode-procedure"}:
         artifact["execution_plan_sha256"] = source["execution_plan_sha256"]
     if kind == "efficiency":
         artifact["terminal_jobs_complete"] = source["job_statuses"] == {
@@ -1188,7 +1474,15 @@ def main() -> None:
         description="Bind a verified AM-Eval scorer result into a sourced attestation."
     )
     parser.add_argument(
-        "kind", choices=("quality", "efficiency", "lifecycle", "recall", "evidence")
+        "kind",
+        choices=(
+            "quality",
+            "efficiency",
+            "lifecycle",
+            "recall",
+            "evidence",
+            "episode-procedure",
+        ),
     )
     parser.add_argument("source_result", type=Path)
     parser.add_argument("--confirm-source-sha256", required=True)

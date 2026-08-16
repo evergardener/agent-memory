@@ -10,6 +10,7 @@ from typing import Any
 from .am_eval_atomic_runner import resolve_runtime_identity
 from .am_eval_attestation import (
     EFFICIENCY_ATTESTATION_SCHEMA_VERSION,
+    EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION,
     EVIDENCE_ATTESTATION_SCHEMA_VERSION,
     LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
     QUALITY_ATTESTATION_SCHEMA_VERSION,
@@ -34,6 +35,7 @@ ARTIFACT_PRODUCERS = {
     LIFECYCLE_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
     RECALL_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
     EVIDENCE_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
+    EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION: ("agent-memory-am-eval-attestation-assembler"),
 }
 
 
@@ -264,6 +266,7 @@ def _validate_artifact(
         LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
         RECALL_ATTESTATION_SCHEMA_VERSION,
         EVIDENCE_ATTESTATION_SCHEMA_VERSION,
+        EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION,
     }:
         try:
             source_result = validate_attested_source(artifact)
@@ -431,6 +434,32 @@ def _validate_artifact(
         if artifact.get("scope") != "isolated-evidence":
             raise ValueError("evidence artifact requires isolated-evidence scope")
 
+    if schema_version == EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION:
+        assert source_result is not None
+        if artifact_measurements != {
+            "G04",
+            "G08",
+            "M04",
+            "M09",
+            "M10",
+            "M11",
+            "M12",
+            "M13",
+            "M14",
+        }:
+            raise ValueError("episode/procedure artifact has invalid measurement coverage")
+        if (
+            source_result["run_id"] != run["run_id"]
+            or source_result["dataset_id"] != dataset["id"]
+            or source_result["system"]["version"] != system["version"]
+            or source_result["system"]["source_file_count"] != system["source_file_count"]
+        ):
+            raise ValueError("formal episode/procedure source identity binding mismatch")
+        if artifact.get("model_called") is not False:
+            raise ValueError("episode/procedure artifact must not claim a model call")
+        if artifact.get("scope") != "isolated-episode-procedure":
+            raise ValueError("episode/procedure artifact requires isolated-episode-procedure scope")
+
     if (
         not quality_ids
         and not efficiency_ids
@@ -440,6 +469,7 @@ def _validate_artifact(
             LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
             RECALL_ATTESTATION_SCHEMA_VERSION,
             EVIDENCE_ATTESTATION_SCHEMA_VERSION,
+            EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION,
         }
     ):
         raise ValueError(f"attestation artifact {artifact_id} is ineligible for its measurements")

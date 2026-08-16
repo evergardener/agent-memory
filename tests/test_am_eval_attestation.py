@@ -11,6 +11,7 @@ from agent_memory.am_eval import evaluate_run, formal_run_payload_sha256
 from agent_memory.am_eval_atomic_runner import RuntimeIdentity
 from agent_memory.am_eval_attestation import (
     assemble_attestation,
+    episode_procedure_measurements,
     evidence_measurements,
     lifecycle_measurements,
     recall_measurements,
@@ -20,6 +21,9 @@ from agent_memory.am_eval_dataset import DatasetError
 from agent_memory.am_eval_environment import (
     RUNTIME_DISTRIBUTIONS,
     build_runtime_environment_identity,
+)
+from agent_memory.am_eval_episode import (
+    EXPECTED_MANIFEST_SHA256 as EPISODE_PROCEDURE_MANIFEST_SHA256,
 )
 from agent_memory.am_eval_evidence import EXPECTED_MANIFEST_SHA256 as EVIDENCE_MANIFEST_SHA256
 from agent_memory.am_eval_lifecycle import (
@@ -342,6 +346,121 @@ def _evidence_result() -> dict:
     }
 
 
+def _episode_procedure_result() -> dict:
+    temporal_ledger = [
+        {"case_id": f"date-{index:03d}", "passed": True, "suite": "date_range"}
+        for index in range(1, 7)
+    ] + [
+        {"case_id": f"time-{index:03d}", "passed": True, "suite": "temporal_rule"}
+        for index in range(1, 5)
+    ]
+    episode_ledger = [
+        {
+            "case_id": f"episode-{index:03d}",
+            "entity_role_correct": expected,
+            "entity_role_expected": expected,
+            "entity_role_unexpected": 0,
+            "selected": index <= 2,
+            "source_profile_confused": False,
+            "structure_exact": True,
+        }
+        for index, expected in enumerate((4, 2, 0, 0), start=1)
+    ]
+    statuses = ("applicable", "incompatible", "unknown", "expired")
+    procedure_ledger = [
+        {
+            "auto_apply": False,
+            "case_id": f"procedure-{index:03d}",
+            "expected_status": status,
+            "status": status,
+            "status_exact": True,
+        }
+        for index, status in enumerate(statuses, start=1)
+    ]
+    database_ledger = [
+        {
+            "case_id": "supersession-current-001",
+            "scenario": "current_supersession",
+            "invariants": {
+                "current_audit_preserved": True,
+                "new_fact_active": True,
+                "old_fact_dormant": True,
+                "single_current_item": True,
+            },
+            "passed": True,
+        },
+        {
+            "case_id": "supersession-preference-001",
+            "scenario": "preference_supersession",
+            "invariants": {
+                "preference_evidence_preserved": True,
+                "prior_preference_superseded": True,
+                "replacement_preference_active": True,
+                "supersedes_link_exact": True,
+            },
+            "passed": True,
+        },
+        {
+            "case_id": "lineage-procedure-001",
+            "scenario": "procedure_lineage",
+            "invariants": {
+                "procedure_active": True,
+                "procedure_auto_apply_false": True,
+                "support_episode_active": True,
+                "support_evidence_linked": True,
+                "support_fact_linked": True,
+                "verified_step_present": True,
+            },
+            "passed": True,
+        },
+    ]
+    return {
+        "schema_version": "am-eval-episode-procedure-run-v1",
+        "run_id": "hermes:automated-tests:episode-procedure-formal",
+        "dataset_id": "agent-memory-episode-procedure-gold-v1",
+        "manifest_sha256": EPISODE_PROCEDURE_MANIFEST_SHA256,
+        "dataset_visibility": "open",
+        "dataset_blind": False,
+        "dataset_contains_memory_text": True,
+        "dataset_validation": "PASS",
+        "case_count": 21,
+        "temporal_ledger": temporal_ledger,
+        "episode_ledger": episode_ledger,
+        "procedure_ledger": procedure_ledger,
+        "database_ledger": database_ledger,
+        "counts": {
+            "temporal_cases": 10,
+            "temporal_passed": 10,
+            "episode_cases": 4,
+            "episode_passed": 4,
+            "selected_episode_cases": 2,
+            "profile_subject_confusions": 0,
+            "entity_role_expected": 6,
+            "entity_role_correct": 6,
+            "entity_role_unexpected": 0,
+            "procedure_cases": 4,
+            "procedure_status_passed": 4,
+            "unauthorized_auto_apply": 0,
+            "dangerous_procedure_cases": 3,
+            "dangerous_auto_apply": 0,
+            "database_cases": 3,
+            "database_passed": 3,
+            "supersession_cases": 2,
+            "supersession_passed": 2,
+            "procedure_lineage_cases": 1,
+            "procedure_lineage_passed": 1,
+        },
+        "status": "PASS",
+        "contains_memory_text": False,
+        "contains_production_data": False,
+        "external_data_sent": False,
+        "model_called": False,
+        "system": _system(),
+        "runner_runtime_identity": _scorer_identity(),
+        "runner_runtime_environment": _environment(),
+    }
+
+
 def _payload(value: dict) -> bytes:
     return json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
 
@@ -558,6 +677,101 @@ def test_formal_artifact_validator_accepts_sourced_evidence_measurements() -> No
     )
 
     assert covered == {"G01", "G03", "G09"}
+
+
+def test_episode_procedure_attestation_derives_all_frozen_measurements() -> None:
+    source = _episode_procedure_result()
+    artifact = _assemble(
+        source,
+        kind="episode-procedure",
+        track="deterministic-episode-procedure",
+    )
+
+    validate_attested_source(artifact)
+
+    assert artifact["measurement_ids"] == [
+        "G04",
+        "G08",
+        "M04",
+        "M09",
+        "M10",
+        "M11",
+        "M12",
+        "M13",
+        "M14",
+    ]
+    assert artifact["measurements"] == episode_procedure_measurements(source)
+    assert artifact["measurements"]["G04"] == {"sample_count": 2, "value": 0}
+    assert artifact["measurements"]["M14"] == {"sample_count": 1, "value": 1.0}
+
+
+def test_episode_procedure_attestation_rejects_role_chain_and_count_retyping() -> None:
+    source = _episode_procedure_result()
+    source["episode_ledger"][0]["entity_role_correct"] = 3
+    with pytest.raises(DatasetError, match="episode ledger did not match gold"):
+        _assemble(source, kind="episode-procedure")
+
+    source = _episode_procedure_result()
+    source["database_ledger"][1]["invariants"]["supersedes_link_exact"] = False
+    with pytest.raises(DatasetError, match="database ledger did not pass"):
+        _assemble(source, kind="episode-procedure")
+
+    source = _episode_procedure_result()
+    source["counts"]["dangerous_auto_apply"] = 1
+    with pytest.raises(DatasetError, match="counts differ"):
+        _assemble(source, kind="episode-procedure")
+
+    source = _episode_procedure_result()
+    source["episode_ledger"][0]["case_id"] = []
+    with pytest.raises(DatasetError, match="episode IDs are invalid"):
+        _assemble(source, kind="episode-procedure")
+
+
+def test_formal_artifact_validator_accepts_episode_procedure_measurements() -> None:
+    source = _episode_procedure_result()
+    artifact = _assemble(
+        source,
+        kind="episode-procedure",
+        track="deterministic-episode-procedure",
+    )
+    payload = _payload(artifact)
+    measurements = episode_procedure_measurements(source)
+    run = {
+        "run_id": source["run_id"],
+        "track": "deterministic-episode-procedure",
+        "system": _system(),
+        "dataset": {
+            "id": source["dataset_id"],
+            "sha256": EPISODE_PROCEDURE_MANIFEST_SHA256,
+            "visibility": "open",
+            "blind": False,
+        },
+        "execution_artifact": {
+            "image_name": "ghcr.io/evergardener/agent-memory-api",
+            "manifest_digest": "sha256:" + "9" * 64,
+            "platform": "linux/arm64",
+        },
+    }
+
+    covered = am_eval._validate_artifact(
+        "episode-procedure",
+        {"sha256": hashlib.sha256(payload).hexdigest()},
+        payload,
+        run=run,
+        supplied_measurements=measurements,
+    )
+
+    assert covered == {
+        "G04",
+        "G08",
+        "M04",
+        "M09",
+        "M10",
+        "M11",
+        "M12",
+        "M13",
+        "M14",
+    }
 
 
 def test_assembler_requires_confirmed_source_and_exact_oci_digest() -> None:
