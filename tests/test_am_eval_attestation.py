@@ -73,6 +73,16 @@ def _scorer_identity() -> dict:
     }
 
 
+def _register_test_spec(monkeypatch: pytest.MonkeyPatch, spec: dict) -> str:
+    semantic_sha256 = am_eval.specification_semantic_sha256(spec)
+    monkeypatch.setitem(
+        am_eval.OFFICIAL_SPECIFICATIONS,
+        spec["benchmark_id"],
+        {"artifact_sha256": semantic_sha256, "semantic_sha256": semantic_sha256},
+    )
+    return semantic_sha256
+
+
 def _quality_result() -> dict:
     return {
         "schema_version": "am-eval-atomic-quality-result-v3",
@@ -1063,11 +1073,13 @@ def test_formal_run_accepts_sourced_isolated_m23_artifact(
         ),
     )
     monkeypatch.setattr(am_eval, "runtime_environment_identity", _environment)
+    spec_sha256 = _register_test_spec(monkeypatch, spec)
 
     result = evaluate_run(
         spec,
         run,
         artifact_payloads={"efficiency": artifact_payload},
+        confirm_spec_sha256=spec_sha256,
         confirm_image_reference=image_reference,
         confirm_image_platform="linux/arm64",
     )
@@ -1167,11 +1179,13 @@ def test_formal_run_accepts_sourced_lifecycle_measurements(
         ),
     )
     monkeypatch.setattr(am_eval, "runtime_environment_identity", _environment)
+    spec_sha256 = _register_test_spec(monkeypatch, spec)
 
     result = evaluate_run(
         spec,
         run,
         artifact_payloads={"lifecycle": artifact_payload},
+        confirm_spec_sha256=spec_sha256,
         confirm_image_reference=image_reference,
         confirm_image_platform="linux/arm64",
     )
@@ -1295,11 +1309,13 @@ def test_formal_multi_dataset_run_accepts_two_sourced_datasets(
         ),
     )
     monkeypatch.setattr(am_eval, "runtime_environment_identity", _environment)
+    spec_sha256 = _register_test_spec(monkeypatch, spec)
 
     result = evaluate_run(
         spec,
         run,
         artifact_payloads=artifact_payloads,
+        confirm_spec_sha256=spec_sha256,
         confirm_image_reference=image_reference,
         confirm_image_platform="linux/arm64",
     )

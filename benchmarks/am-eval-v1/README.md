@@ -136,6 +136,9 @@ custom dump 和独立恢复库绑定为一个结果；`agent-memory-assemble-eva
 G07、G10、M18–M20。
 五类确定性 attestation 使用共同 run ID、track 和 exact image reference 后，由
 `agent-memory-assemble-deterministic-run` 组装为多数据集部分正式 run；组装器不允许操作员手填指标。
+正式 evaluator 只接受代码登记的官方 `spec.json` 原始 SHA 与规范化语义 SHA；确认任意自建 spec 的
+SHA 不会赋予正式资格。正式测量 artifact 必须使用有来源结果 validator 的 typed schema，旧通用
+`am-eval-measurement-attestation-v1` 已被正式白名单移除。
 
 运行评分器：
 

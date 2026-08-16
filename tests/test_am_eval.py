@@ -1,6 +1,8 @@
 import hashlib
 import json
+from contextlib import contextmanager
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -35,15 +37,7 @@ def _environment() -> dict:
 def _spec() -> dict:
     return {
         "benchmark_id": "am-eval-test",
-        "hard_gates": [
-            {
-                "id": "G01",
-                "name": "no leaks",
-                "operator": "eq",
-                "threshold": 0,
-                "required": True,
-            }
-        ],
+        "hard_gates": [],
         "metrics": [
             {
                 "id": "M01",
@@ -136,7 +130,7 @@ def _run() -> dict:
             "manifest_digest": manifest_digest,
             "platform": image_platform,
         },
-        "hard_gates": {"G01": {"value": 0, "sample_count": 10, "evidence": ["gate-evidence"]}},
+        "hard_gates": {},
         "metrics": {
             "M01": {
                 "value": 0.9,
@@ -160,14 +154,6 @@ def _run() -> dict:
             "image_reference": image_reference,
             "image_platform": image_platform,
             "artifacts": {
-                "gate-evidence": artifact(
-                    schema_version="am-eval-measurement-attestation-v1",
-                    producer="agent-memory-am-eval-attestation-assembler",
-                    sha256="d" * 64,
-                    measurement_ids=["G01"],
-                    model_called=False,
-                    scope="official",
-                ),
                 "atomic-quality": artifact(
                     schema_version="am-eval-atomic-quality-attestation-v2",
                     producer="agent-memory-am-eval-attestation-assembler",
@@ -294,17 +280,37 @@ def _artifact_payloads(run: dict) -> dict[str, bytes]:
     return payloads
 
 
+@contextmanager
+def _registered_test_spec(spec: dict):
+    benchmark_id = spec["benchmark_id"]
+    semantic_sha256 = am_eval.specification_semantic_sha256(spec)
+    previous = am_eval.OFFICIAL_SPECIFICATIONS.get(benchmark_id)
+    am_eval.OFFICIAL_SPECIFICATIONS[benchmark_id] = {
+        "artifact_sha256": semantic_sha256,
+        "semantic_sha256": semantic_sha256,
+    }
+    try:
+        yield semantic_sha256
+    finally:
+        if previous is None:
+            del am_eval.OFFICIAL_SPECIFICATIONS[benchmark_id]
+        else:
+            am_eval.OFFICIAL_SPECIFICATIONS[benchmark_id] = previous
+
+
 def _evaluate_with_payloads(spec: dict, run: dict, payloads: dict[str, bytes] | None) -> dict:
     execution_artifact = run["execution_artifact"]
-    return evaluate_run(
-        spec,
-        run,
-        artifact_payloads=payloads,
-        confirm_image_reference=(
-            f"{execution_artifact['image_name']}@{execution_artifact['manifest_digest']}"
-        ),
-        confirm_image_platform=execution_artifact["platform"],
-    )
+    with _registered_test_spec(spec) as spec_sha256:
+        return evaluate_run(
+            spec,
+            run,
+            artifact_payloads=payloads,
+            confirm_spec_sha256=spec_sha256,
+            confirm_image_reference=(
+                f"{execution_artifact['image_name']}@{execution_artifact['manifest_digest']}"
+            ),
+            confirm_image_platform=execution_artifact["platform"],
+        )
 
 
 def _evaluate(spec: dict, run: dict) -> dict:
@@ -340,38 +346,64 @@ def _drop_metric(run: dict, metric_id: str) -> None:
 
 
 def test_complete_run_passes_and_renders_markdown() -> None:
-    result = _evaluate(_spec(), _run())
+    spec = _spec()
+    result = _evaluate(spec, _run())
 
+    assert result["schema_version"] == "am-eval-result-v3"
     assert result["decision"] == "PASS"
     assert result["release_ready"] is True
     assert result["attestation"]["status"] == "verified"
     assert result["quality_summary"]["measured_score"] == 100
     assert result["quality_summary"]["coverage_percent"] == 100
+    assert result["specification"]["semantic_sha256"] == (
+        am_eval.specification_semantic_sha256(spec)
+    )
     assert result["scorer_runtime_identity"]["source_sha256"] == "b" * 64
     assert result["scorer_runtime_environment"]["sha256"] == _environment()["sha256"]
-    assert "| G01 | no leaks | pass |" in render_markdown(result)
+    assert "| M01 | quality | accuracy | measured |" in render_markdown(result)
+
+
+def test_registered_official_specification_matches_the_repository_artifact() -> None:
+    path = Path(__file__).parents[1] / "benchmarks/am-eval-v1/spec.json"
+    payload = path.read_bytes()
+    spec = json.loads(payload)
+    registered = am_eval.OFFICIAL_SPECIFICATIONS["am-eval-v1"]
+
+    assert hashlib.sha256(payload).hexdigest() == registered["artifact_sha256"]
+    assert am_eval.specification_semantic_sha256(spec) == registered["semantic_sha256"]
 
 
 def test_missing_measurements_are_not_silently_treated_as_passed() -> None:
     run = _run()
-    del run["hard_gates"]["G01"]
-    del run["attestation"]["artifacts"]["gate-evidence"]
     _drop_metric(run, "M02")
 
     result = _evaluate(_spec(), run)
 
     assert result["decision"] == "INCOMPLETE"
     assert result["quality_summary"]["coverage_percent"] == 60
-    assert result["hard_gate_summary"]["not_measured"] == 1
+    assert result["hard_gate_summary"]["not_measured"] == 0
     assert result["quality_summary"]["missing_required_ids"] == ["M02"]
 
 
 def test_hard_gate_failure_overrides_quality_score() -> None:
-    run = _run()
-    run["hard_gates"]["G01"]["value"] = 1
-    _resign(run)
+    spec = _spec()
+    spec["hard_gates"] = [
+        {
+            "id": "G01",
+            "name": "no leaks",
+            "operator": "eq",
+            "threshold": 0,
+            "required": True,
+        }
+    ]
+    run = deepcopy(_run())
+    run.pop("schema_version")
+    run.pop("attestation")
+    run["hard_gates"] = {
+        "G01": {"value": 1, "sample_count": 10, "evidence": ["diagnostic-gate"]}
+    }
 
-    result = _evaluate(_spec(), run)
+    result = evaluate_run(spec, run)
 
     assert result["decision"] == "HARD_GATE_FAILED"
     assert result["release_ready"] is False
@@ -389,11 +421,24 @@ def test_unknown_or_invalid_measurements_fail_closed() -> None:
     with pytest.raises(ValueError, match="invalid value"):
         _evaluate(_spec(), run)
 
-    run = _run()
-    run["hard_gates"]["G01"]["sample_count"] = 0
-    _resign(run)
+    spec = _spec()
+    spec["hard_gates"] = [
+        {
+            "id": "G01",
+            "name": "no leaks",
+            "operator": "eq",
+            "threshold": 0,
+            "required": True,
+        }
+    ]
+    run = deepcopy(_run())
+    run.pop("schema_version")
+    run.pop("attestation")
+    run["hard_gates"] = {
+        "G01": {"value": 0, "sample_count": 0, "evidence": ["diagnostic-gate"]}
+    }
     with pytest.raises(ValueError, match="hard gate G01 requires a positive sample_count"):
-        _evaluate(_spec(), run)
+        evaluate_run(spec, run)
 
 
 def test_non_finite_or_out_of_range_measurements_fail_closed() -> None:
@@ -458,15 +503,84 @@ def test_formal_run_rejects_fixture_oracle_and_synthetic_quality_claims() -> Non
 
     run = _run()
     run["dataset"].update({"visibility": "open", "blind": False})
-    run["attestation"]["artifacts"]["gate-evidence"].update(
-        {"dataset_visibility": "open", "blind": False}
-    )
     run["attestation"]["artifacts"]["atomic-quality"].update(
         {"dataset_visibility": "open", "blind": False}
     )
     _resign(run)
     with pytest.raises(ValueError, match="private or restricted dataset"):
         _evaluate(_spec(), run)
+
+
+def test_formal_run_rejects_legacy_generic_measurement_artifact() -> None:
+    run = _run()
+    payloads = _artifact_payloads(run)
+    artifact = json.loads(payloads["atomic-quality"])
+    artifact["schema_version"] = "am-eval-measurement-attestation-v1"
+    artifact["producer"] = "agent-memory-am-eval-attestation-assembler"
+    payload = json.dumps(
+        artifact,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    payloads["atomic-quality"] = payload
+    run["attestation"]["artifacts"]["atomic-quality"] = {
+        "sha256": hashlib.sha256(payload).hexdigest()
+    }
+    _resign(run)
+
+    with pytest.raises(ValueError, match="unsupported schema"):
+        _evaluate_with_payloads(_spec(), run, payloads)
+
+
+def test_formal_run_requires_the_registered_official_specification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _run()
+    payloads = _artifact_payloads(run)
+    spec = _spec()
+    execution_artifact = run["execution_artifact"]
+    image_reference = (
+        f"{execution_artifact['image_name']}@{execution_artifact['manifest_digest']}"
+    )
+
+    with pytest.raises(ValueError, match="registered official specification"):
+        evaluate_run(
+            spec,
+            run,
+            artifact_payloads=payloads,
+            confirm_spec_sha256="0" * 64,
+            confirm_image_reference=image_reference,
+            confirm_image_platform=execution_artifact["platform"],
+        )
+
+    spec_sha256 = am_eval.specification_semantic_sha256(spec)
+    monkeypatch.setitem(
+        am_eval.OFFICIAL_SPECIFICATIONS,
+        spec["benchmark_id"],
+        {"artifact_sha256": spec_sha256, "semantic_sha256": spec_sha256},
+    )
+    with pytest.raises(ValueError, match="confirmation mismatch"):
+        evaluate_run(
+            spec,
+            run,
+            artifact_payloads=payloads,
+            confirm_spec_sha256="0" * 64,
+            confirm_image_reference=image_reference,
+            confirm_image_platform=execution_artifact["platform"],
+        )
+
+    forged_spec = deepcopy(spec)
+    forged_spec["release_policy"]["minimum_score"] = 0
+    with pytest.raises(ValueError, match="semantics differ"):
+        evaluate_run(
+            forged_spec,
+            run,
+            artifact_payloads=payloads,
+            confirm_spec_sha256=spec_sha256,
+            confirm_image_reference=image_reference,
+            confirm_image_platform=execution_artifact["platform"],
+        )
 
 
 def test_formal_run_rejects_scorer_source_or_environment_drift(
@@ -515,12 +629,19 @@ def test_formal_run_requires_confirmed_digest_image_execution(
 ) -> None:
     run = _run()
     artifacts = _artifact_payloads(run)
-    with pytest.raises(ValueError, match="image reference confirmation mismatch"):
+    spec = _spec()
+    with (
+        _registered_test_spec(spec) as spec_sha256,
+        pytest.raises(ValueError, match="image reference confirmation mismatch"),
+    ):
         evaluate_run(
-            _spec(),
+            spec,
             run,
             artifact_payloads=artifacts,
-            confirm_image_reference="ghcr.io/evergardener/agent-memory-api@sha256:" + "7" * 64,
+            confirm_spec_sha256=spec_sha256,
+            confirm_image_reference=(
+                "ghcr.io/evergardener/agent-memory-api@sha256:" + "7" * 64
+            ),
             confirm_image_platform="linux/arm64",
         )
 

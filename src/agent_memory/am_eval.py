@@ -25,14 +25,19 @@ RUN_SCHEMA_VERSION = "am-eval-run-v2"
 ATTESTATION_SCHEMA_VERSION = "am-eval-run-attestation-v1"
 MULTI_DATASET_RUN_SCHEMA_VERSION = "am-eval-run-v3"
 MULTI_DATASET_ATTESTATION_SCHEMA_VERSION = "am-eval-run-attestation-v2"
-RESULT_SCHEMA_VERSION = "am-eval-result-v2"
+RESULT_SCHEMA_VERSION = "am-eval-result-v3"
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
 GIT_REVISION_LENGTHS = frozenset({40, 64})
 PROHIBITED_FORMAL_IDENTITY_MARKERS = ("fake", "fixture", "mock", "oracle")
 MODEL_QUALITY_METRIC_IDS = frozenset({"M01", "M02", "M03", "M07"})
 EFFICIENCY_METRIC_IDS = frozenset({"M22", "M23"})
+OFFICIAL_SPECIFICATIONS = {
+    "am-eval-v1": {
+        "artifact_sha256": "a4ce9232ecafc37f9a3142a8e29020168af96aa6b4165e21fd64395186c7b679",
+        "semantic_sha256": "b25f605699051d7a611afbaeb9a31a0a6de46ef342b5a2be88b898b917f10a80",
+    }
+}
 ARTIFACT_PRODUCERS = {
-    "am-eval-measurement-attestation-v1": "agent-memory-am-eval-attestation-assembler",
     QUALITY_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
     EFFICIENCY_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
     LIFECYCLE_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
@@ -41,6 +46,41 @@ ARTIFACT_PRODUCERS = {
     EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION: ("agent-memory-am-eval-attestation-assembler"),
     RELIABILITY_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
 }
+
+
+def specification_semantic_sha256(spec: dict[str, Any]) -> str:
+    try:
+        payload = json.dumps(
+            spec,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise ValueError("AM-Eval specification is not canonical JSON") from error
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _validate_official_specification(
+    spec: dict[str, Any],
+    *,
+    confirm_spec_sha256: str | None,
+) -> dict[str, str]:
+    benchmark_id = spec.get("benchmark_id")
+    registered = OFFICIAL_SPECIFICATIONS.get(benchmark_id)
+    if registered is None:
+        raise ValueError("formal AM-Eval requires a registered official specification")
+    artifact_sha256 = registered["artifact_sha256"]
+    if confirm_spec_sha256 != artifact_sha256:
+        raise ValueError("formal AM-Eval official specification SHA-256 confirmation mismatch")
+    semantic_sha256 = specification_semantic_sha256(spec)
+    if semantic_sha256 != registered["semantic_sha256"]:
+        raise ValueError("formal AM-Eval specification semantics differ from the official contract")
+    return {
+        "artifact_sha256": artifact_sha256,
+        "semantic_sha256": semantic_sha256,
+    }
 
 
 def _is_hex_digest(value: object, *, lengths: frozenset[int]) -> bool:
@@ -525,7 +565,6 @@ def _validate_artifact(
         and not efficiency_ids
         and schema_version
         not in {
-            "am-eval-measurement-attestation-v1",
             LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
             RECALL_ATTESTATION_SCHEMA_VERSION,
             EVIDENCE_ATTESTATION_SCHEMA_VERSION,
@@ -730,6 +769,7 @@ def evaluate_run(
     run: dict[str, Any],
     *,
     artifact_payloads: dict[str, bytes] | None = None,
+    confirm_spec_sha256: str | None = None,
     confirm_image_reference: str | None = None,
     confirm_image_platform: str | None = None,
 ) -> dict[str, Any]:
@@ -741,7 +781,12 @@ def evaluate_run(
     if run_schema not in {None, RUN_SCHEMA_VERSION, MULTI_DATASET_RUN_SCHEMA_VERSION}:
         raise ValueError("unsupported AM-Eval run schema")
     formal = run_schema in {RUN_SCHEMA_VERSION, MULTI_DATASET_RUN_SCHEMA_VERSION}
+    specification_identity: dict[str, str] | None = None
     if formal:
+        specification_identity = _validate_official_specification(
+            spec,
+            confirm_spec_sha256=confirm_spec_sha256,
+        )
         required_run_keys = {
             "attestation",
             "benchmark_id",
@@ -915,6 +960,7 @@ def evaluate_run(
         "run_id": run["run_id"],
         "system": run["system"],
         "track": run["track"],
+        "specification": specification_identity,
         "execution_artifact": run.get("execution_artifact"),
         "decision": decision,
         "release_ready": decision == "PASS",
@@ -1044,6 +1090,7 @@ def main() -> None:
             spec,
             run,
             artifact_payloads=artifact_payloads or None,
+            confirm_spec_sha256=arguments.confirm_spec_sha256.casefold(),
             confirm_image_reference=arguments.confirm_image_reference,
             confirm_image_platform=arguments.confirm_image_platform,
         )
