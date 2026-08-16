@@ -104,6 +104,11 @@ run 组装器和最终 evaluator 共同要求 `system=agent-memory` 与登记的
 均 fail-closed。证据见
 [`round-23-formal-identity-attribution-gate.json`](round-23-formal-identity-attribution-gate.json) 及
 [`../../docs/V1.0-AM-Eval第二十三轮正式身份归属门禁报告.md`](../../docs/V1.0-AM-Eval第二十三轮正式身份归属门禁报告.md)。
+第二十四轮修复正式结果末端的输入追溯缺口：`am-eval-result-v4` 绑定实际 spec/run 文件 SHA、canonical
+run payload SHA 和逐项 evidence bytes SHA；evaluator 必须重新哈希并解析实际 run 字节，拒绝确认漂移、
+不同对象、JSON 重复键和 `true`/`1` 类型歧义。JSON 与 Markdown 输出都保留来源区块。证据见
+[`round-24-formal-result-input-binding-gate.json`](round-24-formal-result-input-binding-gate.json) 及
+[`../../docs/V1.0-AM-Eval第二十四轮正式结果输入绑定门禁报告.md`](../../docs/V1.0-AM-Eval第二十四轮正式结果输入绑定门禁报告.md)。
 
 验证冻结数据集：
 

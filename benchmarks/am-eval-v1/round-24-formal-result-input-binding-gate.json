@@ -1,0 +1,104 @@
+{
+  "schema_version": "am-eval-formal-result-input-binding-gate-v1",
+  "run_id": "hermes:automated-tests:formal-result-input-binding-r24-20260816",
+  "recorded_at": "2026-08-16",
+  "scope": {
+    "production_touched": false,
+    "external_model_called": false,
+    "contains_memory_text": false,
+    "contains_production_data": false,
+    "database_started": false,
+    "api_or_worker_started": false
+  },
+  "source_identity": {
+    "revision": "f14089530f7303d87974590ac2f48b2f55630c7d",
+    "version": "1.0.0-rc.9",
+    "source_file_count": 81,
+    "source_sha256": "c6d52b3e7b6575fcc4815a2102e948608fa5bfde3dac93736da1a93b79f72c1f"
+  },
+  "pre_fix_reproduction": {
+    "decision": "PASS",
+    "result_schema_version": "am-eval-result-v3",
+    "attestation_keys": [
+      "schema_version",
+      "status"
+    ],
+    "has_input_run_sha256": false,
+    "has_evidence_artifact_sha256s": false,
+    "status": "REPRODUCED"
+  },
+  "implemented_contract": {
+    "result_schema_version": "am-eval-result-v4",
+    "required_input_artifact_fields": [
+      "evidence_sha256s",
+      "run_file_sha256",
+      "run_payload_sha256",
+      "specification_file_sha256"
+    ],
+    "run_input_rules": [
+      "the evaluator receives the actual run snapshot bytes",
+      "the actual bytes must hash to the confirmed run file SHA-256",
+      "the bytes must be strict UTF-8 JSON without duplicate object keys",
+      "the canonical decoded bytes must equal the run object being evaluated",
+      "boolean and integer values remain type-distinct"
+    ],
+    "output_formats_with_provenance": [
+      "json",
+      "markdown"
+    ]
+  },
+  "post_fix_attacks": [
+    {
+      "attack": "missing confirmed run SHA-256",
+      "status": "REJECTED"
+    },
+    {
+      "attack": "confirmed SHA differs from supplied run bytes",
+      "status": "REJECTED"
+    },
+    {
+      "attack": "supplied bytes parse to a different run object",
+      "status": "REJECTED"
+    },
+    {
+      "attack": "replace JSON boolean true with integer 1",
+      "status": "REJECTED"
+    },
+    {
+      "attack": "duplicate top-level benchmark_id key",
+      "status": "REJECTED"
+    }
+  ],
+  "validation": {
+    "am_eval_tests_collected_and_passed": 277,
+    "non_integration_tests_collected_and_passed": 533,
+    "integration_tests_deselected": 46,
+    "ruff": "PASS",
+    "frontend_tests": {
+      "passed": 6,
+      "failed": 0
+    },
+    "frontend_typecheck": "PASS",
+    "frontend_build": "PASS",
+    "diff_check": "PASS",
+    "actual_cli_result_binding_test": "PASS"
+  },
+  "remaining_boundaries": [
+    "a result file still requires an external immutable storage or signature policy to detect later edits to the result itself",
+    "remote GHCR manifest provenance remains separate execution evidence",
+    "private blind model quality and production-shadow efficiency metrics remain unmeasured"
+  ],
+  "formal_evaluation": {
+    "official_metrics_updated": false,
+    "decision_remains": "INCOMPLETE",
+    "release_ready": false,
+    "missing_required_metric_ids": [
+      "M01",
+      "M02",
+      "M03",
+      "M07",
+      "M22",
+      "M23"
+    ]
+  }
+}
