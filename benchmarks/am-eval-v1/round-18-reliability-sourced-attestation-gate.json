@@ -1,0 +1,130 @@
+{
+  "schema_version": "am-eval-reliability-sourced-attestation-gate-v1",
+  "run_id": "agent-memory-1.0.0rc9-reliability-sourced-attestation-r18-20260816",
+  "system_revision": "6ba3f0ec0bafd2d0095c74592b8830ee54851275",
+  "system_version": "1.0.0-rc.9",
+  "source_file_count": 79,
+  "source_sha256": "bf782d0ba35f7a33575680dd04901e8e05748f6f4337b42bcba0ac90ec5363a0",
+  "runtime_environment_sha256": "7ccaab9f03820dfe6991a9a336f6be7ca2c2b4634d90107e3a38e19506ed9023",
+  "prepare_artifact_sha256": "74c2e3375462f26e9b97fe43ad47f164cc65caf9f566e3675b1107df46358391",
+  "backup_artifact_sha256": "bf5af3b11189e071f67d3cdd1938d0e08290620bed81565e8d22cc8656ec0c08",
+  "private_result_sha256": "fb1ddd64002ae5e2ba84bf18495df18e576be5d6835b65b897dc348da82c9328",
+  "status": "RELIABILITY_SOURCED_ATTESTATION_GATE_PASS_OFFICIAL_METRICS_UNCHANGED",
+  "official_metrics_updated": false,
+  "official_baseline": {
+    "source_run": "round-2-agent-memory.json",
+    "hard_gates_passed": 10,
+    "hard_gates_failed": 0,
+    "coverage_percent": 73,
+    "decision": "INCOMPLETE",
+    "missing_metric_ids": ["M01", "M02", "M03", "M07", "M22", "M23"]
+  },
+  "frozen_dataset": {
+    "id": "agent-memory-reliability-gold-v1",
+    "manifest_sha256": "e66d612909e010f6f95f2724d52b49b921cafcb135b836d2ceca1fa68cdc3490",
+    "case_file_sha256": "1bb05791bc75c13bcd097e820fc4607cb27c338fb147124e30d6b29c30ff58ca",
+    "case_count": 5,
+    "split_counts": {"development": 2, "validation": 3},
+    "suite_counts": {"backup_restore": 1, "idempotency": 2, "worker_recovery": 2},
+    "contains_memory_text": false,
+    "contains_production_data": false,
+    "visibility": "open",
+    "blind": false
+  },
+  "sourced_measurements": {
+    "G07": {"value": 0, "sample_count": 2},
+    "G10": {"value": 1.0, "sample_count": 1},
+    "M18": {"value": 1.0, "sample_count": 2},
+    "M19": {"value": 1.0, "sample_count": 1},
+    "M20": {"value": 1.0, "sample_count": 2}
+  },
+  "implemented_gates": [
+    "a frozen metadata-only dataset pins worker recovery idempotency and pg_dump restore contracts",
+    "prepare requires a loopback am_eval empty database automated namespace and private outputs outside the repository",
+    "worker outage and expired lease cases bind exact job states attempt counts and evidence hashes",
+    "sequential and eight-way concurrent replays must each produce exactly one winner event turn and job set",
+    "the full current set of 47 business base tables is frozen and compared",
+    "verify binds prepare and custom dump SHAs then compares migration evidence and Vault ciphertext",
+    "the same synthetic Vault entry must decrypt in source and restored databases with the same isolated key",
+    "reliability attestation v1 binds original bytes source environment dataset OCI digest and platform"
+  ],
+  "verification": {
+    "python": {
+      "collected": 562,
+      "non_integration_passed": 516,
+      "integration_excluded": 46,
+      "failed": 0
+    },
+    "isolated_reliability_cli": {
+      "postgres_binding": "127.0.0.1:55438",
+      "pytest_cases_passed": 1,
+      "frozen_cases_passed": 5,
+      "worker_cases": 2,
+      "worker_recovered": 2,
+      "evidence_loss_count": 0,
+      "idempotency_cases": 2,
+      "idempotency_passed": 2,
+      "sequential_attempts": 2,
+      "sequential_winners": 1,
+      "concurrent_attempts": 8,
+      "concurrent_winners": 1,
+      "restore_cases": 1,
+      "restore_passed": 1,
+      "business_table_groups": 47,
+      "migration_revision_matches": true,
+      "evidence_hash_matches": true,
+      "vault_ciphertext_matches": true,
+      "vault_source_decrypts": true,
+      "vault_restore_decrypts": true,
+      "temporary_database_pattern": "am_eval_reliability_r18_%",
+      "temporary_database_residue": 0,
+      "artifact_mode": "0600",
+      "supplier_calls": 0
+    },
+    "adversarial": {
+      "manifest_case_and_attempt_drift": "PASS_FAIL_CLOSED",
+      "worker_and_lease_ledger_retyping": "PASS_FAIL_CLOSED",
+      "idempotency_winner_retyping": "PASS_FAIL_CLOSED",
+      "restore_counter_retyping": "PASS_FAIL_CLOSED",
+      "prepare_and_dump_sha_drift": "PASS_FAIL_CLOSED",
+      "private_artifact_symlink": "PASS_FAIL_CLOSED",
+      "formal_reliability_artifact_path": "PASS"
+    },
+    "static": {
+      "ruff": "PASS",
+      "uv_lock": "PASS",
+      "git_diff_check": "PASS"
+    }
+  },
+  "sourced_coverage": {
+    "hard_gates": ["G01", "G02", "G03", "G04", "G05", "G06", "G07", "G08", "G09", "G10"],
+    "deterministic_metrics": [
+      "M04", "M05", "M06", "M08", "M09", "M10", "M11", "M12", "M13",
+      "M14", "M15", "M16", "M17", "M18", "M19", "M20", "M21"
+    ]
+  },
+  "boundaries": {
+    "production_data_read": false,
+    "production_api_or_database_connected": false,
+    "production_namespace_connected": false,
+    "production_modified": false,
+    "external_model_called": false,
+    "external_data_sent": false,
+    "real_api_key_read": false
+  },
+  "remaining_requirements": [
+    "create or authorize a pull request and retain GitHub-hosted image-contract plus exact OCI digest evidence",
+    "rerun all sourced adapters inside that verified image by exact name at digest",
+    "create and review the private blind dataset before M01 M02 M03 M07 and M23",
+    "obtain explicit authorization before any external model call or production-shadow M22 measurement"
+  ],
+  "remote_ci": {
+    "branch": "codex/review-queue-feedback",
+    "tested_code_revision": "6ba3f0ec0bafd2d0095c74592b8830ee54851275",
+    "pull_request_created": false,
+    "workflow_triggered_for_head": false,
+    "image_contract_status": "REMOTE_CI_PENDING",
+    "images_published": false,
+    "production_deployed": false
+  }
+}

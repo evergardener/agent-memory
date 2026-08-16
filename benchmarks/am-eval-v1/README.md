@@ -68,6 +68,12 @@ parser 决策、supersession 状态和 procedure → episode → fact → eviden
 [`round-17-episode-procedure-sourced-attestation-gate.json`](round-17-episode-procedure-sourced-attestation-gate.json) 及
 [`../../docs/V1.0-AM-Eval第十七轮情节与程序来源证明门禁报告.md`](../../docs/V1.0-AM-Eval第十七轮情节与程序来源证明门禁报告.md)，
 复现边界见 [`../../docs/V1.0-AM-Eval情节与程序Gate运行手册.md`](../../docs/V1.0-AM-Eval情节与程序Gate运行手册.md)。
+第十八轮使用冻结 worker recovery、idempotency 与 backup restore case，以及真实 custom-format
+pg_dump/pg_restore，将 G07、G10、M18–M20 从 job ledger、47 表快照、evidence hash 与 Vault 实际解密
+来源化。证据见
+[`round-18-reliability-sourced-attestation-gate.json`](round-18-reliability-sourced-attestation-gate.json) 及
+[`../../docs/V1.0-AM-Eval第十八轮可靠性来源证明门禁报告.md`](../../docs/V1.0-AM-Eval第十八轮可靠性来源证明门禁报告.md)，
+复现边界见 [`../../docs/V1.0-AM-Eval可靠性Gate运行手册.md`](../../docs/V1.0-AM-Eval可靠性Gate运行手册.md)。
 
 验证冻结数据集：
 
@@ -86,6 +92,9 @@ uv run agent-memory-validate-benchmark-dataset \
 
 uv run agent-memory-validate-benchmark-dataset \
   benchmarks/am-eval-v1/datasets/episode-procedure-gold-v1/manifest.json
+
+uv run agent-memory-validate-benchmark-dataset \
+  benchmarks/am-eval-v1/datasets/reliability-gold-v1/manifest.json
 ```
 
 M01/M02/M03/M07 使用
@@ -108,6 +117,9 @@ M08、M21，但本地 checkout 结果不能冒充正式 image-backed run。
 情节与程序 Gate 使用 `agent-memory-run-episode-procedure-benchmark`，只允许全新 loopback `am_eval_`
 数据库；`agent-memory-assemble-eval-attestation episode-procedure` 从四类 metadata-only ledger 复算
 G04、G08、M04、M09–M14。
+可靠性 Gate 使用 `agent-memory-run-reliability-benchmark prepare|verify`，把 worker/lease、幂等、
+custom dump 和独立恢复库绑定为一个结果；`agent-memory-assemble-eval-attestation reliability` 从中复算
+G07、G10、M18–M20。
 
 运行评分器：
 
