@@ -1,0 +1,75 @@
+{
+  "schema_version": "am-eval-official-spec-provenance-gate-v1",
+  "run_id": "hermes:automated-tests:official-spec-provenance-r21-20260816",
+  "recorded_at": "2026-08-16",
+  "scope": {
+    "production_touched": false,
+    "external_model_called": false,
+    "contains_memory_text": false,
+    "contains_production_data": false,
+    "network_required": false
+  },
+  "runtime_identity": {
+    "provenance": "clean-git-checkout",
+    "revision": "d4733223a675e7a2a975571c656eb47510a6082a",
+    "source_file_count": 80,
+    "source_sha256": "58818faafb6e386547fc4e916416729c3e4637b349d66ae8fa036b3965e7f577"
+  },
+  "findings": [
+    {
+      "severity": "P1",
+      "finding": "a formal scorer could confirm the SHA of an operator-created permissive specification instead of the frozen official contract",
+      "status": "fixed"
+    },
+    {
+      "severity": "P1",
+      "finding": "legacy am-eval-measurement-attestation-v1 had no typed source-result validator and could attest non-model measurements",
+      "status": "fixed"
+    }
+  ],
+  "official_specification": {
+    "benchmark_id": "am-eval-v1",
+    "artifact_sha256": "a4ce9232ecafc37f9a3142a8e29020168af96aa6b4165e21fd64395186c7b679",
+    "semantic_sha256": "b25f605699051d7a611afbaeb9a31a0a6de46ef342b5a2be88b898b917f10a80",
+    "result_schema_version": "am-eval-result-v3"
+  },
+  "fail_closed_contract": {
+    "unregistered_benchmark_spec": "REJECT",
+    "wrong_official_artifact_sha256": "REJECT",
+    "official_spec_semantic_drift": "REJECT",
+    "legacy_generic_measurement_artifact": "REJECT",
+    "typed_source_attestation_required": true,
+    "result_records_spec_artifact_and_semantic_sha256": true
+  },
+  "validation": {
+    "am_eval_targeted": "271 passed",
+    "official_spec_and_attack_regressions": "PASS",
+    "python_non_integration_handoff": "527 passed, 46 integration skipped",
+    "frontend_tests": "6 passed",
+    "frontend_typecheck": "PASS",
+    "frontend_build": "PASS",
+    "ruff": "PASS",
+    "cross_host_handoff": "PASS",
+    "upstream_synced_revision": "d4733223a675e7a2a975571c656eb47510a6082a"
+  },
+  "formal_evaluation": {
+    "official_metrics_updated": false,
+    "decision_remains": "INCOMPLETE",
+    "release_ready": false,
+    "reason": "this round hardens the scoring contract but does not add private-blind real-model or production-shadow measurements",
+    "missing_required_metric_ids": [
+      "M01",
+      "M02",
+      "M03",
+      "M07",
+      "M22",
+      "M23"
+    ]
+  },
+  "cleanup": {
+    "temporary_database_created": false,
+    "temporary_service_started": false,
+    "temporary_credentials_created": false,
+    "production_containers_modified": false
+  }
+}

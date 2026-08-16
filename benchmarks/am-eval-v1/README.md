@@ -88,6 +88,11 @@ non-integration 524/524、前端与静态 Gate 全部通过，且所有临时库
 本轮只提升完整测试面的可重复性，不更新正式指标。证据见
 [`round-20-full-integration-gate.json`](round-20-full-integration-gate.json) 及
 [`../../docs/V1.0-AM-Eval第二十轮完整集成门禁报告.md`](../../docs/V1.0-AM-Eval第二十轮完整集成门禁报告.md)。
+第二十一轮把正式 scorer 绑定到官方 `spec.json` 的原始文件 SHA 与规范化语义 SHA，并移除没有 typed
+source-result validator 的旧通用 measurement artifact。攻击性回归证明自建宽松 spec、错误确认、
+语义漂移和通用 artifact 均会 fail-closed；评分输出升级为 `am-eval-result-v3`。证据见
+[`round-21-official-spec-provenance-gate.json`](round-21-official-spec-provenance-gate.json) 及
+[`../../docs/V1.0-AM-Eval第二十一轮官方Spec来源门禁报告.md`](../../docs/V1.0-AM-Eval第二十一轮官方Spec来源门禁报告.md)。
 
 验证冻结数据集：
 
