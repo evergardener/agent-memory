@@ -1178,3 +1178,167 @@ def test_formal_run_accepts_sourced_lifecycle_measurements(
 
     assert result["decision"] == "PASS"
     assert result["hard_gate_summary"]["passed"] == 2
+
+
+def test_formal_multi_dataset_run_accepts_two_sourced_datasets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle_source = _lifecycle_result()
+    evidence_source = _evidence_result()
+    lifecycle_source["run_id"] = "hermes:automated-tests:formal-run-1"
+    evidence_source["run_id"] = lifecycle_source["run_id"]
+    track = "deterministic-composite"
+    image_name = "ghcr.io/evergardener/agent-memory-api"
+    manifest_digest = "sha256:" + "9" * 64
+    image_reference = f"{image_name}@{manifest_digest}"
+    lifecycle_artifact = _assemble(lifecycle_source, kind="lifecycle", track=track)
+    evidence_artifact = _assemble(evidence_source, kind="evidence", track=track)
+    artifact_payloads = {
+        "evidence": _payload(evidence_artifact),
+        "lifecycle": _payload(lifecycle_artifact),
+    }
+    lifecycle_values = lifecycle_measurements(lifecycle_source)
+    evidence_values = evidence_measurements(evidence_source)
+    all_values = {**evidence_values, **lifecycle_values}
+    gate_ids = ("G01", "G03", "G05", "G06", "G09")
+    metric_ids = ("M15", "M16", "M17")
+    system = _system()
+    run = {
+        "schema_version": "am-eval-run-v3",
+        "benchmark_id": "am-eval-multi-dataset-test",
+        "run_id": lifecycle_source["run_id"],
+        "system": system,
+        "track": track,
+        "datasets": [
+            {
+                "id": evidence_source["dataset_id"],
+                "sha256": EVIDENCE_MANIFEST_SHA256,
+                "visibility": "open",
+                "blind": False,
+            },
+            {
+                "id": lifecycle_source["dataset_id"],
+                "sha256": EXPECTED_MANIFEST_SHA256,
+                "visibility": "open",
+                "blind": False,
+            },
+        ],
+        "execution_artifact": {
+            "type": "oci-image",
+            "image_name": image_name,
+            "manifest_digest": manifest_digest,
+            "platform": "linux/arm64",
+        },
+        "hard_gates": {
+            item_id: {
+                **all_values[item_id],
+                "evidence": ["evidence" if item_id in evidence_values else "lifecycle"],
+            }
+            for item_id in gate_ids
+        },
+        "metrics": {
+            item_id: {**all_values[item_id], "evidence": ["lifecycle"]}
+            for item_id in metric_ids
+        },
+        "attestation": {
+            "schema_version": "am-eval-run-attestation-v2",
+            "claim": "OFFICIAL_AM_EVAL_RUN",
+            "system_environment_sha256": system["environment_sha256"],
+            "system_revision": system["revision"],
+            "system_source_sha256": system["source_sha256"],
+            "dataset_manifest_sha256s": sorted(
+                [EVIDENCE_MANIFEST_SHA256, EXPECTED_MANIFEST_SHA256]
+            ),
+            "track": track,
+            "image_reference": image_reference,
+            "image_platform": "linux/arm64",
+            "artifacts": {
+                artifact_id: {"sha256": hashlib.sha256(payload).hexdigest()}
+                for artifact_id, payload in artifact_payloads.items()
+            },
+        },
+    }
+    run["attestation"]["run_payload_sha256"] = formal_run_payload_sha256(run)
+    spec = {
+        "benchmark_id": run["benchmark_id"],
+        "hard_gates": [
+            {
+                "id": item_id,
+                "name": item_id,
+                "operator": "eq",
+                "threshold": all_values[item_id]["value"],
+                "required": True,
+            }
+            for item_id in gate_ids
+        ],
+        "metrics": [
+            {
+                "id": item_id,
+                "name": item_id,
+                "dimension": "deterministic",
+                "weight": weight,
+                "required": True,
+                "minimum": 0,
+                "maximum": 1,
+                "scoring": {"mode": "exact", "target": all_values[item_id]["value"]},
+            }
+            for item_id, weight in zip(metric_ids, (34, 33, 33), strict=True)
+        ],
+        "release_policy": {"minimum_score": 85},
+    }
+    monkeypatch.setattr(
+        am_eval,
+        "resolve_runtime_identity",
+        lambda: RuntimeIdentity(
+            **_scorer_identity(),
+            source_root=am_eval.Path("/private/tmp/am-eval-test"),
+        ),
+    )
+    monkeypatch.setattr(am_eval, "runtime_environment_identity", _environment)
+
+    result = evaluate_run(
+        spec,
+        run,
+        artifact_payloads=artifact_payloads,
+        confirm_image_reference=image_reference,
+        confirm_image_platform="linux/arm64",
+    )
+
+    assert result["decision"] == "PASS"
+    assert result["datasets"] == run["datasets"]
+    assert "dataset" not in result
+
+
+def test_formal_multi_dataset_run_rejects_an_undeclared_artifact_dataset() -> None:
+    source = _evidence_result()
+    source["run_id"] = "hermes:automated-tests:formal-run-1"
+    artifact = _assemble(source, kind="evidence", track="deterministic-composite")
+    payload = _payload(artifact)
+    run = {
+        "schema_version": "am-eval-run-v3",
+        "run_id": source["run_id"],
+        "track": "deterministic-composite",
+        "system": _system(),
+        "datasets": [
+            {
+                "id": "agent-memory-lifecycle-gold-v1",
+                "sha256": EXPECTED_MANIFEST_SHA256,
+                "visibility": "open",
+                "blind": False,
+            }
+        ],
+        "execution_artifact": {
+            "image_name": "ghcr.io/evergardener/agent-memory-api",
+            "manifest_digest": "sha256:" + "9" * 64,
+            "platform": "linux/arm64",
+        },
+    }
+
+    with pytest.raises(ValueError, match="not uniquely declared"):
+        am_eval._validate_artifact(
+            "evidence",
+            {"sha256": hashlib.sha256(payload).hexdigest()},
+            payload,
+            run=run,
+            supplied_measurements=evidence_measurements(source),
+        )

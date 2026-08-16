@@ -23,6 +23,8 @@ from .am_eval_environment import runtime_environment_identity
 
 RUN_SCHEMA_VERSION = "am-eval-run-v2"
 ATTESTATION_SCHEMA_VERSION = "am-eval-run-attestation-v1"
+MULTI_DATASET_RUN_SCHEMA_VERSION = "am-eval-run-v3"
+MULTI_DATASET_ATTESTATION_SCHEMA_VERSION = "am-eval-run-attestation-v2"
 RESULT_SCHEMA_VERSION = "am-eval-result-v2"
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
 GIT_REVISION_LENGTHS = frozenset({40, 64})
@@ -111,6 +113,54 @@ def formal_run_payload_sha256(run: dict[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _validate_dataset_descriptor(payload: object, *, formal: bool) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("run dataset must be an object")
+    dataset_id = _require_non_empty_string(payload.get("id"), label="dataset id")
+    dataset_sha256 = payload.get("sha256")
+    if not _is_hex_digest(dataset_sha256, lengths=frozenset({64})):
+        raise ValueError("dataset sha256 must be a lowercase SHA-256")
+    if formal:
+        if set(payload) != {"blind", "id", "sha256", "visibility"}:
+            raise ValueError("formal run dataset has an invalid schema")
+        if payload.get("visibility") not in {"open", "private", "restricted"}:
+            raise ValueError("formal run dataset requires a supported visibility")
+        if not isinstance(payload.get("blind"), bool):
+            raise ValueError("formal run dataset requires a blind declaration")
+    return {
+        "blind": payload.get("blind"),
+        "id": dataset_id,
+        "sha256": dataset_sha256,
+        "visibility": payload.get("visibility"),
+    }
+
+
+def _run_datasets(run: dict[str, Any]) -> list[dict[str, Any]]:
+    if run.get("schema_version") == MULTI_DATASET_RUN_SCHEMA_VERSION:
+        datasets = run.get("datasets")
+        if not isinstance(datasets, list) or not datasets:
+            raise ValueError("formal multi-dataset run requires datasets")
+        validated = [_validate_dataset_descriptor(item, formal=True) for item in datasets]
+        dataset_ids = [item["id"] for item in validated]
+        dataset_sha256s = [item["sha256"] for item in validated]
+        if len(set(dataset_ids)) != len(dataset_ids):
+            raise ValueError("formal multi-dataset run requires unique dataset IDs")
+        if len(set(dataset_sha256s)) != len(dataset_sha256s):
+            raise ValueError("formal multi-dataset run requires unique dataset SHA-256 values")
+        if validated != sorted(validated, key=lambda item: item["id"]):
+            raise ValueError("formal multi-dataset run datasets must be sorted by id")
+        return validated
+    return [_validate_dataset_descriptor(run.get("dataset"), formal=True)]
+
+
+def _dataset_for_artifact(run: dict[str, Any], artifact: dict[str, Any]) -> dict[str, Any]:
+    artifact_sha256 = artifact.get("dataset_manifest_sha256")
+    matches = [item for item in _run_datasets(run) if item["sha256"] == artifact_sha256]
+    if len(matches) != 1:
+        raise ValueError("attestation artifact dataset is not uniquely declared by the formal run")
+    return matches[0]
+
+
 def _validate_run_identity(run: dict[str, Any], *, formal: bool) -> None:
     _require_non_empty_string(run.get("run_id"), label="run_id")
     _require_non_empty_string(run.get("track"), label="track")
@@ -149,19 +199,10 @@ def _validate_run_identity(run: dict[str, Any], *, formal: bool) -> None:
         ):
             raise ValueError("formal run system requires a positive source_file_count")
 
-    dataset = run.get("dataset")
-    if not isinstance(dataset, dict):
-        raise ValueError("run dataset must be an object")
-    _require_non_empty_string(dataset.get("id"), label="dataset id")
-    if not _is_hex_digest(dataset.get("sha256"), lengths=frozenset({64})):
-        raise ValueError("dataset sha256 must be a lowercase SHA-256")
     if formal:
-        if set(dataset) != {"blind", "id", "sha256", "visibility"}:
-            raise ValueError("formal run dataset has an invalid schema")
-        if dataset.get("visibility") not in {"open", "private", "restricted"}:
-            raise ValueError("formal run dataset requires a supported visibility")
-        if not isinstance(dataset.get("blind"), bool):
-            raise ValueError("formal run dataset requires a blind declaration")
+        _run_datasets(run)
+    else:
+        _validate_dataset_descriptor(run.get("dataset"), formal=False)
 
 
 def _validate_formal_scorer_identity(run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -311,7 +352,7 @@ def _validate_artifact(
             )
 
     system = run["system"]
-    dataset = run["dataset"]
+    dataset = _dataset_for_artifact(run, artifact)
     bindings = {
         "system_environment_sha256": system["environment_sha256"],
         "system_revision": system["revision"],
@@ -538,10 +579,14 @@ def _validate_formal_attestation(
     attestation = run.get("attestation")
     if not isinstance(attestation, dict):
         raise ValueError("formal run requires an attestation object")
-    if set(attestation) != {
+    multi_dataset = run.get("schema_version") == MULTI_DATASET_RUN_SCHEMA_VERSION
+    dataset_binding_key = (
+        "dataset_manifest_sha256s" if multi_dataset else "dataset_manifest_sha256"
+    )
+    required_attestation_keys = {
         "artifacts",
         "claim",
-        "dataset_manifest_sha256",
+        dataset_binding_key,
         "image_platform",
         "image_reference",
         "run_payload_sha256",
@@ -550,20 +595,31 @@ def _validate_formal_attestation(
         "system_revision",
         "system_source_sha256",
         "track",
-    }:
+    }
+    if set(attestation) != required_attestation_keys:
         raise ValueError("formal run attestation has an invalid schema")
-    if attestation.get("schema_version") != ATTESTATION_SCHEMA_VERSION:
+    expected_attestation_schema = (
+        MULTI_DATASET_ATTESTATION_SCHEMA_VERSION
+        if multi_dataset
+        else ATTESTATION_SCHEMA_VERSION
+    )
+    if attestation.get("schema_version") != expected_attestation_schema:
         raise ValueError("unsupported formal run attestation schema")
     if attestation.get("claim") != "OFFICIAL_AM_EVAL_RUN":
         raise ValueError("formal run attestation must claim OFFICIAL_AM_EVAL_RUN")
     if attestation.get("run_payload_sha256") != formal_run_payload_sha256(run):
         raise ValueError("formal run attestation payload SHA-256 mismatch")
 
-    bindings = {
+    datasets = _run_datasets(run)
+    bindings: dict[str, object] = {
         "system_environment_sha256": run["system"]["environment_sha256"],
         "system_revision": run["system"]["revision"],
         "system_source_sha256": run["system"]["source_sha256"],
-        "dataset_manifest_sha256": run["dataset"]["sha256"],
+        dataset_binding_key: (
+            sorted(item["sha256"] for item in datasets)
+            if multi_dataset
+            else datasets[0]["sha256"]
+        ),
         "track": run["track"],
         "image_reference": (
             f"{run['execution_artifact']['image_name']}@"
@@ -585,15 +641,21 @@ def _validate_formal_attestation(
     supplied_measurements = {**supplied_gates, **supplied_metrics}
     supplied_ids = set(supplied_measurements)
     covered_ids: set[str] = set()
+    covered_dataset_sha256s: set[str] = set()
     measurement_artifact: dict[str, str] = {}
     for artifact_id, artifact in artifacts.items():
         _require_non_empty_string(artifact_id, label="attestation artifact id")
+        artifact_payload = artifact_payloads.get(artifact_id)
         artifact_measurements = _validate_artifact(
             artifact_id,
             artifact,
-            artifact_payloads.get(artifact_id),
+            artifact_payload,
             run=run,
             supplied_measurements=supplied_measurements,
+        )
+        assert isinstance(artifact_payload, bytes)
+        covered_dataset_sha256s.add(
+            str(_decode_artifact(artifact_id, artifact_payload)["dataset_manifest_sha256"])
         )
         overlap = covered_ids & artifact_measurements
         if overlap:
@@ -606,6 +668,8 @@ def _validate_formal_attestation(
     if covered_ids != supplied_ids:
         missing = ", ".join(sorted(supplied_ids - covered_ids))
         raise ValueError(f"formal run attestation does not cover measurements: {missing}")
+    if multi_dataset and covered_dataset_sha256s != {item["sha256"] for item in datasets}:
+        raise ValueError("formal run attestation does not use every declared dataset")
 
     for item_id, measurement in {**supplied_gates, **supplied_metrics}.items():
         if not isinstance(measurement, dict):
@@ -674,14 +738,13 @@ def evaluate_run(
         raise ValueError("run benchmark_id does not match the specification")
 
     run_schema = run.get("schema_version")
-    if run_schema not in {None, RUN_SCHEMA_VERSION}:
+    if run_schema not in {None, RUN_SCHEMA_VERSION, MULTI_DATASET_RUN_SCHEMA_VERSION}:
         raise ValueError("unsupported AM-Eval run schema")
-    formal = run_schema == RUN_SCHEMA_VERSION
+    formal = run_schema in {RUN_SCHEMA_VERSION, MULTI_DATASET_RUN_SCHEMA_VERSION}
     if formal:
         required_run_keys = {
             "attestation",
             "benchmark_id",
-            "dataset",
             "execution_artifact",
             "hard_gates",
             "metrics",
@@ -690,6 +753,9 @@ def evaluate_run(
             "system",
             "track",
         }
+        required_run_keys.add(
+            "datasets" if run_schema == MULTI_DATASET_RUN_SCHEMA_VERSION else "dataset"
+        )
         if set(run) not in (required_run_keys, required_run_keys | {"notes"}):
             raise ValueError("formal AM-Eval run has an invalid schema")
         notes = run.get("notes", [])
@@ -849,12 +915,17 @@ def evaluate_run(
         "run_id": run["run_id"],
         "system": run["system"],
         "track": run["track"],
-        "dataset": run["dataset"],
         "execution_artifact": run.get("execution_artifact"),
         "decision": decision,
         "release_ready": decision == "PASS",
         "attestation": {
-            "schema_version": (ATTESTATION_SCHEMA_VERSION if formal else "legacy-unattested"),
+            "schema_version": (
+                MULTI_DATASET_ATTESTATION_SCHEMA_VERSION
+                if run_schema == MULTI_DATASET_RUN_SCHEMA_VERSION
+                else ATTESTATION_SCHEMA_VERSION
+                if formal
+                else "legacy-unattested"
+            ),
             "status": "verified" if formal else "unattested",
         },
         "hard_gate_summary": {
@@ -875,6 +946,10 @@ def evaluate_run(
         "metrics": metric_results,
         "notes": list(run.get("notes", [])),
     }
+    if run_schema == MULTI_DATASET_RUN_SCHEMA_VERSION:
+        result["datasets"] = run["datasets"]
+    else:
+        result["dataset"] = run["dataset"]
     if scorer_identity is not None and scorer_environment is not None:
         result["scorer_runtime_identity"] = scorer_identity
         result["scorer_runtime_environment"] = scorer_environment
