@@ -92,6 +92,8 @@ jobs:
     env:
       REGISTRY: ghcr.io
       IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/agent-memory
+    outputs:
+      manifest-digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@v7
       - name: Read application version
@@ -208,9 +210,17 @@ jobs:
         run: |
           set -euo pipefail
           version="$(tr -d '[:space:]' < VERSION)"
+          expected_digest="${{ needs.publish-images.outputs.manifest-digest }}"
+          [[ "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          evidence="$RUNNER_TEMP/published-image-identities.jsonl"
+          : > "$evidence"
           project="agent-memory-release-ghcr-${GITHUB_RUN_ID}"
           for service in api worker migrate; do
-            image="${IMAGE_PREFIX}-${service}:sha-${GITHUB_SHA}"
+            tagged_image="${IMAGE_PREFIX}-${service}:sha-${GITHUB_SHA}"
+            resolved_digest="$(docker buildx imagetools inspect \
+              "$tagged_image" --format '{{.Manifest.Digest}}')"
+            test "$resolved_digest" = "$expected_digest"
+            image="${IMAGE_PREFIX}-${service}@${expected_digest}"
             manifest="$(docker buildx imagetools inspect "$image")"
             grep -F "linux/amd64" <<<"$manifest"
             grep -F "linux/arm64" <<<"$manifest"
@@ -223,8 +233,18 @@ jobs:
               --source-root . --verify-clean-git)"
             bash scripts/verify-image-build-identity.sh \
               "$image" "$version" "$GITHUB_SHA" "$source_sha"
+            printf \
+              '{"image_reference":"%s","platform":"linux/amd64","revision":"%s","source_sha256":"%s","version":"%s"}\n' \
+              "$image" "$GITHUB_SHA" "$source_sha" "$version" >> "$evidence"
             docker tag "$image" "${project}-${service}:${version}"
           done
+      - name: Upload exact OCI identity evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: published-image-identities-${{ github.sha }}
+          path: ${{ runner.temp }}/published-image-identities.jsonl
+          if-no-files-found: error
+          retention-days: 30
       - name: Run the complete gate against published images
         shell: bash
         run: |

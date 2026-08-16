@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,9 +20,13 @@ from psycopg import Connection, connect
 from psycopg.conninfo import conninfo_to_dict
 
 from . import __version__
-from .am_eval_dataset import DatasetError, load_dataset, sha256_file
+from .am_eval_dataset import DatasetError, load_dataset_snapshot, sha256_file
+from .am_eval_environment import (
+    runtime_environment_identity,
+    validate_runtime_environment_identity,
+)
 from .am_eval_private_gold import validate_frozen_private_gold, validate_private_input
-from .config import Settings
+from .config import Settings, get_settings
 from .ids import stable_uuid
 from .model_adapter import ModelProfile
 from .repository import ingest_turn, recall
@@ -33,9 +38,9 @@ from .worker import (
     select_turn_evidence,
 )
 
-RUNNER_VERSION = "am-eval-atomic-runner-v5"
-OUTPUT_SCHEMA_VERSION = "am-eval-atomic-output-v3"
-PLAN_SCHEMA_VERSION = "am-eval-atomic-execution-plan-v5"
+RUNNER_VERSION = "am-eval-atomic-runner-v7"
+OUTPUT_SCHEMA_VERSION = "am-eval-atomic-output-v4"
+PLAN_SCHEMA_VERSION = "am-eval-atomic-execution-plan-v6"
 DEFAULT_NAMESPACE = "hermes:automated-tests:am-eval-atomic"
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
 GIT_REVISION_LENGTH = 40
@@ -93,6 +98,35 @@ class PreparedCase:
     case: dict[str, Any]
     turn_id: UUID
     event_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True)
+class ModelRunResult:
+    job_statuses: dict[str, int]
+    invocation_budget: int
+    invocations_attempted: int
+    invocations_terminal_success: int
+    invocations_terminal_failure: int
+
+    @property
+    def model_invocations(self) -> dict[str, int]:
+        return {
+            "budget": self.invocation_budget,
+            "attempted": self.invocations_attempted,
+            "terminal_success": self.invocations_terminal_success,
+            "terminal_failure": self.invocations_terminal_failure,
+        }
+
+    @property
+    def run_status(self) -> str:
+        return (
+            "complete"
+            if self.job_statuses == {"done": self.invocation_budget}
+            and self.invocations_attempted == self.invocation_budget
+            and self.invocations_terminal_success == self.invocation_budget
+            and self.invocations_terminal_failure == 0
+            else "failed"
+        )
 
 
 def _path_uses_symlink(path: Path, *, base: Path) -> bool:
@@ -513,25 +547,133 @@ def _validate_sha256(value: str, name: str) -> None:
         raise DatasetError(f"{name} must be a 64-character SHA-256")
 
 
-def validate_private_output(path: Path, *, forbidden_root: Path | None = None) -> Path:
-    expanded = path.expanduser()
-    if any(candidate.is_symlink() for candidate in (expanded, *expanded.parents)):
-        raise DatasetError("atomic runner output cannot use a symlink")
-    resolved = expanded.resolve()
+@dataclass
+class PrivateOutputTarget(os.PathLike[str]):
+    path: Path
+    directory_fd: int
+    directory_identity: tuple[int, int, int, int]
+    closed: bool = False
+
+    def __fspath__(self) -> str:
+        return os.fspath(self.path)
+
+    def __str__(self) -> str:
+        return str(self.path)
+
+    def close(self) -> None:
+        if not self.closed:
+            os.close(self.directory_fd)
+            self.closed = True
+
+    def exists(self) -> bool:
+        return self.path.exists()
+
+    def stat(self) -> os.stat_result:
+        return self.path.stat()
+
+    def read_text(self, *, encoding: str = "utf-8") -> str:
+        return self.path.read_text(encoding=encoding)
+
+    def __del__(self) -> None:
+        with suppress(OSError):
+            self.close()
+
+
+def _private_output_absolute_path(path: Path | os.PathLike[str]) -> Path:
+    return Path(os.path.abspath(Path(path).expanduser()))
+
+
+def _private_directory_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
+def _open_private_directory(path: Path, *, create: bool) -> int:
+    absolute = _private_output_absolute_path(path)
+    directory_fd = os.open(absolute.anchor, _private_directory_flags())
+    try:
+        for component in absolute.parts[1:]:
+            try:
+                next_fd = os.open(
+                    component,
+                    _private_directory_flags(),
+                    dir_fd=directory_fd,
+                )
+            except FileNotFoundError:
+                if not create:
+                    raise
+                with suppress(FileExistsError):
+                    os.mkdir(component, 0o700, dir_fd=directory_fd)
+                next_fd = os.open(
+                    component,
+                    _private_directory_flags(),
+                    dir_fd=directory_fd,
+                )
+            os.close(directory_fd)
+            directory_fd = next_fd
+    except BaseException:
+        os.close(directory_fd)
+        raise
+    os.set_inheritable(directory_fd, False)
+    return directory_fd
+
+
+def _private_directory_identity(directory_fd: int) -> tuple[int, int, int, int]:
+    directory_stat = os.fstat(directory_fd)
+    mode = stat.S_IMODE(directory_stat.st_mode)
+    if (
+        not stat.S_ISDIR(directory_stat.st_mode)
+        or directory_stat.st_uid != os.geteuid()
+        or mode & 0o077
+    ):
+        raise DatasetError(
+            "atomic runner output directory must be owned by the runner and mode 0700 or stricter"
+        )
+    return (
+        directory_stat.st_dev,
+        directory_stat.st_ino,
+        directory_stat.st_uid,
+        mode,
+    )
+
+
+def validate_private_output(
+    path: Path | os.PathLike[str], *, forbidden_root: Path | None = None
+) -> PrivateOutputTarget:
+    resolved = _private_output_absolute_path(path)
+    if resolved.name in {"", ".", ".."}:
+        raise DatasetError("atomic runner output must name a file")
     if forbidden_root is not None:
         try:
-            resolved.relative_to(forbidden_root.resolve())
+            resolved.relative_to(_private_output_absolute_path(forbidden_root))
         except ValueError:
             pass
         else:
             raise DatasetError("atomic runner output must be outside the source repository")
-    if resolved.exists():
-        raise DatasetError("atomic runner output already exists")
-    resolved.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    mode = stat.S_IMODE(resolved.parent.stat().st_mode)
-    if mode & 0o077:
-        raise DatasetError("atomic runner output directory must be mode 0700 or stricter")
-    return resolved
+    try:
+        directory_fd = _open_private_directory(resolved.parent, create=True)
+    except OSError as error:
+        raise DatasetError("atomic runner output cannot use a symlink") from error
+    try:
+        directory_identity = _private_directory_identity(directory_fd)
+        try:
+            os.stat(resolved.name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise DatasetError("atomic runner output already exists")
+    except BaseException:
+        os.close(directory_fd)
+        raise
+    return PrivateOutputTarget(
+        path=resolved,
+        directory_fd=directory_fd,
+        directory_identity=directory_identity,
+    )
 
 
 def validate_run_metadata(
@@ -892,6 +1034,7 @@ def build_plan(
     )
     if not normalized_tools:
         raise DatasetError("atomic benchmark requires trusted observation tools")
+    environment = runtime_environment_identity()
     return {
         "schema_version": PLAN_SCHEMA_VERSION,
         "dataset": {
@@ -901,6 +1044,7 @@ def build_plan(
             "visibility": manifest["visibility"],
         },
         "database": {"schema_revision": DATABASE_SCHEMA_REVISION},
+        "environment": environment,
         "namespace": namespace,
         "run": {
             "id": run_id,
@@ -944,6 +1088,7 @@ def validate_execution_plan(
         "schema_version",
         "dataset",
         "database",
+        "environment",
         "namespace",
         "run",
         "model",
@@ -971,6 +1116,7 @@ def validate_execution_plan(
         raise DatasetError("atomic execution plan dataset binding mismatch")
     if plan.get("database") != {"schema_revision": DATABASE_SCHEMA_REVISION}:
         raise DatasetError("atomic execution plan database schema binding mismatch")
+    environment = validate_runtime_environment_identity(plan.get("environment"))
     namespace = plan.get("namespace")
     if not isinstance(namespace, str) or not namespace.startswith("hermes:automated-tests:"):
         raise DatasetError("atomic execution plan requires an automated namespace")
@@ -1089,7 +1235,7 @@ def validate_execution_plan(
         for field in ("contains_memory_text", "model_called", "external_data_sent")
     ):
         raise DatasetError("atomic execution plan must remain metadata-only")
-    return {**plan, "expected_turn_ids": expected_ids}
+    return {**plan, "environment": environment, "expected_turn_ids": expected_ids}
 
 
 def validate_output_runtime_identity(
@@ -1103,6 +1249,7 @@ def validate_output_runtime_identity(
         "contains_memory_text",
         "database",
         "dataset",
+        "environment",
         "external_data_sent",
         "model",
         "model_called",
@@ -1120,6 +1267,7 @@ def validate_output_runtime_identity(
         or not isinstance(run, dict)
         or not isinstance(model, dict)
         or not isinstance(policy, dict)
+        or not isinstance(plan.get("environment"), dict)
         or set(run)
         != {
             "id",
@@ -1170,8 +1318,10 @@ def validate_output_runtime_identity(
         source_sha256=run["source_sha256"],
         source_file_count=run["source_file_count"],
     )
+    environment = validate_runtime_environment_identity(plan["environment"])
     system = output.get("system")
     if not isinstance(system, dict) or set(system) != {
+        "environment_sha256",
         "name",
         "revision",
         "source_file_count",
@@ -1188,6 +1338,7 @@ def validate_output_runtime_identity(
         or system["source_file_count"] <= 0
     ):
         raise DatasetError("atomic output has invalid runtime identity metadata")
+    _validate_sha256(system["environment_sha256"], "environment_sha256")
     expected = run
     if (
         system["name"] != "agent-memory"
@@ -1195,6 +1346,7 @@ def validate_output_runtime_identity(
         or system["version"] != expected["system_version"]
         or system["source_sha256"] != expected["source_sha256"]
         or system["source_file_count"] != expected["source_file_count"]
+        or system["environment_sha256"] != environment["sha256"]
     ):
         raise DatasetError("atomic output runtime identity differs from the execution plan")
     if (
@@ -1203,6 +1355,10 @@ def validate_output_runtime_identity(
         or output.get("policy_version") != policy["atomic_extraction_version"]
     ):
         raise DatasetError("atomic output execution metadata differs from the execution plan")
+    validate_atomic_run_ledger(
+        output,
+        expected_case_count=plan["case_count"],
+    )
     if any(
         key in output
         for key in (
@@ -1351,8 +1507,14 @@ def process_model_jobs(
     prepared: tuple[PreparedCase, ...],
     namespace: str,
     model_profile: ModelProfile,
-) -> dict[str, int]:
+    max_model_calls: int,
+) -> ModelRunResult:
+    validate_model_call_budget(
+        max_model_calls=max_model_calls,
+        case_count=len(prepared),
+    )
     namespace_id = stable_uuid("namespace", namespace)
+    invocations_attempted = 0
     for item in prepared:
         row = connection.execute(
             """UPDATE ops.jobs SET status='running',attempt_count=attempt_count+1,
@@ -1364,6 +1526,9 @@ def process_model_jobs(
         ).fetchone()
         if row is None:
             raise DatasetError(f"missing pending model job for {item.case['case_id']}")
+        if invocations_attempted >= max_model_calls:
+            raise DatasetError("atomic runner model invocation budget exhausted")
+        invocations_attempted += 1
         process_one(connection, row, model_profile=model_profile)
         connection.execute(
             """UPDATE ops.jobs SET status='failed',run_after=now(),lease_until=NULL,
@@ -1380,7 +1545,25 @@ def process_model_jobs(
             (namespace_id,),
         ).fetchall()
     )
-    return {str(key): int(value) for key, value in counts.items()}
+    job_statuses = {str(key): int(value) for key, value in counts.items()}
+    result = ModelRunResult(
+        job_statuses=job_statuses,
+        invocation_budget=max_model_calls,
+        invocations_attempted=invocations_attempted,
+        invocations_terminal_success=job_statuses.get("done", 0),
+        invocations_terminal_failure=job_statuses.get("failed", 0),
+    )
+    validate_atomic_run_ledger(
+        {
+            "case_count": len(prepared),
+            "job_statuses": result.job_statuses,
+            "model_called": result.invocations_attempted > 0,
+            "model_invocations": result.model_invocations,
+            "run_status": result.run_status,
+        },
+        expected_case_count=len(prepared),
+    )
+    return result
 
 
 def _fact_rows(
@@ -1431,14 +1614,16 @@ def build_private_output(
     system_version: str,
     source_sha256: str,
     source_file_count: int,
+    environment_sha256: str,
     model: str,
     contains_production_data: bool,
     dataset_visibility: str,
-    model_called: bool,
+    model_run: ModelRunResult,
     external_data_sent: bool,
 ) -> dict[str, Any]:
     _validate_sha256(execution_plan_sha256, "execution_plan_sha256")
     _validate_sha256(source_sha256, "source_sha256")
+    _validate_sha256(environment_sha256, "environment_sha256")
     output_cases: list[dict[str, Any]] = []
     for item in prepared:
         predictions = _fact_rows(connection, namespace=namespace, turn_id=item.turn_id)
@@ -1486,7 +1671,7 @@ def build_private_output(
         output_cases.append(
             {"case_id": item.case["case_id"], "facts": predictions, "recalls": recalls}
         )
-    return {
+    payload = {
         "schema_version": OUTPUT_SCHEMA_VERSION,
         "runner_version": RUNNER_VERSION,
         "dataset_id": dataset_id,
@@ -1494,6 +1679,7 @@ def build_private_output(
         "execution_plan_sha256": execution_plan_sha256,
         "run_id": run_id,
         "system": {
+            "environment_sha256": environment_sha256,
             "name": "agent-memory",
             "version": system_version,
             "revision": system_revision,
@@ -1502,34 +1688,122 @@ def build_private_output(
         },
         "model": model,
         "policy_version": ATOMIC_EXTRACTION_VERSION,
+        "run_status": model_run.run_status,
+        "case_count": len(prepared),
+        "job_statuses": model_run.job_statuses,
+        "model_invocations": model_run.model_invocations,
         "contains_memory_text": True,
         "contains_production_data": contains_production_data,
         "dataset_visibility": dataset_visibility,
-        "model_called": model_called,
-        "external_data_sent": external_data_sent,
+        "model_called": model_run.invocations_attempted > 0,
+        "external_data_sent": external_data_sent and model_run.invocations_attempted > 0,
         "cases": output_cases,
     }
+    validate_atomic_run_ledger(
+        payload,
+        expected_case_count=len(prepared),
+    )
+    return payload
 
 
-def write_private_json(path: Path, payload: dict[str, Any]) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags, 0o600)
+def _verify_private_output_target(target: PrivateOutputTarget) -> None:
+    if target.closed:
+        raise DatasetError("atomic runner private output target is closed")
+    if _private_directory_identity(target.directory_fd) != target.directory_identity:
+        raise DatasetError("atomic runner output directory changed after validation")
+
+
+def _verify_private_output_path(
+    target: PrivateOutputTarget, *, file_identity: tuple[int, int, int, int]
+) -> None:
     try:
+        verification_fd = _open_private_directory(target.path.parent, create=False)
+    except OSError as error:
+        raise DatasetError("atomic runner output directory path changed during write") from error
+    try:
+        if _private_directory_identity(verification_fd) != target.directory_identity:
+            raise DatasetError("atomic runner output directory path changed during write")
+        output_stat = os.stat(
+            target.path.name,
+            dir_fd=verification_fd,
+            follow_symlinks=False,
+        )
+        actual_identity = (
+            output_stat.st_dev,
+            output_stat.st_ino,
+            output_stat.st_uid,
+            stat.S_IMODE(output_stat.st_mode),
+        )
+        if actual_identity != file_identity or not stat.S_ISREG(output_stat.st_mode):
+            raise DatasetError("atomic runner output file changed during write")
+    finally:
+        os.close(verification_fd)
+
+
+def write_private_json(
+    path: Path | os.PathLike[str], payload: dict[str, Any]
+) -> None:
+    target = path if isinstance(path, PrivateOutputTarget) else validate_private_output(path)
+    created = False
+    descriptor = -1
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        _verify_private_output_target(target)
+        descriptor = os.open(
+            target.path.name,
+            flags,
+            0o600,
+            dir_fd=target.directory_fd,
+        )
+        created = True
+        os.set_inheritable(descriptor, False)
+        os.fchmod(descriptor, 0o600)
+        output_stat = os.fstat(descriptor)
+        file_identity = (
+            output_stat.st_dev,
+            output_stat.st_ino,
+            output_stat.st_uid,
+            stat.S_IMODE(output_stat.st_mode),
+        )
+        if (
+            not stat.S_ISREG(output_stat.st_mode)
+            or output_stat.st_nlink != 1
+            or output_stat.st_uid != os.geteuid()
+            or stat.S_IMODE(output_stat.st_mode) != 0o600
+        ):
+            raise DatasetError("atomic runner output file is not a private regular file")
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
             json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        _verify_private_output_target(target)
+        _verify_private_output_path(target, file_identity=file_identity)
     except BaseException:
-        path.unlink(missing_ok=True)
+        if descriptor >= 0:
+            os.close(descriptor)
+        if created:
+            with suppress(FileNotFoundError):
+                os.unlink(target.path.name, dir_fd=target.directory_fd)
         raise
+    finally:
+        target.close()
 
 
 def build_efficiency_input(
     *,
     output: dict[str, Any],
-    job_statuses: dict[str, int],
     window_start: datetime,
     window_end: datetime,
 ) -> dict[str, Any]:
+    validate_atomic_run_ledger(output)
     active = 0
     candidate = 0
     for case in output["cases"]:
@@ -1538,15 +1812,8 @@ def build_efficiency_input(
                 active += 1
             elif fact["memory_state"] == "candidate":
                 candidate += 1
-    terminal_success = job_statuses.get("done", 0)
-    terminal_failure = job_statuses.get("failed", 0)
-    unfinished = sum(
-        count
-        for status, count in job_statuses.items()
-        if status not in {"done", "failed", "cancelled"}
-    )
     return {
-        "schema_version": "am-eval-efficiency-input-v2",
+        "schema_version": "am-eval-efficiency-input-v4",
         "run_id": output["run_id"],
         "scope": "isolated",
         "window_start": window_start.isoformat(),
@@ -1555,20 +1822,86 @@ def build_efficiency_input(
         "system_version": output["system"]["version"],
         "system_source_file_count": output["system"]["source_file_count"],
         "system_source_sha256": output["system"]["source_sha256"],
+        "system_environment_sha256": output["system"]["environment_sha256"],
         "execution_plan_sha256": output["execution_plan_sha256"],
         "policy_version": output["policy_version"],
         "model": output["model"],
+        "run_status": output["run_status"],
+        "case_count": output["case_count"],
+        "job_statuses": output["job_statuses"],
+        "model_called": output["model_called"],
+        "model_invocations": output["model_invocations"],
         "counts": {
             "auto_admitted_count": active,
             "manual_review_count": candidate,
-            "terminal_model_success_count": terminal_success,
-            "terminal_model_failure_count": terminal_failure,
-            "unfinished_model_job_count": unfinished,
+            "terminal_model_success_count": output["job_statuses"].get("done", 0),
+            "terminal_model_failure_count": output["job_statuses"].get("failed", 0),
+            "unfinished_model_job_count": 0,
         },
         "contains_memory_text": False,
         "contains_production_data": output["contains_production_data"],
         "external_data_sent": output["external_data_sent"],
     }
+
+
+def validate_atomic_run_ledger(
+    payload: dict[str, Any],
+    *,
+    expected_case_count: int | None = None,
+    require_complete: bool = False,
+) -> None:
+    case_count = payload.get("case_count")
+    if (
+        isinstance(case_count, bool)
+        or not isinstance(case_count, int)
+        or case_count <= 0
+        or (expected_case_count is not None and case_count != expected_case_count)
+    ):
+        raise DatasetError("atomic output case count differs from the execution plan")
+    job_statuses = payload.get("job_statuses")
+    if (
+        not isinstance(job_statuses, dict)
+        or not job_statuses
+        or any(status not in {"done", "failed"} for status in job_statuses)
+        or any(
+            isinstance(count, bool) or not isinstance(count, int) or count <= 0
+            for count in job_statuses.values()
+        )
+        or sum(job_statuses.values()) != case_count
+    ):
+        raise DatasetError("atomic output has invalid terminal model job statuses")
+    model_invocations = payload.get("model_invocations")
+    if not isinstance(model_invocations, dict) or set(model_invocations) != {
+        "attempted",
+        "budget",
+        "terminal_failure",
+        "terminal_success",
+    }:
+        raise DatasetError("atomic output has invalid model invocation ledger")
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in model_invocations.values()
+    ):
+        raise DatasetError("atomic output has invalid model invocation ledger")
+    done = job_statuses.get("done", 0)
+    failed = job_statuses.get("failed", 0)
+    if (
+        model_invocations["budget"] != case_count
+        or model_invocations["attempted"] != case_count
+        or model_invocations["terminal_success"] != done
+        or model_invocations["terminal_failure"] != failed
+        or model_invocations["attempted"]
+        != model_invocations["terminal_success"]
+        + model_invocations["terminal_failure"]
+    ):
+        raise DatasetError("atomic output model invocation ledger differs from job terminals")
+    expected_status = "complete" if done == case_count and failed == 0 else "failed"
+    if payload.get("run_status") != expected_status:
+        raise DatasetError("atomic output run status differs from job terminals")
+    if payload.get("model_called") is not (model_invocations["attempted"] > 0):
+        raise DatasetError("atomic output model_called differs from the invocation ledger")
+    if require_complete and expected_status != "complete":
+        raise DatasetError("atomic quality scoring requires a complete model run")
 
 
 def benchmark_run_complete(*, job_statuses: dict[str, int], case_count: int) -> bool:
@@ -1591,16 +1924,23 @@ def emit_run_summary(
     *,
     run_id: str,
     case_count: int,
-    job_statuses: dict[str, int],
+    model_run: ModelRunResult,
     output_path: Path,
     efficiency_output_path: Path,
     external_data_sent: bool,
     execution_plan_sha256: str,
 ) -> None:
-    complete = benchmark_run_complete(
-        job_statuses=job_statuses,
-        case_count=case_count,
+    validate_atomic_run_ledger(
+        {
+            "case_count": case_count,
+            "job_statuses": model_run.job_statuses,
+            "model_called": model_run.invocations_attempted > 0,
+            "model_invocations": model_run.model_invocations,
+            "run_status": model_run.run_status,
+        },
+        expected_case_count=case_count,
     )
+    complete = model_run.run_status == "complete"
     print(
         json.dumps(
             {
@@ -1608,7 +1948,9 @@ def emit_run_summary(
                 "run_id": run_id,
                 "execution_plan_sha256": execution_plan_sha256,
                 "case_count": case_count,
-                "job_statuses": job_statuses,
+                "run_status": model_run.run_status,
+                "job_statuses": model_run.job_statuses,
+                "model_invocations": model_run.model_invocations,
                 "output": str(output_path),
                 "efficiency_output": str(efficiency_output_path),
                 "contains_memory_text": False,
@@ -1663,13 +2005,15 @@ def plan_main() -> None:
     parser.add_argument("--trusted-observation-tools", required=True)
     arguments = parser.parse_args()
     runtime_identity = resolve_runtime_identity()
-    manifest_path = arguments.manifest.expanduser().resolve()
-    manifest_sha256 = sha256_file(manifest_path)
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    dataset = load_dataset_snapshot(arguments.manifest)
+    manifest_sha256 = dataset.manifest_sha256
+    manifest = dataset.manifest
     if manifest.get("contains_production_data") is True:
-        manifest_path = validate_private_input(arguments.manifest)
+        validated_private_path = validate_private_input(arguments.manifest)
+        if validated_private_path != dataset.path:
+            raise DatasetError("private manifest path differs from the frozen snapshot")
     cases = tuple(
-        case for case in load_dataset(manifest_path) if case["suite"] == "atomic_fact"
+        case for case in dataset.cases if case["suite"] == "atomic_fact"
     )
     if not cases:
         parser.error("dataset has no atomic_fact cases")
@@ -1713,6 +2057,7 @@ def plan_main() -> None:
                 "model_timeout_seconds": arguments.model_timeout_seconds,
                 "database_schema_revision": DATABASE_SCHEMA_REVISION,
                 "runtime_identity_provenance": runtime_identity.provenance,
+                "runtime_environment_sha256": plan["environment"]["sha256"],
                 "source_file_count": runtime_identity.source_file_count,
                 "source_sha256": runtime_identity.source_sha256,
                 "system_revision": runtime_identity.revision,
@@ -1735,22 +2080,33 @@ class ValidatedRun:
     plan_sha256: str
     settings: Settings
     profile: ModelProfile
-    output_path: Path
-    efficiency_output_path: Path
+    output_path: PrivateOutputTarget
+    efficiency_output_path: PrivateOutputTarget
     runtime_identity: RuntimeIdentity
+    runtime_environment: dict[str, Any]
+
+
+def load_frozen_runtime_settings() -> Settings:
+    """Load once, then make worker policy reads reuse the validated settings object."""
+
+    get_settings.cache_clear()
+    return get_settings()
 
 
 def validate_run_preflight(
     arguments: argparse.Namespace, *, require_external_confirmation: bool
 ) -> ValidatedRun:
     runtime_identity = resolve_runtime_identity()
-    manifest_path = arguments.manifest.expanduser().resolve()
-    manifest_sha256 = sha256_file(manifest_path)
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    runtime_environment = runtime_environment_identity()
+    dataset = load_dataset_snapshot(arguments.manifest)
+    manifest_sha256 = dataset.manifest_sha256
+    manifest = dataset.manifest
     if manifest.get("contains_production_data") is True:
-        manifest_path = validate_private_input(arguments.manifest)
+        validated_private_path = validate_private_input(arguments.manifest)
+        if validated_private_path != dataset.path:
+            raise DatasetError("private manifest path differs from the frozen snapshot")
     cases = tuple(
-        case for case in load_dataset(manifest_path) if case["suite"] == "atomic_fact"
+        case for case in dataset.cases if case["suite"] == "atomic_fact"
     )
     if not cases:
         raise DatasetError("dataset has no atomic_fact cases")
@@ -1771,6 +2127,10 @@ def validate_run_preflight(
         manifest_sha256=manifest_sha256,
         cases=cases,
     )
+    if plan["environment"] != runtime_environment:
+        raise DatasetError(
+            "atomic execution plan runtime environment differs from the executing process"
+        )
     if (
         plan["run"]["system_revision"] != runtime_identity.revision
         or plan["run"]["system_version"] != runtime_identity.version
@@ -1782,7 +2142,7 @@ def validate_run_preflight(
         arguments.confirm_external_data != plan["required_external_data_confirmation"]
     ):
         raise DatasetError("explicit external-data confirmation is required")
-    settings = Settings()
+    settings = load_frozen_runtime_settings()
     validate_isolated_database_url(settings.database_url)
     profile = validate_runtime_settings(
         settings,
@@ -1813,11 +2173,17 @@ def validate_run_preflight(
         raise DatasetError("AGENT_MEMORY_TRUSTED_OBSERVATION_TOOL_ALLOWLIST differs from the plan")
     source_root = runtime_identity.source_root
     output_path = validate_private_output(arguments.output, forbidden_root=source_root)
-    efficiency_output_path = validate_private_output(
-        arguments.efficiency_output,
-        forbidden_root=source_root,
-    )
-    if output_path == efficiency_output_path:
+    try:
+        efficiency_output_path = validate_private_output(
+            arguments.efficiency_output,
+            forbidden_root=source_root,
+        )
+    except BaseException:
+        output_path.close()
+        raise
+    if output_path.path == efficiency_output_path.path:
+        output_path.close()
+        efficiency_output_path.close()
         raise DatasetError("private and efficiency outputs must differ")
     return ValidatedRun(
         manifest=manifest,
@@ -1830,6 +2196,7 @@ def validate_run_preflight(
         output_path=output_path,
         efficiency_output_path=efficiency_output_path,
         runtime_identity=runtime_identity,
+        runtime_environment=runtime_environment,
     )
 
 
@@ -1838,32 +2205,37 @@ def preflight_main() -> None:
         build_parser(preflight=True).parse_args(),
         require_external_confirmation=False,
     )
-    print(
-        json.dumps(
-            {
-                "status": "PREFLIGHT_PASS",
-                "run_id": validated.plan["run"]["id"],
-                "plan_sha256": validated.plan_sha256,
-                "manifest_sha256": validated.manifest_sha256,
-                "case_count": len(validated.cases),
-                "model": validated.profile.model,
-                "model_call_budget": validated.plan["model"]["max_calls"],
-                "max_atomic_facts": validated.plan["model"]["max_atomic_facts"],
-                "model_timeout_seconds": validated.plan["model"]["timeout_seconds"],
-                "database_schema_revision": validated.plan["database"]["schema_revision"],
-                "runtime_identity_provenance": validated.runtime_identity.provenance,
-                "source_file_count": validated.runtime_identity.source_file_count,
-                "source_sha256": validated.runtime_identity.source_sha256,
-                "system_revision": validated.runtime_identity.revision,
-                "system_version": validated.runtime_identity.version,
-                "contains_memory_text": False,
-                "database_connected": False,
-                "model_called": False,
-                "external_data_sent": False,
-            },
-            sort_keys=True,
+    try:
+        print(
+            json.dumps(
+                {
+                    "status": "PREFLIGHT_PASS",
+                    "run_id": validated.plan["run"]["id"],
+                    "plan_sha256": validated.plan_sha256,
+                    "manifest_sha256": validated.manifest_sha256,
+                    "case_count": len(validated.cases),
+                    "model": validated.profile.model,
+                    "model_call_budget": validated.plan["model"]["max_calls"],
+                    "max_atomic_facts": validated.plan["model"]["max_atomic_facts"],
+                    "model_timeout_seconds": validated.plan["model"]["timeout_seconds"],
+                    "database_schema_revision": validated.plan["database"]["schema_revision"],
+                    "runtime_identity_provenance": validated.runtime_identity.provenance,
+                    "runtime_environment_sha256": validated.runtime_environment["sha256"],
+                    "source_file_count": validated.runtime_identity.source_file_count,
+                    "source_sha256": validated.runtime_identity.source_sha256,
+                    "system_revision": validated.runtime_identity.revision,
+                    "system_version": validated.runtime_identity.version,
+                    "contains_memory_text": False,
+                    "database_connected": False,
+                    "model_called": False,
+                    "external_data_sent": False,
+                },
+                sort_keys=True,
+            )
         )
-    )
+    finally:
+        validated.output_path.close()
+        validated.efficiency_output_path.close()
 
 
 def main() -> None:
@@ -1896,11 +2268,14 @@ def main() -> None:
         if {item.turn_id for item in prepared} != plan["expected_turn_ids"]:
             raise SystemExit("atomic runner generated an unexpected turn ID")
         validate_runtime_identity_unchanged(validated.runtime_identity)
-        job_statuses = process_model_jobs(
+        if runtime_environment_identity() != validated.runtime_environment:
+            raise DatasetError("atomic runner runtime environment changed during execution")
+        model_run = process_model_jobs(
             connection,
             prepared=prepared,
             namespace=plan["namespace"],
             model_profile=validated.profile,
+            max_model_calls=plan["model"]["max_calls"],
         )
         payload = build_private_output(
             connection,
@@ -1914,18 +2289,19 @@ def main() -> None:
             system_version=plan["run"]["system_version"],
             source_sha256=plan["run"]["source_sha256"],
             source_file_count=plan["run"]["source_file_count"],
+            environment_sha256=plan["environment"]["sha256"],
             model=validated.profile.model,
             contains_production_data=validated.manifest["contains_production_data"],
             dataset_visibility=validated.manifest["visibility"],
-            model_called=True,
+            model_run=model_run,
             external_data_sent=validated.profile.sends_data_externally,
         )
     validate_runtime_identity_unchanged(validated.runtime_identity)
-    payload["job_statuses"] = job_statuses
+    if runtime_environment_identity() != validated.runtime_environment:
+        raise DatasetError("atomic runner runtime environment changed during execution")
     write_private_json(validated.output_path, payload)
     efficiency_payload = build_efficiency_input(
         output=payload,
-        job_statuses=job_statuses,
         window_start=started_at,
         window_end=datetime.now(UTC),
     )
@@ -1933,7 +2309,7 @@ def main() -> None:
     emit_run_summary(
         run_id=plan["run"]["id"],
         case_count=len(cases),
-        job_statuses=job_statuses,
+        model_run=model_run,
         output_path=validated.output_path,
         efficiency_output_path=validated.efficiency_output_path,
         external_data_sent=payload["external_data_sent"],

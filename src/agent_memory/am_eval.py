@@ -1,10 +1,480 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from pathlib import Path
 from typing import Any
+
+from .am_eval_atomic_runner import resolve_runtime_identity
+from .am_eval_dataset import DatasetError, read_file_snapshot
+from .am_eval_environment import runtime_environment_identity
+
+RUN_SCHEMA_VERSION = "am-eval-run-v2"
+ATTESTATION_SCHEMA_VERSION = "am-eval-run-attestation-v1"
+RESULT_SCHEMA_VERSION = "am-eval-result-v2"
+SHA256_CHARACTERS = frozenset("0123456789abcdef")
+GIT_REVISION_LENGTHS = frozenset({40, 64})
+PROHIBITED_FORMAL_IDENTITY_MARKERS = ("fake", "fixture", "mock", "oracle")
+MODEL_QUALITY_METRIC_IDS = frozenset({"M01", "M02", "M03", "M07"})
+EFFICIENCY_METRIC_IDS = frozenset({"M22", "M23"})
+ARTIFACT_PRODUCERS = {
+    "am-eval-measurement-attestation-v1": "agent-memory-am-eval-attestation-assembler",
+    "am-eval-atomic-quality-attestation-v1": (
+        "agent-memory-am-eval-attestation-assembler"
+    ),
+    "am-eval-efficiency-attestation-v1": "agent-memory-am-eval-attestation-assembler",
+    "am-eval-lifecycle-attestation-v1": "agent-memory-am-eval-attestation-assembler",
+}
+
+
+def _is_hex_digest(value: object, *, lengths: frozenset[int]) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) in lengths
+        and value == value.casefold()
+        and all(character in SHA256_CHARACTERS for character in value)
+    )
+
+
+def _require_non_empty_string(value: object, *, label: str) -> str:
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise ValueError(f"{label} must be a non-empty trimmed string")
+    return value
+
+
+def _validate_execution_artifact(payload: object) -> dict[str, str]:
+    if not isinstance(payload, dict) or set(payload) != {
+        "image_name",
+        "manifest_digest",
+        "platform",
+        "type",
+    }:
+        raise ValueError("formal run execution artifact has an invalid schema")
+    if payload.get("type") != "oci-image":
+        raise ValueError("formal run requires an OCI image execution artifact")
+    image_name = _require_non_empty_string(payload.get("image_name"), label="image name")
+    if (
+        "@" in image_name
+        or any(character.isspace() for character in image_name)
+        or "/" not in image_name
+        or ":" in image_name.rsplit("/", maxsplit=1)[-1]
+    ):
+        raise ValueError("formal run image name must be an untagged OCI repository name")
+    manifest_digest = payload.get("manifest_digest")
+    if (
+        not isinstance(manifest_digest, str)
+        or not manifest_digest.startswith("sha256:")
+        or not _is_hex_digest(
+            manifest_digest.removeprefix("sha256:"), lengths=frozenset({64})
+        )
+    ):
+        raise ValueError("formal run requires an OCI manifest SHA-256 digest")
+    platform_name = payload.get("platform")
+    if platform_name not in {"linux/amd64", "linux/arm64"}:
+        raise ValueError("formal run requires a supported OCI platform")
+    return {
+        "image_name": image_name,
+        "manifest_digest": manifest_digest,
+        "platform": platform_name,
+        "type": "oci-image",
+    }
+
+
+def formal_run_payload_sha256(run: dict[str, Any]) -> str:
+    """Return the canonical digest covered by a formal run attestation."""
+
+    covered = dict(run)
+    attestation = covered.get("attestation")
+    if isinstance(attestation, dict):
+        covered["attestation"] = {
+            key: value for key, value in attestation.items() if key != "run_payload_sha256"
+        }
+    payload = json.dumps(
+        covered,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _validate_run_identity(run: dict[str, Any], *, formal: bool) -> None:
+    _require_non_empty_string(run.get("run_id"), label="run_id")
+    _require_non_empty_string(run.get("track"), label="track")
+
+    system = run.get("system")
+    if not isinstance(system, dict):
+        raise ValueError("run system must be an object")
+    system_name = _require_non_empty_string(system.get("name"), label="system name")
+    _require_non_empty_string(system.get("version"), label="system version")
+    if not _is_hex_digest(system.get("revision"), lengths=GIT_REVISION_LENGTHS):
+        raise ValueError("system revision must be a full lowercase Git object ID")
+    if formal:
+        if set(system) != {
+            "environment_sha256",
+            "name",
+            "revision",
+            "source_file_count",
+            "source_sha256",
+            "version",
+        }:
+            raise ValueError("formal run system identity has an invalid schema")
+        lowered_name = system_name.casefold()
+        if any(marker in lowered_name for marker in PROHIBITED_FORMAL_IDENTITY_MARKERS):
+            raise ValueError(
+                "formal run system identity cannot be a fixture, mock, fake, or oracle"
+            )
+        if not _is_hex_digest(system.get("source_sha256"), lengths=frozenset({64})):
+            raise ValueError("formal run system requires a lowercase source SHA-256")
+        if not _is_hex_digest(
+            system.get("environment_sha256"), lengths=frozenset({64})
+        ):
+            raise ValueError("formal run system requires a runtime environment SHA-256")
+        source_file_count = system.get("source_file_count")
+        if (
+            isinstance(source_file_count, bool)
+            or not isinstance(source_file_count, int)
+            or source_file_count <= 0
+        ):
+            raise ValueError("formal run system requires a positive source_file_count")
+
+    dataset = run.get("dataset")
+    if not isinstance(dataset, dict):
+        raise ValueError("run dataset must be an object")
+    _require_non_empty_string(dataset.get("id"), label="dataset id")
+    if not _is_hex_digest(dataset.get("sha256"), lengths=frozenset({64})):
+        raise ValueError("dataset sha256 must be a lowercase SHA-256")
+    if formal:
+        if set(dataset) != {"blind", "id", "sha256", "visibility"}:
+            raise ValueError("formal run dataset has an invalid schema")
+        if dataset.get("visibility") not in {"open", "private", "restricted"}:
+            raise ValueError("formal run dataset requires a supported visibility")
+        if not isinstance(dataset.get("blind"), bool):
+            raise ValueError("formal run dataset requires a blind declaration")
+
+
+def _validate_formal_scorer_identity(run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    identity = resolve_runtime_identity()
+    environment = runtime_environment_identity()
+    system = run["system"]
+    if identity.provenance != "image-build-metadata":
+        raise ValueError("formal AM-Eval scoring must run inside a verified image")
+    if (
+        identity.revision != system["revision"]
+        or identity.version != system["version"]
+        or identity.source_sha256 != system["source_sha256"]
+        or identity.source_file_count != system["source_file_count"]
+    ):
+        raise ValueError("formal run scorer source identity differs from the claimed system")
+    if environment["sha256"] != system["environment_sha256"]:
+        raise ValueError("formal run scorer environment differs from the claimed system")
+    return (
+        {
+            "provenance": identity.provenance,
+            "revision": identity.revision,
+            "source_file_count": identity.source_file_count,
+            "source_sha256": identity.source_sha256,
+            "version": identity.version,
+        },
+        environment,
+    )
+
+
+def _validate_legacy_evidence(measurement: dict[str, Any], *, item_id: str) -> None:
+    evidence = measurement.get("evidence")
+    if (
+        not isinstance(evidence, list)
+        or not evidence
+        or not all(isinstance(item, str) and item.strip() for item in evidence)
+    ):
+        raise ValueError(f"measurement {item_id} requires non-empty evidence")
+
+
+def _decode_artifact(artifact_id: str, payload: bytes) -> dict[str, Any]:
+    try:
+        artifact = json.loads(
+            payload.decode("utf-8"),
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"non-finite JSON value {value}")
+            ),
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError(f"attestation artifact {artifact_id} is not strict UTF-8 JSON") from error
+    if not isinstance(artifact, dict):
+        raise ValueError(f"attestation artifact {artifact_id} must be a JSON object")
+    return artifact
+
+
+def _load_confirmed_json(path: Path, expected_sha256: str, *, label: str) -> dict[str, Any]:
+    snapshot = read_file_snapshot(path)
+    if snapshot.sha256 != expected_sha256.casefold():
+        raise DatasetError(f"{label} SHA-256 confirmation mismatch")
+    try:
+        value = json.loads(
+            snapshot.payload.decode("utf-8"),
+            parse_constant=lambda constant: (_ for _ in ()).throw(
+                ValueError(f"non-finite JSON value {constant}")
+            ),
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise DatasetError(f"{label} is not strict UTF-8 JSON") from error
+    if not isinstance(value, dict):
+        raise DatasetError(f"{label} must be a JSON object")
+    return value
+
+
+def _validate_artifact(
+    artifact_id: str,
+    descriptor: object,
+    payload: bytes | None,
+    *,
+    run: dict[str, Any],
+    supplied_measurements: dict[str, Any],
+) -> set[str]:
+    if not isinstance(descriptor, dict) or set(descriptor) != {"sha256"}:
+        raise ValueError(f"attestation artifact {artifact_id} descriptor must contain only sha256")
+    expected_sha256 = descriptor.get("sha256")
+    if not _is_hex_digest(expected_sha256, lengths=frozenset({64})):
+        raise ValueError(f"attestation artifact {artifact_id} requires a SHA-256")
+    if payload is None:
+        raise ValueError(f"formal run requires actual artifact bytes for {artifact_id}")
+    if not isinstance(payload, bytes):
+        raise ValueError(f"attestation artifact {artifact_id} payload must be bytes")
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
+        raise ValueError(f"attestation artifact {artifact_id} SHA-256 mismatch")
+    artifact = _decode_artifact(artifact_id, payload)
+
+    schema_version = artifact.get("schema_version")
+    producer = artifact.get("producer")
+    if schema_version not in ARTIFACT_PRODUCERS:
+        raise ValueError(f"attestation artifact {artifact_id} has an unsupported schema")
+    if producer != ARTIFACT_PRODUCERS[schema_version]:
+        raise ValueError(f"attestation artifact {artifact_id} has an ineligible producer")
+    measurement_ids = artifact.get("measurement_ids")
+    if (
+        not isinstance(measurement_ids, list)
+        or not measurement_ids
+        or not all(isinstance(item, str) and item for item in measurement_ids)
+        or len(set(measurement_ids)) != len(measurement_ids)
+    ):
+        raise ValueError(f"attestation artifact {artifact_id} has invalid measurement IDs")
+    artifact_measurements = set(measurement_ids)
+    if not artifact_measurements <= set(supplied_measurements):
+        raise ValueError(f"attestation artifact {artifact_id} references an unmeasured item")
+
+    artifact_values = artifact.get("measurements")
+    if not isinstance(artifact_values, dict) or set(artifact_values) != artifact_measurements:
+        raise ValueError(
+            f"attestation artifact {artifact_id} measurement payload does not match its IDs"
+        )
+    for item_id in artifact_measurements:
+        artifact_measurement = artifact_values[item_id]
+        run_measurement = supplied_measurements[item_id]
+        if not isinstance(artifact_measurement, dict) or set(artifact_measurement) != {
+            "sample_count",
+            "value",
+        }:
+            raise ValueError(
+                f"attestation artifact {artifact_id} measurement {item_id} has an invalid shape"
+            )
+        if artifact_measurement != {
+            "sample_count": run_measurement.get("sample_count"),
+            "value": run_measurement.get("value"),
+        }:
+            raise ValueError(
+                f"attestation artifact {artifact_id} measurement {item_id} value mismatch"
+            )
+
+    system = run["system"]
+    dataset = run["dataset"]
+    bindings = {
+        "system_environment_sha256": system["environment_sha256"],
+        "system_revision": system["revision"],
+        "system_source_sha256": system["source_sha256"],
+        "dataset_manifest_sha256": dataset["sha256"],
+        "track": run["track"],
+        "dataset_visibility": dataset["visibility"],
+        "blind": dataset["blind"],
+        "image_reference": (
+            f"{run['execution_artifact']['image_name']}@"
+            f"{run['execution_artifact']['manifest_digest']}"
+        ),
+        "image_platform": run["execution_artifact"]["platform"],
+    }
+    for key, expected in bindings.items():
+        if artifact.get(key) != expected:
+            raise ValueError(f"attestation artifact {artifact_id} {key} binding mismatch")
+    if artifact.get("contains_memory_text") is not False:
+        raise ValueError(f"attestation artifact {artifact_id} must not contain memory text")
+    if not isinstance(artifact.get("model_called"), bool):
+        raise ValueError(f"attestation artifact {artifact_id} requires model_called")
+
+    quality_ids = artifact_measurements & MODEL_QUALITY_METRIC_IDS
+    efficiency_ids = artifact_measurements & EFFICIENCY_METRIC_IDS
+    if quality_ids:
+        if schema_version != "am-eval-atomic-quality-attestation-v1":
+            raise ValueError("formal model-quality metrics require an atomic-quality artifact")
+        if artifact_measurements - MODEL_QUALITY_METRIC_IDS:
+            raise ValueError("atomic-quality artifact cannot attest unrelated measurements")
+        if artifact.get("model_called") is not True:
+            raise ValueError("formal model-quality metrics require a real model call")
+        if run["track"] != "recommended-product":
+            raise ValueError("formal model-quality metrics require recommended-product track")
+        if dataset["visibility"] not in {"private", "restricted"} or dataset["blind"] is not True:
+            raise ValueError("formal model-quality metrics require a private blind dataset")
+        if artifact.get("scope") != "private-blind":
+            raise ValueError("formal model-quality artifact requires private-blind scope")
+        if not _is_hex_digest(artifact.get("execution_plan_sha256"), lengths=frozenset({64})):
+            raise ValueError("formal model-quality artifact requires an execution plan SHA-256")
+    elif schema_version == "am-eval-atomic-quality-attestation-v1":
+        raise ValueError("atomic-quality artifact must attest model-quality metrics")
+
+    if efficiency_ids:
+        if schema_version != "am-eval-efficiency-attestation-v1":
+            raise ValueError("formal efficiency metrics require an efficiency artifact")
+        if artifact_measurements - EFFICIENCY_METRIC_IDS:
+            raise ValueError("efficiency artifact cannot attest unrelated measurements")
+        if "M22" in efficiency_ids and artifact.get("scope") != "production-shadow":
+            raise ValueError("formal M22 requires production-shadow evidence")
+        if "M23" in efficiency_ids:
+            if artifact.get("model_called") is not True:
+                raise ValueError("formal M23 requires real model terminal jobs")
+            if artifact.get("terminal_jobs_complete") is not True:
+                raise ValueError("formal M23 requires all model jobs to be terminal")
+    elif schema_version == "am-eval-efficiency-attestation-v1":
+        raise ValueError("efficiency artifact must attest M22 or M23")
+
+    if (
+        not quality_ids
+        and not efficiency_ids
+        and schema_version
+        not in {
+            "am-eval-measurement-attestation-v1",
+            "am-eval-lifecycle-attestation-v1",
+        }
+    ):
+        raise ValueError(f"attestation artifact {artifact_id} is ineligible for its measurements")
+
+    allowed_keys = {
+        "blind",
+        "contains_memory_text",
+        "dataset_manifest_sha256",
+        "dataset_visibility",
+        "image_platform",
+        "image_reference",
+        "measurement_ids",
+        "measurements",
+        "model_called",
+        "producer",
+        "schema_version",
+        "scope",
+        "system_environment_sha256",
+        "system_revision",
+        "system_source_sha256",
+        "track",
+    }
+    if quality_ids:
+        allowed_keys.add("execution_plan_sha256")
+    if "M23" in efficiency_ids:
+        allowed_keys.add("terminal_jobs_complete")
+    unknown_keys = set(artifact) - allowed_keys
+    if unknown_keys:
+        raise ValueError(
+            f"attestation artifact {artifact_id} has unknown fields: "
+            + ", ".join(sorted(unknown_keys))
+        )
+    return artifact_measurements
+
+
+def _validate_formal_attestation(
+    run: dict[str, Any],
+    *,
+    supplied_gates: dict[str, Any],
+    supplied_metrics: dict[str, Any],
+    artifact_payloads: dict[str, bytes] | None,
+) -> None:
+    attestation = run.get("attestation")
+    if not isinstance(attestation, dict):
+        raise ValueError("formal run requires an attestation object")
+    if set(attestation) != {
+        "artifacts",
+        "claim",
+        "dataset_manifest_sha256",
+        "image_platform",
+        "image_reference",
+        "run_payload_sha256",
+        "schema_version",
+        "system_environment_sha256",
+        "system_revision",
+        "system_source_sha256",
+        "track",
+    }:
+        raise ValueError("formal run attestation has an invalid schema")
+    if attestation.get("schema_version") != ATTESTATION_SCHEMA_VERSION:
+        raise ValueError("unsupported formal run attestation schema")
+    if attestation.get("claim") != "OFFICIAL_AM_EVAL_RUN":
+        raise ValueError("formal run attestation must claim OFFICIAL_AM_EVAL_RUN")
+    if attestation.get("run_payload_sha256") != formal_run_payload_sha256(run):
+        raise ValueError("formal run attestation payload SHA-256 mismatch")
+
+    bindings = {
+        "system_environment_sha256": run["system"]["environment_sha256"],
+        "system_revision": run["system"]["revision"],
+        "system_source_sha256": run["system"]["source_sha256"],
+        "dataset_manifest_sha256": run["dataset"]["sha256"],
+        "track": run["track"],
+        "image_reference": (
+            f"{run['execution_artifact']['image_name']}@"
+            f"{run['execution_artifact']['manifest_digest']}"
+        ),
+        "image_platform": run["execution_artifact"]["platform"],
+    }
+    for key, expected in bindings.items():
+        if attestation.get(key) != expected:
+            raise ValueError(f"formal run attestation {key} binding mismatch")
+
+    artifacts = attestation.get("artifacts")
+    if not isinstance(artifacts, dict) or not artifacts:
+        raise ValueError("formal run attestation requires measurement artifacts")
+    if artifact_payloads is None:
+        raise ValueError("formal run requires actual artifact payloads")
+    if not isinstance(artifact_payloads, dict) or set(artifact_payloads) != set(artifacts):
+        raise ValueError("formal run artifact payload IDs must exactly match the attestation")
+    supplied_measurements = {**supplied_gates, **supplied_metrics}
+    supplied_ids = set(supplied_measurements)
+    covered_ids: set[str] = set()
+    measurement_artifact: dict[str, str] = {}
+    for artifact_id, artifact in artifacts.items():
+        _require_non_empty_string(artifact_id, label="attestation artifact id")
+        artifact_measurements = _validate_artifact(
+            artifact_id,
+            artifact,
+            artifact_payloads.get(artifact_id),
+            run=run,
+            supplied_measurements=supplied_measurements,
+        )
+        overlap = covered_ids & artifact_measurements
+        if overlap:
+            raise ValueError(
+                "formal run measurements must have exactly one attestation artifact: "
+                + ", ".join(sorted(overlap))
+            )
+        covered_ids.update(artifact_measurements)
+        measurement_artifact.update({item_id: artifact_id for item_id in artifact_measurements})
+    if covered_ids != supplied_ids:
+        missing = ", ".join(sorted(supplied_ids - covered_ids))
+        raise ValueError(f"formal run attestation does not cover measurements: {missing}")
+
+    for item_id, measurement in {**supplied_gates, **supplied_metrics}.items():
+        if not isinstance(measurement, dict):
+            raise ValueError(f"measurement {item_id} must be an object")
+        if measurement.get("evidence") != [measurement_artifact[item_id]]:
+            raise ValueError(
+                f"measurement {item_id} must reference its single attestation artifact"
+            )
 
 
 def _compare(operator: str, value: float, threshold: float) -> bool:
@@ -39,7 +509,10 @@ def _metric_score(rule: dict[str, Any], value: float) -> float:
 
 
 def _measurement_value(rule: dict[str, Any], measurement: dict[str, Any], item_id: str) -> float:
-    value = float(measurement["value"])
+    raw_value = measurement.get("value")
+    if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+        raise ValueError(f"measurement {item_id} value must be a number")
+    value = float(raw_value)
     if not math.isfinite(value):
         raise ValueError(f"measurement {item_id} must be finite")
     if "minimum" in rule and value < float(rule["minimum"]):
@@ -49,21 +522,87 @@ def _measurement_value(rule: dict[str, Any], measurement: dict[str, Any], item_i
     return value
 
 
-def evaluate_run(spec: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
+def evaluate_run(
+    spec: dict[str, Any],
+    run: dict[str, Any],
+    *,
+    artifact_payloads: dict[str, bytes] | None = None,
+    confirm_image_reference: str | None = None,
+    confirm_image_platform: str | None = None,
+) -> dict[str, Any]:
     benchmark_id = str(spec["benchmark_id"])
     if run.get("benchmark_id") != benchmark_id:
         raise ValueError("run benchmark_id does not match the specification")
+
+    run_schema = run.get("schema_version")
+    if run_schema not in {None, RUN_SCHEMA_VERSION}:
+        raise ValueError("unsupported AM-Eval run schema")
+    formal = run_schema == RUN_SCHEMA_VERSION
+    if formal:
+        required_run_keys = {
+            "attestation",
+            "benchmark_id",
+            "dataset",
+            "execution_artifact",
+            "hard_gates",
+            "metrics",
+            "run_id",
+            "schema_version",
+            "system",
+            "track",
+        }
+        if set(run) not in (required_run_keys, required_run_keys | {"notes"}):
+            raise ValueError("formal AM-Eval run has an invalid schema")
+        notes = run.get("notes", [])
+        if not isinstance(notes, list) or not all(
+            isinstance(item, str) and item.strip() for item in notes
+        ):
+            raise ValueError("formal AM-Eval run notes must be non-empty strings")
+    _validate_run_identity(run, formal=formal)
+    scorer_identity: dict[str, Any] | None = None
+    scorer_environment: dict[str, Any] | None = None
+    if formal:
+        execution_artifact = _validate_execution_artifact(run["execution_artifact"])
+        expected_image_reference = (
+            f"{execution_artifact['image_name']}@{execution_artifact['manifest_digest']}"
+        )
+        if confirm_image_reference != expected_image_reference:
+            raise ValueError("formal run OCI image reference confirmation mismatch")
+        if confirm_image_platform != execution_artifact["platform"]:
+            raise ValueError("formal run OCI platform confirmation mismatch")
+        scorer_identity, scorer_environment = _validate_formal_scorer_identity(run)
 
     gate_rules = {str(item["id"]): item for item in spec["hard_gates"]}
     metric_rules = {str(item["id"]): item for item in spec["metrics"]}
     supplied_gates = run.get("hard_gates", {})
     supplied_metrics = run.get("metrics", {})
+    if not isinstance(supplied_gates, dict) or not isinstance(supplied_metrics, dict):
+        raise ValueError("run hard_gates and metrics must be objects")
     unknown_gates = sorted(set(supplied_gates) - set(gate_rules))
     unknown_metrics = sorted(set(supplied_metrics) - set(metric_rules))
     if unknown_gates:
         raise ValueError(f"unknown hard gate measurements: {', '.join(unknown_gates)}")
     if unknown_metrics:
         raise ValueError(f"unknown metric measurements: {', '.join(unknown_metrics)}")
+    if formal:
+        for item_id, measurement in {**supplied_gates, **supplied_metrics}.items():
+            if not isinstance(measurement, dict) or set(measurement) != {
+                "evidence",
+                "sample_count",
+                "value",
+            }:
+                raise ValueError(f"formal measurement {item_id} has an invalid schema")
+        _validate_formal_attestation(
+            run,
+            supplied_gates=supplied_gates,
+            supplied_metrics=supplied_metrics,
+            artifact_payloads=artifact_payloads,
+        )
+    else:
+        for item_id, measurement in {**supplied_gates, **supplied_metrics}.items():
+            if not isinstance(measurement, dict):
+                raise ValueError(f"measurement {item_id} must be an object")
+            _validate_legacy_evidence(measurement, item_id=item_id)
 
     gate_results: list[dict[str, Any]] = []
     for gate_id, rule in gate_rules.items():
@@ -78,8 +617,10 @@ def evaluate_run(spec: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
                 }
             )
             continue
-        sample_count = int(measurement.get("sample_count", 0))
-        if sample_count <= 0:
+        if not isinstance(measurement, dict):
+            raise ValueError(f"measurement {gate_id} must be an object")
+        sample_count = measurement.get("sample_count", 0)
+        if isinstance(sample_count, bool) or not isinstance(sample_count, int) or sample_count <= 0:
             raise ValueError(f"hard gate {gate_id} requires a positive sample_count")
         value = _measurement_value(rule, measurement, gate_id)
         passed = _compare(str(rule["operator"]), value, float(rule["threshold"]))
@@ -117,8 +658,10 @@ def evaluate_run(spec: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
                 }
             )
             continue
-        sample_count = int(measurement.get("sample_count", 0))
-        if sample_count <= 0:
+        if not isinstance(measurement, dict):
+            raise ValueError(f"measurement {metric_id} must be an object")
+        sample_count = measurement.get("sample_count", 0)
+        if isinstance(sample_count, bool) or not isinstance(sample_count, int) or sample_count <= 0:
             raise ValueError(f"metric {metric_id} requires a positive sample_count")
         value = _measurement_value(rule, measurement, metric_id)
         score = _metric_score(dict(rule["scoring"]), value)
@@ -141,9 +684,7 @@ def evaluate_run(spec: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
 
     failed_gates = [item["id"] for item in gate_results if item["status"] == "fail"]
     missing_required_gates = [
-        item["id"]
-        for item in gate_results
-        if item["required"] and item["status"] == "not_measured"
+        item["id"] for item in gate_results if item["required"] and item["status"] == "not_measured"
     ]
     missing_required_metrics = [
         item["id"]
@@ -158,18 +699,25 @@ def evaluate_run(spec: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
         decision = "INCOMPLETE"
     elif measured_score < minimum_score:
         decision = "QUALITY_BELOW_THRESHOLD"
+    elif not formal:
+        decision = "ATTESTATION_REQUIRED"
     else:
         decision = "PASS"
 
-    return {
-        "schema_version": "am-eval-result-v1",
+    result = {
+        "schema_version": RESULT_SCHEMA_VERSION,
         "benchmark_id": benchmark_id,
         "run_id": run["run_id"],
         "system": run["system"],
         "track": run["track"],
         "dataset": run["dataset"],
+        "execution_artifact": run.get("execution_artifact"),
         "decision": decision,
         "release_ready": decision == "PASS",
+        "attestation": {
+            "schema_version": (ATTESTATION_SCHEMA_VERSION if formal else "legacy-unattested"),
+            "status": "verified" if formal else "unattested",
+        },
         "hard_gate_summary": {
             "passed": sum(item["status"] == "pass" for item in gate_results),
             "failed": len(failed_gates),
@@ -188,6 +736,10 @@ def evaluate_run(spec: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
         "metrics": metric_results,
         "notes": list(run.get("notes", [])),
     }
+    if scorer_identity is not None and scorer_environment is not None:
+        result["scorer_runtime_identity"] = scorer_identity
+        result["scorer_runtime_environment"] = scorer_environment
+    return result
 
 
 def render_markdown(result: dict[str, Any]) -> str:
@@ -215,8 +767,7 @@ def render_markdown(result: dict[str, Any]) -> str:
     ]
     for item in result["hard_gates"]:
         lines.append(
-            f"| {item['id']} | {item['name']} | {item['status']} | "
-            f"{item.get('value', '—')} |"
+            f"| {item['id']} | {item['name']} | {item['status']} | {item.get('value', '—')} |"
         )
     lines.extend(
         [
@@ -240,11 +791,50 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a run against an AM-Eval spec.")
     parser.add_argument("spec", type=Path)
     parser.add_argument("run", type=Path)
+    parser.add_argument("--confirm-spec-sha256", required=True)
+    parser.add_argument("--confirm-run-sha256", required=True)
+    parser.add_argument("--confirm-image-reference")
+    parser.add_argument("--confirm-image-platform", choices=("linux/amd64", "linux/arm64"))
+    parser.add_argument(
+        "--artifact",
+        action="append",
+        default=[],
+        metavar="ID=PATH",
+        help="Actual formal evidence artifact; repeat once for every attested artifact ID.",
+    )
     parser.add_argument("--format", choices=("json", "markdown"), default="json")
     arguments = parser.parse_args()
-    spec = json.loads(arguments.spec.read_text(encoding="utf-8"))
-    run = json.loads(arguments.run.read_text(encoding="utf-8"))
-    result = evaluate_run(spec, run)
+    try:
+        spec = _load_confirmed_json(
+            arguments.spec,
+            arguments.confirm_spec_sha256,
+            label="AM-Eval specification",
+        )
+        run = _load_confirmed_json(
+            arguments.run,
+            arguments.confirm_run_sha256,
+            label="AM-Eval run",
+        )
+        artifact_payloads: dict[str, bytes] = {}
+        for entry in arguments.artifact:
+            artifact_id, separator, artifact_path = entry.partition("=")
+            if (
+                not separator
+                or not artifact_id
+                or not artifact_path
+                or artifact_id in artifact_payloads
+            ):
+                parser.error("each --artifact must be a unique non-empty ID=PATH")
+            artifact_payloads[artifact_id] = read_file_snapshot(Path(artifact_path)).payload
+        result = evaluate_run(
+            spec,
+            run,
+            artifact_payloads=artifact_payloads or None,
+            confirm_image_reference=arguments.confirm_image_reference,
+            confirm_image_platform=arguments.confirm_image_platform,
+        )
+    except (DatasetError, ValueError) as error:
+        parser.error(str(error))
     if arguments.format == "markdown":
         print(render_markdown(result), end="")
     else:

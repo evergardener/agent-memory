@@ -1,13 +1,16 @@
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
+import agent_memory.am_eval_dataset as dataset_module
 from agent_memory.am_eval_dataset import (
     DatasetError,
     dataset_summary,
     load_dataset,
+    load_dataset_snapshot,
     load_jsonl,
     sha256_file,
     validate_atomic_fact_case,
@@ -241,6 +244,144 @@ def test_private_manifest_can_hold_blind_production_derived_gold(tmp_path: Path)
     path.write_text(json.dumps(manifest), encoding="utf-8")
 
     assert load_dataset(path) == (case,)
+
+
+def test_dataset_hash_and_parser_use_the_same_file_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_case = {
+        "schema_version": "am-eval-case-v1",
+        "case_id": "original-snapshot",
+        "suite": "preference",
+        "split": "development",
+        "input": {"text": "original"},
+        "expected": {"selected": False},
+    }
+    replacement_case = {
+        **original_case,
+        "case_id": "replacement-after-hash",
+        "input": {"text": "replacement"},
+    }
+    original_payload = (json.dumps(original_case) + "\n").encode()
+    dataset = tmp_path / "cases.jsonl"
+    dataset.write_bytes(original_payload)
+    manifest = {
+        "schema_version": "am-eval-dataset-manifest-v1",
+        "dataset_id": "snapshot-race",
+        "case_count": 1,
+        "contains_production_data": False,
+        "contains_memory_text": True,
+        "external_data_sent": False,
+        "visibility": "open",
+        "blind_cases": 0,
+        "files": [
+            {
+                "path": "cases.jsonl",
+                "sha256": hashlib.sha256(original_payload).hexdigest(),
+                "case_count": 1,
+                "suites": ["preference"],
+            }
+        ],
+        "suite_counts": {"preference": 1},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    original_digest = dataset_module._payload_sha256
+    replaced = False
+
+    def replace_after_snapshot(payload: bytes) -> str:
+        nonlocal replaced
+        digest = original_digest(payload)
+        if payload == original_payload and not replaced:
+            replaced = True
+            dataset.write_text(json.dumps(replacement_case) + "\n", encoding="utf-8")
+        return digest
+
+    monkeypatch.setattr(dataset_module, "_payload_sha256", replace_after_snapshot)
+
+    assert load_dataset(manifest_path) == (original_case,)
+    assert replaced is True
+    assert json.loads(dataset.read_text()) == replacement_case
+
+
+def test_dataset_snapshot_returns_one_bound_manifest_and_case_view(tmp_path: Path) -> None:
+    case = {
+        "schema_version": "am-eval-case-v1",
+        "case_id": "bound-snapshot",
+        "suite": "preference",
+        "split": "development",
+        "input": {"text": "bound"},
+        "expected": {"selected": False},
+    }
+    dataset = tmp_path / "cases.jsonl"
+    dataset.write_text(json.dumps(case) + "\n", encoding="utf-8")
+    manifest = {
+        "schema_version": "am-eval-dataset-manifest-v1",
+        "dataset_id": "bound-snapshot",
+        "case_count": 1,
+        "contains_production_data": False,
+        "contains_memory_text": True,
+        "external_data_sent": False,
+        "visibility": "open",
+        "blind_cases": 0,
+        "files": [
+            {
+                "path": "cases.jsonl",
+                "sha256": sha256_file(dataset),
+                "case_count": 1,
+                "suites": ["preference"],
+            }
+        ],
+        "suite_counts": {"preference": 1},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    snapshot = load_dataset_snapshot(manifest_path)
+
+    assert snapshot.path == manifest_path
+    assert snapshot.manifest == manifest
+    assert snapshot.cases == (case,)
+    assert snapshot.manifest_sha256 == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+
+def test_dataset_snapshot_rejects_symlinked_file(tmp_path: Path) -> None:
+    case = {
+        "schema_version": "am-eval-case-v1",
+        "case_id": "symlinked-case",
+        "suite": "preference",
+        "split": "development",
+        "input": {"text": "test"},
+        "expected": {"selected": False},
+    }
+    real_dataset = tmp_path / "real.jsonl"
+    real_dataset.write_text(json.dumps(case) + "\n", encoding="utf-8")
+    linked_dataset = tmp_path / "linked.jsonl"
+    linked_dataset.symlink_to(real_dataset)
+    manifest = {
+        "schema_version": "am-eval-dataset-manifest-v1",
+        "dataset_id": "symlinked-dataset",
+        "case_count": 1,
+        "contains_production_data": False,
+        "contains_memory_text": True,
+        "external_data_sent": False,
+        "visibility": "open",
+        "blind_cases": 0,
+        "files": [
+            {
+                "path": "linked.jsonl",
+                "sha256": sha256_file(real_dataset),
+                "case_count": 1,
+                "suites": ["preference"],
+            }
+        ],
+        "suite_counts": {"preference": 1},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(DatasetError, match="opened safely"):
+        load_dataset(manifest_path)
 
 
 def test_atomic_fact_gold_rejects_non_verbatim_span() -> None:

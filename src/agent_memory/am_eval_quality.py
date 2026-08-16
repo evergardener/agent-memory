@@ -7,15 +7,18 @@ from pathlib import Path
 from typing import Any
 
 from .am_eval_atomic_runner import (
+    OUTPUT_SCHEMA_VERSION,
+    RUNNER_VERSION,
     discover_runtime_source_root,
     load_evaluation_plan_file,
     resolve_runtime_identity,
+    validate_atomic_run_ledger,
     validate_execution_plan,
     validate_output_runtime_identity,
 )
-from .am_eval_dataset import DatasetError, load_dataset, sha256_file
+from .am_eval_dataset import DatasetError, load_dataset_snapshot, read_file_snapshot
+from .am_eval_environment import runtime_environment_identity
 
-OUTPUT_SCHEMA_VERSION = "am-eval-atomic-output-v3"
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
 
 
@@ -52,15 +55,43 @@ def validate_execution_plan_confirmation(
         raise DatasetError("atomic output runtime source SHA-256 confirmation mismatch")
 
 
-def load_atomic_output(path: Path, *, case_ids: set[str]) -> dict[str, Any]:
+def load_atomic_output(
+    path: Path, *, case_ids: set[str], confirm_sha256: str | None = None
+) -> dict[str, Any]:
+    snapshot = read_file_snapshot(path)
+    if confirm_sha256 is not None and snapshot.sha256 != confirm_sha256.casefold():
+        raise DatasetError("atomic evaluation output SHA-256 confirmation mismatch")
     try:
-        output = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        output = json.loads(snapshot.payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
         raise DatasetError(f"invalid atomic evaluation output: {path}") from error
     if not isinstance(output, dict):
         raise DatasetError("atomic evaluation output must be an object")
-    if output.get("schema_version") != OUTPUT_SCHEMA_VERSION:
+    required_keys = {
+        "case_count",
+        "cases",
+        "contains_memory_text",
+        "contains_production_data",
+        "dataset_id",
+        "dataset_manifest_sha256",
+        "dataset_visibility",
+        "execution_plan_sha256",
+        "external_data_sent",
+        "job_statuses",
+        "model",
+        "model_called",
+        "model_invocations",
+        "policy_version",
+        "run_id",
+        "run_status",
+        "runner_version",
+        "schema_version",
+        "system",
+    }
+    if set(output) != required_keys or output.get("schema_version") != OUTPUT_SCHEMA_VERSION:
         raise DatasetError("unsupported atomic evaluation output schema")
+    if output.get("runner_version") != RUNNER_VERSION:
+        raise DatasetError("unsupported atomic evaluation runner version")
     if output.get("contains_memory_text") is not True:
         raise DatasetError("atomic evaluation output must declare contains_memory_text=true")
     if not isinstance(output.get("dataset_id"), str) or not output["dataset_id"]:
@@ -99,6 +130,15 @@ def load_atomic_output(path: Path, *, case_ids: set[str]) -> dict[str, Any]:
     system = output.get("system")
     if (
         not isinstance(system, dict)
+        or set(system)
+        != {
+            "environment_sha256",
+            "name",
+            "revision",
+            "source_file_count",
+            "source_sha256",
+            "version",
+        }
         or not all(
             isinstance(system.get(key), str) and system[key]
             for key in ("name", "version", "revision", "source_sha256")
@@ -111,11 +151,22 @@ def load_atomic_output(path: Path, *, case_ids: set[str]) -> dict[str, Any]:
             character not in SHA256_CHARACTERS
             for character in system["source_sha256"].casefold()
         )
+        or not isinstance(system.get("environment_sha256"), str)
+        or len(system["environment_sha256"]) != 64
+        or any(
+            character not in SHA256_CHARACTERS
+            for character in system["environment_sha256"]
+        )
     ):
         raise DatasetError("atomic evaluation output requires system metadata")
     cases = output.get("cases")
     if not isinstance(cases, list):
         raise DatasetError("atomic evaluation output requires a cases array")
+    validate_atomic_run_ledger(
+        output,
+        expected_case_count=len(case_ids),
+        require_complete=True,
+    )
     seen: set[str] = set()
     for item in cases:
         case_id = str(item.get("case_id") or "") if isinstance(item, dict) else ""
@@ -288,9 +339,14 @@ def evaluate_atomic_quality(
         else:
             missing.append(metric_id)
     return {
-        "schema_version": "am-eval-atomic-quality-result-v1",
+        "schema_version": "am-eval-atomic-quality-result-v2",
+        "runner_version": output["runner_version"],
         "dataset_id": output["dataset_id"],
         "run_id": output["run_id"],
+        "run_status": output["run_status"],
+        "case_count": output["case_count"],
+        "job_statuses": output["job_statuses"],
+        "model_invocations": output["model_invocations"],
         "system": output["system"],
         "dataset_manifest_sha256": output["dataset_manifest_sha256"],
         "execution_plan_sha256": output["execution_plan_sha256"],
@@ -321,17 +377,23 @@ def main() -> None:
     parser.add_argument("--plan", required=True, type=Path)
     parser.add_argument("--confirm-plan-sha256", required=True)
     parser.add_argument("--confirm-source-sha256", required=True)
+    parser.add_argument("--confirm-output-sha256", required=True)
     arguments = parser.parse_args()
-    manifest = json.loads(arguments.manifest.read_text(encoding="utf-8"))
-    cases = tuple(
-        case
-        for case in load_dataset(arguments.manifest)
-        if case["suite"] == "atomic_fact"
-    )
-    if not cases:
-        parser.error("dataset has no atomic_fact cases")
-    output = load_atomic_output(arguments.output, case_ids={case["case_id"] for case in cases})
     try:
+        dataset = load_dataset_snapshot(arguments.manifest)
+        manifest = dataset.manifest
+        cases = tuple(
+            case
+            for case in dataset.cases
+            if case["suite"] == "atomic_fact"
+        )
+        if not cases:
+            raise DatasetError("dataset has no atomic_fact cases")
+        output = load_atomic_output(
+            arguments.output,
+            case_ids={case["case_id"] for case in cases},
+            confirm_sha256=arguments.confirm_output_sha256,
+        )
         _path, _sha, plan_payload = load_evaluation_plan_file(
             arguments.plan,
             confirm_sha256=arguments.confirm_plan_sha256,
@@ -341,9 +403,14 @@ def main() -> None:
         plan = validate_execution_plan(
             plan,
             manifest=manifest,
-            manifest_sha256=sha256_file(arguments.manifest),
+            manifest_sha256=dataset.manifest_sha256,
             cases=cases,
         )
+        scorer_environment = runtime_environment_identity()
+        if plan["environment"] != scorer_environment:
+            raise DatasetError(
+                "quality scorer runtime environment differs from the execution plan"
+            )
         scorer_identity = resolve_runtime_identity()
         if (
             plan["run"]["system_revision"] != scorer_identity.revision
@@ -358,21 +425,23 @@ def main() -> None:
             confirm_source_sha256=arguments.confirm_source_sha256,
         )
         validate_output_runtime_identity(output, plan=plan)
+        manifest_sha256 = dataset.manifest_sha256
+        if output["dataset_id"] != manifest.get("dataset_id"):
+            raise DatasetError("atomic output dataset_id does not match the manifest")
+        if output["dataset_manifest_sha256"] != manifest_sha256:
+            raise DatasetError("atomic output dataset SHA-256 does not match the manifest")
+        result = evaluate_atomic_quality(cases, output)
+        result["scorer_runtime_identity"] = {
+            "provenance": scorer_identity.provenance,
+            "revision": scorer_identity.revision,
+            "source_file_count": scorer_identity.source_file_count,
+            "source_sha256": scorer_identity.source_sha256,
+            "version": scorer_identity.version,
+        }
+        result["scorer_runtime_environment"] = scorer_environment
+        result["input_artifact_sha256"] = arguments.confirm_output_sha256.casefold()
     except (DatasetError, UnicodeError, json.JSONDecodeError) as error:
         parser.error(str(error))
-    manifest_sha256 = sha256_file(arguments.manifest)
-    if output["dataset_id"] != manifest.get("dataset_id"):
-        parser.error("atomic output dataset_id does not match the manifest")
-    if output["dataset_manifest_sha256"] != manifest_sha256:
-        parser.error("atomic output dataset SHA-256 does not match the manifest")
-    result = evaluate_atomic_quality(cases, output)
-    result["scorer_runtime_identity"] = {
-        "provenance": scorer_identity.provenance,
-        "revision": scorer_identity.revision,
-        "source_file_count": scorer_identity.source_file_count,
-        "source_sha256": scorer_identity.source_sha256,
-        "version": scorer_identity.version,
-    }
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
 
 

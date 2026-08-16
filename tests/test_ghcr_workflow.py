@@ -15,6 +15,7 @@ def test_ghcr_publish_waits_for_quality_and_only_runs_on_main_push() -> None:
     assert "packages: write" in publish
     assert "attestations: write" in publish
     assert "id-token: write" in publish
+    assert "manifest-digest: ${{ steps.push.outputs.digest }}" in publish
 
 
 def test_ghcr_publish_is_multi_platform_immutable_and_attested() -> None:
@@ -40,6 +41,9 @@ def test_published_images_are_independently_verified_by_the_complete_gate() -> N
     assert "attestations: read" in verify
     assert "ca3566301373d871f05c1841dafe11cbd8e37a4d" in verify
     assert 'gh attestation verify "oci://$image"' in verify
+    assert 'expected_digest="${{ needs.publish-images.outputs.manifest-digest }}"' in verify
+    assert 'test "$resolved_digest" = "$expected_digest"' in verify
+    assert 'image="${IMAGE_PREFIX}-${service}@${expected_digest}"' in verify
     assert 'docker pull --platform linux/amd64 "$image"' in verify
     assert 'grep -F "linux/amd64"' in verify
     assert 'grep -F "linux/arm64"' in verify
@@ -55,6 +59,8 @@ def test_published_images_are_independently_verified_by_the_complete_gate() -> N
     assert 'docker logs --tail=120 "$container"' in verify
     assert "if: always()" in verify
     assert "down --volumes --remove-orphans" in verify
+    assert "uses: actions/upload-artifact@v6" in verify
+    assert "published-image-identities-${{ github.sha }}" in verify
 
 
 def test_quality_workflow_uses_node24_action_runtimes() -> None:

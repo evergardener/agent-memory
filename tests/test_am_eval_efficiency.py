@@ -3,6 +3,7 @@ import pytest
 from agent_memory.am_eval_dataset import DatasetError
 from agent_memory.am_eval_efficiency import (
     evaluate_efficiency,
+    validate_efficiency_plan_binding,
     validate_execution_plan_confirmation,
 )
 
@@ -17,8 +18,18 @@ def _input(**count_overrides) -> dict:
     }
     counts.update(count_overrides)
     return {
-        "schema_version": "am-eval-efficiency-input-v2",
+        "schema_version": "am-eval-efficiency-input-v4",
         "run_id": "isolated-efficiency-test",
+        "run_status": "failed",
+        "case_count": 100,
+        "job_statuses": {"done": 99, "failed": 1},
+        "model_called": True,
+        "model_invocations": {
+            "budget": 100,
+            "attempted": 100,
+            "terminal_success": 99,
+            "terminal_failure": 1,
+        },
         "execution_plan_sha256": "b" * 64,
         "scope": "isolated",
         "window_start": "2026-08-01T00:00:00+08:00",
@@ -27,6 +38,7 @@ def _input(**count_overrides) -> dict:
         "system_version": "1.0.0-test",
         "system_source_file_count": 7,
         "system_source_sha256": "c" * 64,
+        "system_environment_sha256": "d" * 64,
         "model": "ocg/qwen3.7-plus",
         "policy_version": "atomic-admission-v3",
         "counts": counts,
@@ -34,6 +46,26 @@ def _input(**count_overrides) -> dict:
         "contains_production_data": False,
         "external_data_sent": False,
     }
+
+
+def _production_input(**count_overrides) -> dict:
+    payload = _input(**count_overrides)
+    payload["scope"] = "production-shadow"
+    for key in (
+        "case_count",
+        "execution_plan_sha256",
+        "job_statuses",
+        "model",
+        "model_called",
+        "model_invocations",
+        "run_status",
+        "system_source_file_count",
+        "system_source_sha256",
+        "system_environment_sha256",
+        "system_version",
+    ):
+        payload.pop(key)
+    return payload
 
 
 def test_efficiency_metrics_have_frozen_denominators() -> None:
@@ -51,11 +83,16 @@ def test_efficiency_metrics_have_frozen_denominators() -> None:
     assert result["execution_plan_sha256"] == "b" * 64
     assert result["system_source_sha256"] == "c" * 64
     assert result["system_source_file_count"] == 7
+    assert result["system_environment_sha256"] == "d" * 64
     assert result["model"] == "ocg/qwen3.7-plus"
+    assert result["run_status"] == "failed"
+    assert result["case_count"] == 100
+    assert result["job_statuses"] == {"done": 99, "failed": 1}
+    assert result["model_invocations"]["attempted"] == 100
 
 
 def test_unfinished_jobs_keep_terminal_failure_rate_unmeasured() -> None:
-    result = evaluate_efficiency(_input(unfinished_model_job_count=1))
+    result = evaluate_efficiency(_production_input(unfinished_model_job_count=1))
 
     assert "M22" in result["metrics"]
     assert "M23" not in result["metrics"]
@@ -65,7 +102,7 @@ def test_unfinished_jobs_keep_terminal_failure_rate_unmeasured() -> None:
 
 def test_zero_denominators_are_not_reported_as_zero_rates() -> None:
     result = evaluate_efficiency(
-        _input(
+        _production_input(
             auto_admitted_count=0,
             manual_review_count=0,
             terminal_model_success_count=0,
@@ -89,7 +126,7 @@ def test_efficiency_input_rejects_memory_text_or_bad_counts() -> None:
 
     payload = _input()
     del payload["external_data_sent"]
-    with pytest.raises(DatasetError, match="declare external_data_sent"):
+    with pytest.raises(DatasetError, match="unsupported or missing fields"):
         evaluate_efficiency(payload)
 
     payload = _input()
@@ -100,11 +137,9 @@ def test_efficiency_input_rejects_memory_text_or_bad_counts() -> None:
     with pytest.raises(DatasetError, match="must be an object"):
         evaluate_efficiency([])
 
-    production_shadow = _input()
-    production_shadow["scope"] = "production-shadow"
-    production_shadow.pop("model")
-    with pytest.raises(DatasetError, match="production-shadow"):
-        evaluate_efficiency(production_shadow)
+    payload = _input(unfinished_model_job_count=1)
+    with pytest.raises(DatasetError, match="terminal counts differ"):
+        evaluate_efficiency(payload)
 
 
 def test_external_model_run_preserves_truthful_data_transfer_flag() -> None:
@@ -114,6 +149,24 @@ def test_external_model_run_preserves_truthful_data_transfer_flag() -> None:
     result = evaluate_efficiency(payload)
 
     assert result["external_data_sent"] is True
+
+
+def test_isolated_efficiency_counts_are_bounded_by_the_execution_plan() -> None:
+    payload = _input()
+    plan = {
+        "case_count": 100,
+        "environment": {"sha256": "d" * 64},
+        "model": {"max_calls": 100, "max_atomic_facts": 1},
+    }
+    validate_efficiency_plan_binding(payload, plan=plan)
+
+    payload["case_count"] = 24
+    with pytest.raises(DatasetError, match="case count differs"):
+        validate_efficiency_plan_binding(payload, plan=plan)
+
+    payload = _input(auto_admitted_count=100, manual_review_count=1)
+    with pytest.raises(DatasetError, match="exceeds the plan fact limit"):
+        validate_efficiency_plan_binding(payload, plan=plan)
 
 
 def test_isolated_efficiency_scoring_requires_the_exact_execution_plan_sha() -> None:
@@ -138,11 +191,7 @@ def test_isolated_efficiency_scoring_requires_the_exact_execution_plan_sha() -> 
             confirm_source_sha256="d" * 64,
         )
 
-    production_shadow = _input()
-    production_shadow["scope"] = "production-shadow"
-    production_shadow.pop("execution_plan_sha256")
-    production_shadow.pop("system_source_sha256")
-    production_shadow.pop("system_source_file_count")
+    production_shadow = _production_input()
     validate_execution_plan_confirmation(
         production_shadow,
         confirm_plan_sha256=None,

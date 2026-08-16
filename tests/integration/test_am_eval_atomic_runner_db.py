@@ -150,11 +150,12 @@ def test_runner_uses_real_worker_storage_and_recall_with_fake_model(monkeypatch)
             manifest_sha256=MANIFEST_SHA,
             occurred_at=started_at,
         )
-        statuses = process_model_jobs(
+        model_run = process_model_jobs(
             connection,
             prepared=prepared,
             namespace=NAMESPACE,
             model_profile=ModelProfile.from_settings(settings),
+            max_model_calls=len(CASES),
         )
         output = build_private_output(
             connection,
@@ -168,17 +169,23 @@ def test_runner_uses_real_worker_storage_and_recall_with_fake_model(monkeypatch)
             system_version="test",
             source_sha256="e" * 64,
             source_file_count=7,
+            environment_sha256="f" * 64,
             model=settings.model_name,
             contains_production_data=False,
             dataset_visibility="private",
-            model_called=False,
+            model_run=model_run,
             external_data_sent=False,
         )
 
-    assert statuses == {"done": 2}
-    assert benchmark_run_complete(job_statuses=statuses, case_count=len(CASES))
+    assert model_run.job_statuses == {"done": 2}
+    assert benchmark_run_complete(
+        job_statuses=model_run.job_statuses,
+        case_count=len(CASES),
+    )
     assert output["contains_production_data"] is False
-    assert output["model_called"] is False
+    assert output["model_called"] is True
+    assert output["run_status"] == "complete"
+    assert output["model_invocations"]["attempted"] == len(CASES)
     assert output["external_data_sent"] is False
     quality = evaluate_atomic_quality(CASES, output)
     assert {key: value["value"] for key, value in quality["metrics"].items()} == {
@@ -190,7 +197,6 @@ def test_runner_uses_real_worker_storage_and_recall_with_fake_model(monkeypatch)
 
     efficiency_input = build_efficiency_input(
         output=output,
-        job_statuses=statuses,
         window_start=started_at,
         window_end=started_at + timedelta(seconds=1),
     )
@@ -223,11 +229,12 @@ def test_timeout_is_one_call_per_case_and_preserves_evidence_without_facts(
             manifest_sha256=MANIFEST_SHA,
             occurred_at=started_at,
         )
-        statuses = process_model_jobs(
+        model_run = process_model_jobs(
             connection,
             prepared=prepared,
             namespace=failure_namespace,
             model_profile=ModelProfile.from_settings(settings),
+            max_model_calls=len(CASES),
         )
         namespace_id = stable_uuid("namespace", failure_namespace)
         evidence_count = connection.execute(
@@ -257,15 +264,26 @@ def test_timeout_is_one_call_per_case_and_preserves_evidence_without_facts(
             system_version="test",
             source_sha256="e" * 64,
             source_file_count=7,
+            environment_sha256="f" * 64,
             model=settings.model_name,
             contains_production_data=False,
             dataset_visibility="private",
-            model_called=False,
+            model_run=model_run,
             external_data_sent=False,
         )
 
-    assert statuses == {"failed": 2}
-    assert not benchmark_run_complete(job_statuses=statuses, case_count=len(CASES))
+    assert model_run.job_statuses == {"failed": 2}
+    assert not benchmark_run_complete(
+        job_statuses=model_run.job_statuses,
+        case_count=len(CASES),
+    )
+    assert output["run_status"] == "failed"
+    assert output["model_invocations"] == {
+        "budget": 2,
+        "attempted": 2,
+        "terminal_success": 0,
+        "terminal_failure": 2,
+    }
     assert FakeTimeoutModelAdapter.calls == len(CASES)
     assert evidence_count == 2
     assert fact_count == 0
@@ -279,7 +297,6 @@ def test_timeout_is_one_call_per_case_and_preserves_evidence_without_facts(
 
     efficiency_input = build_efficiency_input(
         output=output,
-        job_statuses=statuses,
         window_start=started_at,
         window_end=started_at + timedelta(seconds=1),
     )

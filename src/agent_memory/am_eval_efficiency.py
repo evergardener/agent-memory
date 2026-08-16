@@ -10,12 +10,14 @@ from .am_eval_atomic_runner import (
     discover_runtime_source_root,
     load_evaluation_plan_file,
     resolve_runtime_identity,
+    validate_atomic_run_ledger,
     validate_execution_plan,
     validate_output_runtime_identity,
 )
-from .am_eval_dataset import DatasetError, load_dataset, sha256_file
+from .am_eval_dataset import DatasetError, load_dataset_snapshot, read_file_snapshot
+from .am_eval_environment import runtime_environment_identity
 
-INPUT_SCHEMA_VERSION = "am-eval-efficiency-input-v2"
+INPUT_SCHEMA_VERSION = "am-eval-efficiency-input-v4"
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
 
 
@@ -64,12 +66,36 @@ def validate_efficiency_input(payload: dict[str, Any]) -> None:
     if payload.get("scope") not in {"isolated", "production-shadow"}:
         raise DatasetError("efficiency input requires an isolated or production-shadow scope")
     isolated_only_keys = {
+        "case_count",
         "execution_plan_sha256",
+        "job_statuses",
         "model",
+        "model_called",
+        "model_invocations",
+        "run_status",
         "system_source_file_count",
         "system_source_sha256",
+        "system_environment_sha256",
         "system_version",
     }
+    base_keys = {
+        "contains_memory_text",
+        "contains_production_data",
+        "counts",
+        "external_data_sent",
+        "policy_version",
+        "run_id",
+        "schema_version",
+        "scope",
+        "system_revision",
+        "window_end",
+        "window_start",
+    }
+    expected_keys = base_keys | (
+        isolated_only_keys if payload.get("scope") == "isolated" else set()
+    )
+    if set(payload) != expected_keys:
+        raise DatasetError("efficiency input has unsupported or missing fields")
     if payload["scope"] == "production-shadow" and any(
         key in payload for key in isolated_only_keys
     ):
@@ -79,6 +105,7 @@ def validate_efficiency_input(payload: dict[str, Any]) -> None:
     if payload["scope"] == "isolated":
         execution_plan_sha = payload.get("execution_plan_sha256")
         source_sha = payload.get("system_source_sha256")
+        environment_sha = payload.get("system_environment_sha256")
         if (
             not isinstance(execution_plan_sha, str)
             or len(execution_plan_sha) != 64
@@ -97,6 +124,12 @@ def validate_efficiency_input(payload: dict[str, Any]) -> None:
             )
         ):
             raise DatasetError("isolated efficiency input requires runtime source SHA-256")
+        if (
+            not isinstance(environment_sha, str)
+            or len(environment_sha) != 64
+            or any(character not in SHA256_CHARACTERS for character in environment_sha)
+        ):
+            raise DatasetError("isolated efficiency input requires runtime environment SHA-256")
         source_file_count = payload.get("system_source_file_count")
         if (
             isinstance(source_file_count, bool)
@@ -104,6 +137,7 @@ def validate_efficiency_input(payload: dict[str, Any]) -> None:
             or source_file_count <= 0
         ):
             raise DatasetError("isolated efficiency input requires runtime source file count")
+        validate_atomic_run_ledger(payload)
     for key in ("run_id", "window_start", "window_end"):
         if not isinstance(payload.get(key), str) or not payload[key]:
             raise DatasetError(f"efficiency input requires {key}")
@@ -135,6 +169,37 @@ def validate_efficiency_input(payload: dict[str, Any]) -> None:
         "unfinished_model_job_count",
     ):
         _count(counts, key)
+    if payload["scope"] == "isolated":
+        terminal_success = _count(counts, "terminal_model_success_count")
+        terminal_failure = _count(counts, "terminal_model_failure_count")
+        unfinished = _count(counts, "unfinished_model_job_count")
+        if (
+            terminal_success != payload["job_statuses"].get("done", 0)
+            or terminal_failure != payload["job_statuses"].get("failed", 0)
+            or unfinished != 0
+        ):
+            raise DatasetError("isolated efficiency terminal counts differ from the run ledger")
+
+
+def validate_efficiency_plan_binding(
+    payload: dict[str, Any], *, plan: dict[str, Any]
+) -> None:
+    if payload.get("scope") != "isolated":
+        return
+    case_count = plan["case_count"]
+    validate_atomic_run_ledger(
+        payload,
+        expected_case_count=case_count,
+    )
+    if payload["model_invocations"]["budget"] != plan["model"]["max_calls"]:
+        raise DatasetError("isolated efficiency invocation budget differs from the plan")
+    if payload["system_environment_sha256"] != plan["environment"]["sha256"]:
+        raise DatasetError("isolated efficiency runtime environment differs from the plan")
+    governance_count = _count(payload["counts"], "auto_admitted_count") + _count(
+        payload["counts"], "manual_review_count"
+    )
+    if governance_count > case_count * plan["model"]["max_atomic_facts"]:
+        raise DatasetError("isolated efficiency governance count exceeds the plan fact limit")
 
 
 def evaluate_efficiency(payload: dict[str, Any]) -> dict[str, Any]:
@@ -164,7 +229,7 @@ def evaluate_efficiency(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         missing.append("M23")
     result = {
-        "schema_version": "am-eval-efficiency-result-v2",
+        "schema_version": "am-eval-efficiency-result-v4",
         "run_id": payload["run_id"],
         "scope": payload["scope"],
         "window_start": payload["window_start"],
@@ -179,11 +244,17 @@ def evaluate_efficiency(payload: dict[str, Any]) -> dict[str, Any]:
         "external_data_sent": payload["external_data_sent"],
     }
     if payload.get("execution_plan_sha256") is not None:
+        result["run_status"] = payload["run_status"]
+        result["case_count"] = payload["case_count"]
+        result["job_statuses"] = payload["job_statuses"]
+        result["model_called"] = payload["model_called"]
+        result["model_invocations"] = payload["model_invocations"]
         result["model"] = payload["model"]
         result["system_version"] = payload["system_version"]
         result["execution_plan_sha256"] = payload["execution_plan_sha256"]
         result["system_source_sha256"] = payload["system_source_sha256"]
         result["system_source_file_count"] = payload["system_source_file_count"]
+        result["system_environment_sha256"] = payload["system_environment_sha256"]
     return result
 
 
@@ -196,12 +267,13 @@ def main() -> None:
     parser.add_argument("--plan", type=Path)
     parser.add_argument("--confirm-plan-sha256")
     parser.add_argument("--confirm-source-sha256")
+    parser.add_argument("--confirm-input-sha256", required=True)
     arguments = parser.parse_args()
     try:
-        payload = json.loads(arguments.input.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        parser.error(f"invalid efficiency input: {error}")
-    try:
+        input_snapshot = read_file_snapshot(arguments.input)
+        if input_snapshot.sha256 != arguments.confirm_input_sha256.casefold():
+            raise DatasetError("efficiency input SHA-256 confirmation mismatch")
+        payload = json.loads(input_snapshot.payload.decode("utf-8"))
         validate_efficiency_input(payload)
         plan = None
         if payload["scope"] == "isolated":
@@ -215,10 +287,11 @@ def main() -> None:
                 forbidden_root=discover_runtime_source_root(),
             )
             plan = json.loads(plan_payload.decode("utf-8"))
-            manifest = json.loads(arguments.manifest.read_text(encoding="utf-8"))
+            dataset = load_dataset_snapshot(arguments.manifest)
+            manifest = dataset.manifest
             cases = tuple(
                 case
-                for case in load_dataset(arguments.manifest)
+                for case in dataset.cases
                 if case["suite"] == "atomic_fact"
             )
             if not cases:
@@ -226,9 +299,15 @@ def main() -> None:
             plan = validate_execution_plan(
                 plan,
                 manifest=manifest,
-                manifest_sha256=sha256_file(arguments.manifest),
+                manifest_sha256=dataset.manifest_sha256,
                 cases=cases,
             )
+            validate_efficiency_plan_binding(payload, plan=plan)
+            scorer_environment = runtime_environment_identity()
+            if plan["environment"] != scorer_environment:
+                raise DatasetError(
+                    "efficiency scorer runtime environment differs from the execution plan"
+                )
             scorer_identity = resolve_runtime_identity()
             if (
                 plan["run"]["system_revision"] != scorer_identity.revision
@@ -248,14 +327,19 @@ def main() -> None:
             validate_output_runtime_identity(
                 {
                     "run_id": payload["run_id"],
+                    "run_status": payload["run_status"],
+                    "case_count": payload["case_count"],
+                    "job_statuses": payload["job_statuses"],
+                    "model_called": payload["model_called"],
+                    "model_invocations": payload["model_invocations"],
                     "model": payload["model"],
                     "policy_version": payload["policy_version"],
                     "contains_production_data": payload["contains_production_data"],
                     "dataset_visibility": plan["dataset"]["visibility"],
-                    "model_called": True,
                     "external_data_sent": payload["external_data_sent"],
                     "system": {
                         "name": "agent-memory",
+                        "environment_sha256": payload["system_environment_sha256"],
                         "revision": payload["system_revision"],
                         "source_file_count": payload["system_source_file_count"],
                         "source_sha256": payload["system_source_sha256"],
@@ -273,6 +357,8 @@ def main() -> None:
                 "source_sha256": scorer_identity.source_sha256,
                 "version": scorer_identity.version,
             }
+            result["scorer_runtime_environment"] = scorer_environment
+        result["input_artifact_sha256"] = arguments.confirm_input_sha256.casefold()
     except (DatasetError, UnicodeError, json.JSONDecodeError) as error:
         parser.error(str(error))
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))

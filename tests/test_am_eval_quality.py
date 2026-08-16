@@ -57,12 +57,23 @@ def _oracle_output() -> dict:
         ]
         output_cases.append({"case_id": case["case_id"], "facts": facts, "recalls": recalls})
     return {
-        "schema_version": "am-eval-atomic-output-v3",
+        "schema_version": "am-eval-atomic-output-v4",
+        "runner_version": "am-eval-atomic-runner-v7",
         "dataset_id": "agent-memory-atomic-quality-selftest-v1",
         "run_id": "oracle-selftest",
+        "run_status": "complete",
+        "case_count": len(CASES),
+        "job_statuses": {"done": len(CASES)},
+        "model_invocations": {
+            "budget": len(CASES),
+            "attempted": len(CASES),
+            "terminal_success": len(CASES),
+            "terminal_failure": 0,
+        },
         "dataset_manifest_sha256": sha256_file(MANIFEST),
         "execution_plan_sha256": "a" * 64,
         "system": {
+            "environment_sha256": "b" * 64,
             "name": "fixture-oracle",
             "version": "1",
             "revision": "test",
@@ -75,7 +86,7 @@ def _oracle_output() -> dict:
         "contains_production_data": False,
         "external_data_sent": False,
         "dataset_visibility": "open",
-        "model_called": False,
+        "model_called": True,
         "cases": output_cases,
     }
 
@@ -110,7 +121,9 @@ def test_oracle_proves_metric_arithmetic_without_claiming_model_quality() -> Non
     }
     assert result["complete"] is True
     assert result["contains_memory_text"] is False
-    assert result["model_called"] is False
+    assert result["model_called"] is True
+    assert result["run_status"] == "complete"
+    assert result["job_statuses"] == {"done": len(CASES)}
     assert result["contains_production_data"] is False
     assert result["external_data_sent"] is False
     serialized = json.dumps(result, ensure_ascii=False)
@@ -154,6 +167,50 @@ def test_atomic_output_loader_requires_exact_case_coverage(tmp_path: Path) -> No
     path.write_text(json.dumps(output), encoding="utf-8")
 
     with pytest.raises(DatasetError, match="missing dataset cases"):
+        load_atomic_output(path, case_ids={case["case_id"] for case in CASES})
+
+
+def test_atomic_output_loader_binds_the_confirmed_input_sha(tmp_path: Path) -> None:
+    output = _oracle_output()
+    path = tmp_path / "output.json"
+    path.write_text(json.dumps(output), encoding="utf-8")
+
+    with pytest.raises(DatasetError, match="output SHA-256 confirmation mismatch"):
+        load_atomic_output(
+            path,
+            case_ids={case["case_id"] for case in CASES},
+            confirm_sha256="f" * 64,
+        )
+
+
+def test_atomic_output_loader_rejects_failed_or_incomplete_runs(tmp_path: Path) -> None:
+    output = _oracle_output()
+    output["run_status"] = "failed"
+    output["job_statuses"] = {"done": len(CASES) - 1, "failed": 1}
+    output["model_invocations"]["terminal_success"] = len(CASES) - 1
+    output["model_invocations"]["terminal_failure"] = 1
+    path = tmp_path / "failed-output.json"
+    path.write_text(json.dumps(output), encoding="utf-8")
+
+    with pytest.raises(DatasetError, match="requires a complete model run"):
+        load_atomic_output(path, case_ids={case["case_id"] for case in CASES})
+
+    output = _oracle_output()
+    output["model_invocations"]["attempted"] -= 1
+    path = tmp_path / "incomplete-output.json"
+    path.write_text(json.dumps(output), encoding="utf-8")
+
+    with pytest.raises(DatasetError, match="invocation ledger differs"):
+        load_atomic_output(path, case_ids={case["case_id"] for case in CASES})
+
+
+def test_atomic_output_loader_rejects_unknown_schema_fields(tmp_path: Path) -> None:
+    output = _oracle_output()
+    output["unbound_status"] = "complete"
+    path = tmp_path / "smuggled-output.json"
+    path.write_text(json.dumps(output), encoding="utf-8")
+
+    with pytest.raises(DatasetError, match="unsupported atomic evaluation output schema"):
         load_atomic_output(path, case_ids={case["case_id"] for case in CASES})
 
 

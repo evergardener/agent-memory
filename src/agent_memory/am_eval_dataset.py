@@ -3,13 +3,35 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import stat
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 
 class DatasetError(ValueError):
     """Raised when an AM-Eval dataset fails its frozen-data contract."""
+
+
+class PathLike(Protocol):
+    def __fspath__(self) -> str: ...
+
+
+@dataclass(frozen=True)
+class FileSnapshot:
+    path: Path
+    payload: bytes
+    sha256: str
+
+
+@dataclass(frozen=True)
+class DatasetSnapshot:
+    path: Path
+    manifest: dict[str, Any]
+    manifest_sha256: str
+    cases: tuple[dict[str, Any], ...]
 
 
 ALLOWED_CASE_SUITES = {
@@ -53,48 +75,127 @@ LIFECYCLE_INVARIANTS = {
 }
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _absolute_path(path: Path | PathLike) -> Path:
+    return Path(os.path.abspath(Path(path).expanduser()))
 
 
-def load_jsonl(path: Path) -> tuple[dict[str, Any], ...]:
+def _open_snapshot_file(path: Path | PathLike) -> tuple[Path, int]:
+    absolute = _absolute_path(path)
+    components = absolute.parts[1:]
+    if not components or components[-1] in {"", ".", ".."}:
+        raise DatasetError(f"dataset path must name a file: {absolute}")
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    file_flags = (
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    )
+    directory_fd = os.open(absolute.anchor, directory_flags)
+    try:
+        for component in components[:-1]:
+            next_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = next_fd
+        descriptor = os.open(components[-1], file_flags, dir_fd=directory_fd)
+    except OSError as error:
+        raise DatasetError(f"dataset path cannot be opened safely: {absolute}") from error
+    finally:
+        os.close(directory_fd)
+    os.set_inheritable(descriptor, False)
+    return absolute, descriptor
+
+
+def _payload_sha256(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def read_file_snapshot(path: Path | PathLike) -> FileSnapshot:
+    absolute, descriptor = _open_snapshot_file(path)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise DatasetError(f"dataset path must be a single-link regular file: {absolute}")
+        payload = bytearray()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            payload.extend(chunk)
+        after = os.fstat(descriptor)
+        identity_before = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        identity_after = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if identity_before != identity_after or len(payload) != after.st_size:
+            raise DatasetError(f"dataset file changed while being read: {absolute}")
+        frozen_payload = bytes(payload)
+        return FileSnapshot(
+            path=absolute,
+            payload=frozen_payload,
+            sha256=_payload_sha256(frozen_payload),
+        )
+    except OSError as error:
+        raise DatasetError(f"dataset path cannot be read safely: {absolute}") from error
+    finally:
+        os.close(descriptor)
+
+
+def sha256_file(path: Path | PathLike) -> str:
+    return read_file_snapshot(path).sha256
+
+
+def _parse_jsonl(payload: bytes, *, path: Path) -> tuple[dict[str, Any], ...]:
     cases: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
-    with path.open(encoding="utf-8") as handle:
-        for line_number, raw_line in enumerate(handle, start=1):
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-            try:
-                case = json.loads(line)
-            except json.JSONDecodeError as error:
-                raise DatasetError(f"invalid JSONL at {path}:{line_number}") from error
-            if not isinstance(case, dict):
-                raise DatasetError(f"case at {path}:{line_number} must be an object")
-            if case.get("schema_version") != "am-eval-case-v1":
-                raise DatasetError(f"unsupported case schema at {path}:{line_number}")
-            case_id = str(case.get("case_id") or "")
-            if not case_id or case_id in seen_ids:
-                raise DatasetError(f"missing or duplicate case_id at {path}:{line_number}")
-            suite = str(case.get("suite") or "")
-            if suite not in ALLOWED_CASE_SUITES:
-                raise DatasetError(f"unsupported suite {suite!r} at {path}:{line_number}")
-            split = str(case.get("split") or "")
-            if split not in ALLOWED_SPLITS:
-                raise DatasetError(f"unsupported split {split!r} at {path}:{line_number}")
-            if not isinstance(case.get("input"), dict) or not isinstance(
-                case.get("expected"), dict
-            ):
-                raise DatasetError(f"case {case_id} requires input and expected objects")
-            seen_ids.add(case_id)
-            cases.append(case)
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeError as error:
+        raise DatasetError(f"invalid UTF-8 JSONL at {path}") from error
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            case = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise DatasetError(f"invalid JSONL at {path}:{line_number}") from error
+        if not isinstance(case, dict):
+            raise DatasetError(f"case at {path}:{line_number} must be an object")
+        if case.get("schema_version") != "am-eval-case-v1":
+            raise DatasetError(f"unsupported case schema at {path}:{line_number}")
+        case_id = str(case.get("case_id") or "")
+        if not case_id or case_id in seen_ids:
+            raise DatasetError(f"missing or duplicate case_id at {path}:{line_number}")
+        suite = str(case.get("suite") or "")
+        if suite not in ALLOWED_CASE_SUITES:
+            raise DatasetError(f"unsupported suite {suite!r} at {path}:{line_number}")
+        split = str(case.get("split") or "")
+        if split not in ALLOWED_SPLITS:
+            raise DatasetError(f"unsupported split {split!r} at {path}:{line_number}")
+        if not isinstance(case.get("input"), dict) or not isinstance(
+            case.get("expected"), dict
+        ):
+            raise DatasetError(f"case {case_id} requires input and expected objects")
+        seen_ids.add(case_id)
+        cases.append(case)
     if not cases:
         raise DatasetError(f"dataset file is empty: {path}")
     return tuple(cases)
+
+
+def load_jsonl(path: Path) -> tuple[dict[str, Any], ...]:
+    snapshot = read_file_snapshot(path)
+    return _parse_jsonl(snapshot.payload, path=snapshot.path)
 
 
 def validate_atomic_fact_case(case: dict[str, Any]) -> None:
@@ -246,11 +347,14 @@ def validate_lifecycle_case(case: dict[str, Any]) -> None:
         raise DatasetError(f"lifecycle case {case['case_id']} has unsupported expected fields")
 
 
-def load_dataset(manifest_path: Path) -> tuple[dict[str, Any], ...]:
+def load_dataset_snapshot(manifest_path: Path) -> DatasetSnapshot:
+    manifest_snapshot = read_file_snapshot(manifest_path)
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise DatasetError(f"invalid dataset manifest: {manifest_path}") from error
+        manifest = json.loads(manifest_snapshot.payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise DatasetError(f"invalid dataset manifest: {manifest_snapshot.path}") from error
+    if not isinstance(manifest, dict):
+        raise DatasetError(f"invalid dataset manifest: {manifest_snapshot.path}")
     if manifest.get("schema_version") != "am-eval-dataset-manifest-v1":
         raise DatasetError("unsupported dataset manifest schema")
     if not isinstance(manifest.get("dataset_id"), str) or not manifest["dataset_id"]:
@@ -263,7 +367,8 @@ def load_dataset(manifest_path: Path) -> tuple[dict[str, Any], ...]:
     if not isinstance(files, list) or not files:
         raise DatasetError("dataset manifest must declare at least one file")
 
-    root = manifest_path.parent
+    root = manifest_snapshot.path.parent
+    root_absolute = _absolute_path(root)
     all_cases: list[dict[str, Any]] = []
     seen_paths: set[str] = set()
     for item in files:
@@ -272,17 +377,15 @@ def load_dataset(manifest_path: Path) -> tuple[dict[str, Any], ...]:
         relative = str(item.get("path") or "")
         if not relative or relative in seen_paths:
             raise DatasetError(f"missing or duplicate dataset path: {relative!r}")
-        candidate = (root / relative).resolve()
+        candidate = _absolute_path(root / relative)
         try:
-            candidate.relative_to(root.resolve())
+            candidate.relative_to(root_absolute)
         except ValueError as error:
             raise DatasetError(f"dataset path escapes manifest root: {relative}") from error
-        if not candidate.is_file():
-            raise DatasetError(f"dataset file does not exist: {relative}")
-        actual_sha256 = sha256_file(candidate)
-        if actual_sha256 != item.get("sha256"):
+        file_snapshot = read_file_snapshot(candidate)
+        if file_snapshot.sha256 != item.get("sha256"):
             raise DatasetError(f"dataset SHA-256 mismatch: {relative}")
-        cases = load_jsonl(candidate)
+        cases = _parse_jsonl(file_snapshot.payload, path=file_snapshot.path)
         for case in cases:
             validate_atomic_fact_case(case)
             validate_lifecycle_case(case)
@@ -324,19 +427,31 @@ def load_dataset(manifest_path: Path) -> tuple[dict[str, Any], ...]:
         raise DatasetError("dataset manifest blind case count mismatch")
     if visibility == "open" and blind_count:
         raise DatasetError("an open dataset cannot contain blind cases")
-    return tuple(all_cases)
+    return DatasetSnapshot(
+        path=manifest_snapshot.path,
+        manifest=manifest,
+        manifest_sha256=manifest_snapshot.sha256,
+        cases=tuple(all_cases),
+    )
+
+
+def load_dataset(manifest_path: Path) -> tuple[dict[str, Any], ...]:
+    return load_dataset_snapshot(manifest_path).cases
 
 
 def dataset_summary(manifest_path: Path) -> dict[str, Any]:
-    cases = load_dataset(manifest_path)
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    snapshot = load_dataset_snapshot(manifest_path)
     return {
         "schema_version": "am-eval-dataset-validation-v1",
-        "dataset_id": manifest["dataset_id"],
-        "manifest_sha256": sha256_file(manifest_path),
-        "case_count": len(cases),
-        "suite_counts": dict(sorted(Counter(case["suite"] for case in cases).items())),
-        "split_counts": dict(sorted(Counter(case["split"] for case in cases).items())),
+        "dataset_id": snapshot.manifest["dataset_id"],
+        "manifest_sha256": snapshot.manifest_sha256,
+        "case_count": len(snapshot.cases),
+        "suite_counts": dict(
+            sorted(Counter(case["suite"] for case in snapshot.cases).items())
+        ),
+        "split_counts": dict(
+            sorted(Counter(case["split"] for case in snapshot.cases).items())
+        ),
         "status": "PASS",
     }
 

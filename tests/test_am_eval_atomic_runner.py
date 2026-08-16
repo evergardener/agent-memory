@@ -17,6 +17,7 @@ from agent_memory.am_eval_atomic_runner import (
     DATABASE_SCHEMA_REVISION,
     MAX_API_KEY_BYTES,
     MAX_EXECUTION_PLAN_BYTES,
+    ModelRunResult,
     RuntimeIdentity,
     benchmark_idempotency_key,
     benchmark_run_complete,
@@ -25,6 +26,7 @@ from agent_memory.am_eval_atomic_runner import (
     build_plan,
     emit_run_summary,
     external_data_confirmation,
+    load_frozen_runtime_settings,
     plan_main,
     preflight_main,
     resolve_runtime_identity,
@@ -43,7 +45,7 @@ from agent_memory.am_eval_atomic_runner import (
     write_private_json,
 )
 from agent_memory.am_eval_dataset import DatasetError
-from agent_memory.config import Settings
+from agent_memory.config import Settings, get_settings
 from agent_memory.model_adapter import ModelProfile
 
 MANIFEST_SHA = "a" * 64
@@ -95,6 +97,24 @@ def _settings(**overrides) -> Settings:
     }
     values.update(overrides)
     return Settings(**values)
+
+
+def test_frozen_runtime_settings_are_reused_after_environment_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_MEMORY_SERVICE_TOKEN", "frozen-settings-service-token")
+    monkeypatch.setenv(
+        "AGENT_MEMORY_UI_SESSION_SECRET",
+        "frozen-settings-ui-session-secret-000000000000",
+    )
+    monkeypatch.setenv("AGENT_MEMORY_CURRENT_STATE_DAYS", "7")
+    frozen = load_frozen_runtime_settings()
+
+    monkeypatch.setenv("AGENT_MEMORY_CURRENT_STATE_DAYS", "99")
+
+    assert get_settings() is frozen
+    assert get_settings().current_state_days == 7
+    get_settings.cache_clear()
 
 
 def _private_key(
@@ -429,6 +449,8 @@ def test_plan_is_metadata_only_and_turn_ids_are_deterministic() -> None:
     assert plan["model"]["timeout_seconds"] == 30.0
     assert plan["policy"]["trusted_observation_tools"] == sorted(TRUSTED_TOOLS)
     assert plan["database"]["schema_revision"] == DATABASE_SCHEMA_REVISION
+    assert len(plan["environment"]["sha256"]) == 64
+    assert plan["environment"]["distributions"]["litellm"]
     assert plan["contains_memory_text"] is False
     assert plan["model_called"] is False
     assert plan["external_data_sent"] is False
@@ -456,6 +478,15 @@ def test_output_runtime_identity_is_fully_bound_to_the_execution_plan() -> None:
     )
     output = {
         "run_id": plan["run"]["id"],
+        "run_status": "complete",
+        "case_count": 2,
+        "job_statuses": {"done": 2},
+        "model_invocations": {
+            "budget": 2,
+            "attempted": 2,
+            "terminal_success": 2,
+            "terminal_failure": 0,
+        },
         "model": plan["model"]["name"],
         "policy_version": plan["policy"]["atomic_extraction_version"],
         "contains_production_data": plan["dataset"]["contains_production_data"],
@@ -463,6 +494,7 @@ def test_output_runtime_identity_is_fully_bound_to_the_execution_plan() -> None:
         "model_called": True,
         "external_data_sent": True,
         "system": {
+            "environment_sha256": plan["environment"]["sha256"],
             "name": "agent-memory",
             "revision": plan["run"]["system_revision"],
             "source_file_count": plan["run"]["source_file_count"],
@@ -476,6 +508,7 @@ def test_output_runtime_identity_is_fully_bound_to_the_execution_plan() -> None:
         ("revision", "f" * 40),
         ("source_file_count", 8),
         ("source_sha256", "f" * 64),
+        ("environment_sha256", "f" * 64),
         ("version", "different"),
     ):
         tampered = json.loads(json.dumps(output))
@@ -506,7 +539,10 @@ def test_output_runtime_identity_is_fully_bound_to_the_execution_plan() -> None:
     ):
         tampered = json.loads(json.dumps(output))
         tampered[key] = value
-        with pytest.raises(DatasetError, match="governance metadata differs"):
+        with pytest.raises(
+            DatasetError,
+            match="governance metadata differs|model_called differs",
+        ):
             validate_output_runtime_identity(tampered, plan=plan)
 
 
@@ -549,6 +585,16 @@ def test_execution_plan_rejects_dataset_model_and_allowlist_drift() -> None:
     tampered = json.loads(json.dumps(plan))
     tampered["dataset"]["manifest_sha256"] = "b" * 64
     with pytest.raises(DatasetError, match="dataset binding"):
+        validate_execution_plan(
+            tampered,
+            manifest=_manifest(),
+            manifest_sha256=MANIFEST_SHA,
+            cases=cases,
+        )
+
+    tampered = json.loads(json.dumps(plan))
+    tampered["environment"]["distributions"]["litellm"]["version"] = "0.0.0"
+    with pytest.raises(DatasetError, match="environment SHA-256"):
         validate_execution_plan(
             tampered,
             manifest=_manifest(),
@@ -772,7 +818,13 @@ def test_failed_run_summary_returns_nonzero_without_memory_text(
         emit_run_summary(
             run_id="failed-run",
             case_count=2,
-            job_statuses={"failed": 2},
+            model_run=ModelRunResult(
+                job_statuses={"failed": 2},
+                invocation_budget=2,
+                invocations_attempted=2,
+                invocations_terminal_success=0,
+                invocations_terminal_failure=2,
+            ),
             output_path=tmp_path / "private.json",
             efficiency_output_path=tmp_path / "efficiency.json",
             external_data_sent=False,
@@ -782,6 +834,8 @@ def test_failed_run_summary_returns_nonzero_without_memory_text(
     assert error.value.code == 2
     summary = json.loads(capsys.readouterr().out)
     assert summary["status"] == "FAILED"
+    assert summary["run_status"] == "failed"
+    assert summary["model_invocations"]["terminal_failure"] == 2
     assert summary["contains_memory_text"] is False
     assert summary["external_data_sent"] is False
     assert summary["execution_plan_sha256"] == MANIFEST_SHA
@@ -791,7 +845,13 @@ def test_complete_run_summary_returns_zero_path(tmp_path: Path, capsys) -> None:
     emit_run_summary(
         run_id="complete-run",
         case_count=2,
-        job_statuses={"done": 2},
+        model_run=ModelRunResult(
+            job_statuses={"done": 2},
+            invocation_budget=2,
+            invocations_attempted=2,
+            invocations_terminal_success=2,
+            invocations_terminal_failure=0,
+        ),
         output_path=tmp_path / "private.json",
         efficiency_output_path=tmp_path / "efficiency.json",
         external_data_sent=True,
@@ -800,6 +860,7 @@ def test_complete_run_summary_returns_zero_path(tmp_path: Path, capsys) -> None:
 
     summary = json.loads(capsys.readouterr().out)
     assert summary["status"] == "COMPLETE"
+    assert summary["run_status"] == "complete"
     assert summary["external_data_sent"] is True
     assert summary["execution_plan_sha256"] == MANIFEST_SHA
 
@@ -1247,6 +1308,53 @@ def test_private_output_rejects_symlinked_parent(tmp_path: Path) -> None:
         validate_private_output(alias / "output.json")
 
 
+def test_private_output_uses_held_directory_fd_and_rejects_parent_swap(
+    tmp_path: Path,
+) -> None:
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    target = validate_private_output(private / "output.json")
+    original_directory = tmp_path / "original-private"
+    private.rename(original_directory)
+    private.mkdir(mode=0o700)
+
+    with pytest.raises(DatasetError, match="directory path changed"):
+        write_private_json(target, {"contains_memory_text": True})
+
+    assert not (private / "output.json").exists()
+    assert not (original_directory / "output.json").exists()
+
+
+def test_private_output_rechecks_directory_permissions_before_openat(
+    tmp_path: Path,
+) -> None:
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    target = validate_private_output(private / "output.json")
+    private.chmod(0o755)
+
+    with pytest.raises(DatasetError, match="0700"):
+        write_private_json(target, {"contains_memory_text": True})
+
+    assert not (private / "output.json").exists()
+
+
+def test_private_output_targets_compare_by_path_and_close_both_descriptors(
+    tmp_path: Path,
+) -> None:
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    first = validate_private_output(private / "output.json")
+    second = validate_private_output(private / "output.json")
+
+    assert first.path == second.path
+    assert first.directory_fd != second.directory_fd
+    first.close()
+    second.close()
+    assert first.closed is True
+    assert second.closed is True
+
+
 def test_run_metadata_requires_git_revision_and_non_empty_labels() -> None:
     metadata = {
         "run_id": "round-4",
@@ -1279,8 +1387,19 @@ def test_efficiency_input_uses_terminal_jobs_and_contains_no_memory_text() -> No
     start = datetime(2026, 8, 12, tzinfo=UTC)
     output = {
         "run_id": "r3",
+        "run_status": "failed",
+        "case_count": 24,
+        "job_statuses": {"done": 23, "failed": 1},
+        "model_called": True,
+        "model_invocations": {
+            "budget": 24,
+            "attempted": 24,
+            "terminal_success": 23,
+            "terminal_failure": 1,
+        },
         "execution_plan_sha256": MANIFEST_SHA,
         "system": {
+            "environment_sha256": "f" * 64,
             "revision": "c" * 40,
             "version": "test",
             "source_file_count": 7,
@@ -1301,7 +1420,6 @@ def test_efficiency_input_uses_terminal_jobs_and_contains_no_memory_text() -> No
     }
     result = build_efficiency_input(
         output=output,
-        job_statuses={"done": 23, "failed": 1, "cancelled": 48},
         window_start=start,
         window_end=start + timedelta(minutes=5),
     )
@@ -1313,11 +1431,15 @@ def test_efficiency_input_uses_terminal_jobs_and_contains_no_memory_text() -> No
         "terminal_model_failure_count": 1,
         "unfinished_model_job_count": 0,
     }
+    assert result["run_status"] == "failed"
+    assert result["case_count"] == 24
+    assert result["model_invocations"]["attempted"] == 24
     serialized = json.dumps(result)
     assert result["contains_production_data"] is True
     assert result["external_data_sent"] is True
     assert result["execution_plan_sha256"] == MANIFEST_SHA
     assert result["system_source_sha256"] == "d" * 64
     assert result["system_source_file_count"] == 7
+    assert result["system_environment_sha256"] == "f" * 64
     assert result["contains_memory_text"] is False
     assert "private fact" not in serialized

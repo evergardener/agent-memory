@@ -392,6 +392,8 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(
         assert "loopback-test-key" not in completed.stderr
         assert "loopback-test-key" not in output_path.read_text(encoding="utf-8")
         assert "loopback-test-key" not in efficiency_path.read_text(encoding="utf-8")
+        output_sha = sha256_file(output_path)
+        efficiency_sha = sha256_file(efficiency_path)
 
         with quality_result_path.open("w", encoding="utf-8") as quality_result:
             quality_completed = subprocess.run(
@@ -407,6 +409,8 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(
                     plan_sha,
                     "--confirm-source-sha256",
                     runtime_identity.source_sha256,
+                    "--confirm-output-sha256",
+                    output_sha,
                 ],
                 cwd=ROOT,
                 env=environment,
@@ -432,6 +436,8 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(
                     plan_sha,
                     "--confirm-source-sha256",
                     runtime_identity.source_sha256,
+                    "--confirm-input-sha256",
+                    efficiency_sha,
                 ],
                 cwd=ROOT,
                 env=environment,
@@ -452,6 +458,9 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(
                 "source_sha256": runtime_identity.source_sha256,
                 "version": runtime_identity.version,
             }
+            assert result["scorer_runtime_environment"] == plan["environment"]
+        assert quality_cli["input_artifact_sha256"] == output_sha
+        assert efficiency_cli["input_artifact_sha256"] == efficiency_sha
         assert quality_cli["model"] == "openai/test-model"
         assert quality_cli["policy_version"] == plan["policy"][
             "atomic_extraction_version"
@@ -459,6 +468,59 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(
         assert efficiency_cli["execution_plan_sha256"] == plan_sha
         assert "loopback-test-key" not in quality_result_path.read_text(encoding="utf-8")
         assert "loopback-test-key" not in efficiency_result_path.read_text(encoding="utf-8")
+
+        rejected_input_sha = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from agent_memory.am_eval_quality import main; main()",
+                str(manifest_path),
+                str(output_path),
+                "--plan",
+                str(plan_path),
+                "--confirm-plan-sha256",
+                plan_sha,
+                "--confirm-source-sha256",
+                runtime_identity.source_sha256,
+                "--confirm-output-sha256",
+                "f" * 64,
+            ],
+            cwd=ROOT,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert rejected_input_sha.returncode != 0
+        assert "output SHA-256 confirmation mismatch" in rejected_input_sha.stderr
+
+        rejected_efficiency_sha = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from agent_memory.am_eval_efficiency import main; main()",
+                str(efficiency_path),
+                "--manifest",
+                str(manifest_path),
+                "--plan",
+                str(plan_path),
+                "--confirm-plan-sha256",
+                plan_sha,
+                "--confirm-source-sha256",
+                runtime_identity.source_sha256,
+                "--confirm-input-sha256",
+                "f" * 64,
+            ],
+            cwd=ROOT,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert rejected_efficiency_sha.returncode != 0
+        assert "input SHA-256 confirmation mismatch" in rejected_efficiency_sha.stderr
 
         tampered_output = json.loads(output_path.read_text(encoding="utf-8"))
         tampered_output["contains_production_data"] = True
@@ -477,6 +539,8 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(
                 plan_sha,
                 "--confirm-source-sha256",
                 runtime_identity.source_sha256,
+                "--confirm-output-sha256",
+                sha256_file(tampered_output_path),
             ],
             cwd=ROOT,
             env=environment,
@@ -507,6 +571,8 @@ def test_cli_runs_real_litellm_against_loopback_openai_endpoint(
                 tampered_plan_sha,
                 "--confirm-source-sha256",
                 runtime_identity.source_sha256,
+                "--confirm-input-sha256",
+                efficiency_sha,
             ],
             cwd=ROOT,
             env=environment,
