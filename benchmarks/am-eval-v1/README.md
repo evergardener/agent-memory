@@ -109,6 +109,11 @@ run payload SHA 和逐项 evidence bytes SHA；evaluator 必须重新哈希并�
 不同对象、JSON 重复键和 `true`/`1` 类型歧义。JSON 与 Markdown 输出都保留来源区块。证据见
 [`round-24-formal-result-input-binding-gate.json`](round-24-formal-result-input-binding-gate.json) 及
 [`../../docs/V1.0-AM-Eval第二十四轮正式结果输入绑定门禁报告.md`](../../docs/V1.0-AM-Eval第二十四轮正式结果输入绑定门禁报告.md)。
+第二十五轮把严格 JSON 解析扩展到全部 AM-Eval 证据入口，统一递归拒绝重复键、非有限数值、非 UTF-8
+输入和非对象顶层。攻击性回归覆盖冻结数据集嵌套对象及 typed attestation 的内嵌 scorer result，防止
+同一字节在审查与执行时呈现不同身份或治理字段。证据见
+[`round-25-strict-json-evidence-gate.json`](round-25-strict-json-evidence-gate.json) 及
+[`../../docs/V1.0-AM-Eval第二十五轮严格JSON证据门禁报告.md`](../../docs/V1.0-AM-Eval第二十五轮严格JSON证据门禁报告.md)。
 
 验证冻结数据集：
 

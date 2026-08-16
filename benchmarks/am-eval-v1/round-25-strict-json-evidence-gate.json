@@ -1,0 +1,100 @@
+{
+  "schema_version": "am-eval-strict-json-evidence-gate-v1",
+  "run_id": "hermes:automated-tests:strict-json-evidence-r25-20260816",
+  "recorded_at": "2026-08-16",
+  "scope": {
+    "production_touched": false,
+    "external_model_called": false,
+    "contains_memory_text": false,
+    "contains_production_data": false,
+    "database_started": false,
+    "api_or_worker_started": false
+  },
+  "source_identity": {
+    "revision": "1f1706e39a3c4cac50f076ff7c38f3f7b710f292",
+    "version": "1.0.0-rc.9",
+    "source_file_count": 81,
+    "source_sha256": "5d9db52c4ef0a7c00ecfcf7ca5cbd4baa781ba499737baa4c49087655278c44a"
+  },
+  "pre_fix_reproduction": {
+    "input": "one JSON object containing two run_id keys",
+    "legacy_parser": "python-json-loads",
+    "legacy_status": "ACCEPTED",
+    "first_declared_run_id": "shadow",
+    "effective_run_id": "hermes:automated-tests:formal",
+    "selection_rule_observed": "last-key-wins",
+    "risk": "the same artifact can present different apparent and effective identity fields to reviewers and parsers"
+  },
+  "implemented_contract": {
+    "decoder": "decode_strict_json_object",
+    "rules": [
+      "input must be UTF-8 JSON",
+      "top-level input must be an object",
+      "duplicate keys are rejected recursively",
+      "NaN, Infinity and -Infinity are rejected",
+      "all AM-Eval JSON entry points use the shared decoder"
+    ],
+    "covered_entry_points": [
+      "frozen dataset manifest and JSONL cases",
+      "official specification and formal run artifacts",
+      "build identity and execution plans",
+      "atomic quality output and plan",
+      "efficiency input and plan",
+      "typed attestation embedded source results",
+      "deterministic run bundles",
+      "reliability prepare receipts",
+      "recall API responses"
+    ]
+  },
+  "post_fix_attacks": [
+    {
+      "attack": "duplicate key nested in a dataset manifest object",
+      "status": "REJECTED"
+    },
+    {
+      "attack": "duplicate run_id in an embedded atomic quality result during attestation assembly",
+      "status": "REJECTED"
+    },
+    {
+      "attack": "duplicate run_id in an embedded atomic quality result during typed source validation",
+      "status": "REJECTED"
+    },
+    {
+      "attack": "duplicate benchmark_id in a formal run artifact",
+      "status": "REJECTED"
+    }
+  ],
+  "validation": {
+    "am_eval_tests_collected_and_passed": 279,
+    "non_integration_tests_collected_and_passed": 535,
+    "integration_tests_deselected": 46,
+    "ruff": "PASS",
+    "frontend_tests": {
+      "passed": 6,
+      "failed": 0
+    },
+    "frontend_typecheck": "PASS",
+    "frontend_build": "PASS",
+    "diff_check": "PASS",
+    "legacy_duplicate_key_reproduction": "PASS",
+    "shared_decoder_duplicate_key_rejection": "PASS"
+  },
+  "remaining_boundaries": [
+    "strict JSON decoding removes parser ambiguity but does not make artifacts immutable or signed",
+    "remote GHCR manifest provenance remains separate execution evidence",
+    "private blind model quality and production-shadow efficiency metrics remain unmeasured"
+  ],
+  "formal_evaluation": {
+    "official_metrics_updated": false,
+    "decision_remains": "INCOMPLETE",
+    "release_ready": false,
+    "missing_required_metric_ids": [
+      "M01",
+      "M02",
+      "M03",
+      "M07",
+      "M22",
+      "M23"
+    ]
+  }
+}
