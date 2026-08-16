@@ -1,0 +1,108 @@
+{
+  "schema_version": "am-eval-evidence-sourced-attestation-gate-v1",
+  "run_id": "agent-memory-1.0.0rc9-evidence-sourced-attestation-r16-20260816",
+  "system_revision": "84b0eddad306152591a631b056c0686b05b29c7b",
+  "system_version": "1.0.0-rc.9",
+  "source_file_count": 77,
+  "source_sha256": "afa63ebe666e740ccf05266dc48410bd915028e436e3d4756930abc4aadf2405",
+  "runtime_environment_sha256": "99f8a3e09ec1316b39576382c860e0e3f96b43b55ec5f1697dd479482abf7085",
+  "private_result_sha256": "d69dcc7c4037768dbdbc9a19a5e4a64f483933f5560d36efb1e5c2b45fa175db",
+  "status": "EVIDENCE_SOURCED_ATTESTATION_GATE_PASS_OFFICIAL_METRICS_UNCHANGED",
+  "official_metrics_updated": false,
+  "official_baseline": {
+    "source_run": "round-2-agent-memory.json",
+    "hard_gates_passed": 10,
+    "hard_gates_failed": 0,
+    "coverage_percent": 73,
+    "decision": "INCOMPLETE",
+    "missing_metric_ids": ["M01", "M02", "M03", "M07", "M22", "M23"]
+  },
+  "frozen_dataset": {
+    "id": "agent-memory-evidence-integrity-gold-v1",
+    "manifest_sha256": "3734605eb7ad5cc3a491d46b97c96a63862594e24e15b487832cc59072310c18",
+    "case_file_sha256": "30e2fd9536cc5bf3211d55cb118dbed2672deece3ee807254d1b41a49387d2f5",
+    "case_count": 9,
+    "persisted_surface_count": 27,
+    "contains_memory_text": true,
+    "contains_production_data": false,
+    "visibility": "open",
+    "blind": false
+  },
+  "sourced_measurements": {
+    "G01": {"value": 0, "sample_count": 27},
+    "G03": {"value": 0, "sample_count": 9},
+    "G09": {"value": 1.0, "sample_count": 9}
+  },
+  "implemented_gates": [
+    "a frozen open synthetic dataset pins nine redaction probes expected finding types forbidden fragments and three persisted surfaces per case",
+    "the runner requires a loopback am_eval empty database an automated namespace and a private output outside the repository",
+    "real ingest redaction persists events and findings while active facts documents and fact evidence use the same redacted fixed point",
+    "every active fact evidence link and trace response is checked against the exact event ID",
+    "an independent aggregate quality report cross-checks facts traceable facts and raw sensitive fact counts",
+    "G01 G03 and G09 are recomputed from metadata-only case ledgers and exact aggregate counters",
+    "evidence attestation v1 embeds original result bytes and binds their SHA schema source environment OCI digest and platform"
+  ],
+  "verification": {
+    "python": {
+      "collected": 547,
+      "non_integration_passed": 503,
+      "integration_excluded": 44,
+      "failed": 0
+    },
+    "isolated_evidence_cli": {
+      "postgres_binding": "127.0.0.1:55438",
+      "pytest_cases_passed": 1,
+      "frozen_cases_passed": 9,
+      "persisted_surfaces": 27,
+      "sensitive_leak_surfaces": 0,
+      "active_facts": 9,
+      "active_facts_without_evidence": 0,
+      "traceable_facts": 9,
+      "trace_failures": 0,
+      "quality_report_raw_sensitive_facts": 0,
+      "temporary_database_pattern": "am_eval_evidence_%",
+      "temporary_database_residue": 0,
+      "output_mode": "0600",
+      "supplier_calls": 0
+    },
+    "adversarial": {
+      "manifest_and_case_drift": "PASS_FAIL_CLOSED",
+      "finding_type_drift": "PASS_FAIL_CLOSED",
+      "remaining_sensitive_finding": "PASS_FAIL_CLOSED",
+      "forbidden_fragment_occurrence": "PASS_FAIL_CLOSED",
+      "evidence_or_trace_loss": "PASS_FAIL_CLOSED",
+      "summary_counter_retyping": "PASS_FAIL_CLOSED",
+      "formal_evidence_artifact_path": "PASS"
+    },
+    "static": {
+      "ruff": "PASS",
+      "uv_lock": "PASS",
+      "git_diff_check": "PASS"
+    }
+  },
+  "boundaries": {
+    "production_data_read": false,
+    "production_api_or_database_connected": false,
+    "production_namespace_connected": false,
+    "production_modified": false,
+    "external_model_called": false,
+    "external_data_sent": false,
+    "real_api_key_read": false
+  },
+  "remaining_requirements": [
+    "add sourced runners or adapters for G04 G07 G08 G10 and M04 M09 M10 M11 M12 M13 M14 M18 M19 M20",
+    "design a separately authorized production-shadow result for official M22",
+    "create or authorize a pull request and retain GitHub-hosted image-contract plus exact OCI digest evidence",
+    "run the evidence sourced attestation inside that verified image by exact name at digest",
+    "create and review the private blind dataset before formal model-quality measurement"
+  ],
+  "remote_ci": {
+    "branch": "codex/review-queue-feedback",
+    "tested_code_revision": "84b0eddad306152591a631b056c0686b05b29c7b",
+    "pull_request_created": false,
+    "workflow_triggered_for_head": false,
+    "image_contract_status": "REMOTE_CI_PENDING",
+    "images_published": false,
+    "production_deployed": false
+  }
+}
