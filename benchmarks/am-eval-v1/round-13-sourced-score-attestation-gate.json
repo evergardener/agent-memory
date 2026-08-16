@@ -1,0 +1,96 @@
+{
+  "schema_version": "am-eval-sourced-score-attestation-gate-v1",
+  "run_id": "agent-memory-1.0.0rc9-sourced-score-attestation-r13-20260816",
+  "system_revision": "0a4f2a45239a6301d89f797a5fd8dd772f56699a",
+  "system_version": "1.0.0-rc.9",
+  "source_file_count": 75,
+  "source_sha256": "464d683e3828168d92535fd905896203b1ceec7c56374d681dee40023257d33a",
+  "runtime_environment_sha256": "25c191d909d83e3f5d8c320a59c671bf772c11e2db481816ee0611dd9e7f02ca",
+  "status": "SOURCED_SCORE_ATTESTATION_GATE_PASS_OFFICIAL_METRICS_UNCHANGED_REMOTE_CI_PENDING",
+  "official_metrics_updated": false,
+  "official_baseline": {
+    "source_run": "round-2-agent-memory.json",
+    "hard_gates_passed": 10,
+    "hard_gates_failed": 0,
+    "coverage_percent": 73,
+    "decision": "INCOMPLETE",
+    "missing_metric_ids": ["M01", "M02", "M03", "M07", "M22", "M23"]
+  },
+  "implemented_gates": [
+    "quality result v3 records dataset blind state and exact-span count",
+    "efficiency result v5 retains the bound raw governance and terminal-job counts plus dataset identity",
+    "the attestation assembler requires an operator-confirmed scorer-result SHA and an exact OCI name at digest reference",
+    "quality and isolated M23 attestations embed the original scorer-result bytes as canonical base64 and bind their SHA and schema",
+    "the formal aggregator decodes and hashes the embedded scorer result instead of trusting retyped attestation metrics",
+    "M01 M02 M03 M07 are recomputed from scorer raw counts before an attestation is accepted",
+    "M22 M23 are recomputed from the bound efficiency counts and isolated attestation exports only M23",
+    "failed or partial model runs wrong scorer provenance source drift environment drift non-blind quality and metric rewriting fail closed",
+    "formal quality and M23 artifacts bind run dataset source environment plan and immutable OCI execution claims"
+  ],
+  "schemas": {
+    "quality_result": "am-eval-atomic-quality-result-v3",
+    "efficiency_result": "am-eval-efficiency-result-v5",
+    "quality_attestation": "am-eval-atomic-quality-attestation-v2",
+    "efficiency_attestation": "am-eval-efficiency-attestation-v2",
+    "formal_run": "am-eval-run-v2",
+    "formal_result": "am-eval-result-v2"
+  },
+  "verification": {
+    "python": {
+      "collected": 526,
+      "non_integration_passed": 484,
+      "integration_skipped_in_non_integration_gate": 42,
+      "failed": 0
+    },
+    "isolated_postgresql": {
+      "binding": "127.0.0.1:55438",
+      "database_and_cli_tests_passed": 3,
+      "loopback_openai_compatible_endpoint": true,
+      "supplier_calls": 0,
+      "temporary_database_pattern": "am_eval_atomic_%",
+      "temporary_database_residue": 0
+    },
+    "adversarial": {
+      "retyped_quality_metric": "PASS_FAIL_CLOSED",
+      "retyped_efficiency_metric": "PASS_FAIL_CLOSED",
+      "embedded_source_byte_drift": "PASS_FAIL_CLOSED",
+      "wrong_source_result_sha_confirmation": "PASS_FAIL_CLOSED",
+      "mutable_oci_tag": "PASS_FAIL_CLOSED",
+      "failed_model_run": "PASS_FAIL_CLOSED",
+      "non_image_scorer_provenance": "PASS_FAIL_CLOSED",
+      "private_output_mode": "PASS_0600"
+    },
+    "static": {
+      "ruff": "PASS",
+      "uv_lock": "PASS",
+      "git_diff_check": "PASS"
+    }
+  },
+  "boundaries": {
+    "production_data_read": false,
+    "production_api_or_database_connected": false,
+    "production_namespace_connected": false,
+    "production_modified": false,
+    "external_model_called": false,
+    "external_data_sent": false,
+    "real_api_key_read": false
+  },
+  "remaining_requirements": [
+    "add sourced adapters for lifecycle hard-gate and M04 through M21 measurement runners before enabling a complete formal release decision",
+    "design a separately authorized production-shadow observation result that can source official M22 without memory text",
+    "create or authorize a pull request to run source-and-unit and image-contract on GitHub-hosted runners without merging",
+    "retain the exact published OCI manifest digest and run formal scorers by name at digest",
+    "create and independently review the private blind dataset outside the repository",
+    "authorize private blind external transmission separately before measuring M01 M02 M03 and M07",
+    "measure M23 from the same bound terminal-job window"
+  ],
+  "remote_ci": {
+    "branch": "codex/review-queue-feedback",
+    "tested_code_revision": "0a4f2a45239a6301d89f797a5fd8dd772f56699a",
+    "pull_request_created": false,
+    "workflow_triggered_for_head": false,
+    "image_contract_status": "REMOTE_CI_PENDING",
+    "images_published": false,
+    "production_deployed": false
+  }
+}

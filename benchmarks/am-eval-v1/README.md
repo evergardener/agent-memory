@@ -45,6 +45,10 @@
 指纹、正式测量 attestation 和精确 OCI digest 绑定纳入 fail-closed Gate，证据见
 [`round-12-measurement-provenance-gate.json`](round-12-measurement-provenance-gate.json) 及
 [`../../docs/V1.0-AM-Eval第十二轮测量来源与执行完整性门禁报告.md`](../../docs/V1.0-AM-Eval第十二轮测量来源与执行完整性门禁报告.md)。
+第十三轮把质量与效率 scorer 的原始结果字节、SHA、运行/环境身份和原始计数绑定到 sourced
+attestation，证据见
+[`round-13-sourced-score-attestation-gate.json`](round-13-sourced-score-attestation-gate.json) 及
+[`../../docs/V1.0-AM-Eval第十三轮评分来源证明门禁报告.md`](../../docs/V1.0-AM-Eval第十三轮评分来源证明门禁报告.md)。
 
 验证冻结数据集：
 
@@ -66,6 +70,9 @@ M01/M02/M03/M07 使用
 metadata-only execution plan，再以 `agent-memory-preflight-atomic-benchmark` 完成零网络预检，最后由
 `agent-memory-run-atomic-benchmark` 在全新 `am_eval_` 隔离数据库执行；合成与生产派生数据使用不同
 确认口令，runner、质量评分和效率评分必须确认同一个 plan SHA。
+私有 blind 质量结果和隔离 M23 在进入 formal run 前还必须通过
+`agent-memory-assemble-eval-attestation`：组装器会嵌入原 scorer result 字节并从原始计数复算指标，
+旧 quality/efficiency attestation v1 不再被正式聚合器接受。isolated M22 不能作为正式 M22。
 20 组生命周期操作使用 `agent-memory-run-lifecycle-benchmark`，只允许 loopback 上全新的
 `am_eval_` 空数据库和仓库外受限输出；公开合成结果不计为 blind benchmark。详细边界见运行手册。
 
