@@ -121,10 +121,7 @@ def load_atomic_output(
     if (
         not isinstance(execution_plan_sha, str)
         or len(execution_plan_sha) != 64
-        or any(
-            character not in SHA256_CHARACTERS
-            for character in execution_plan_sha.casefold()
-        )
+        or any(character not in SHA256_CHARACTERS for character in execution_plan_sha.casefold())
     ):
         raise DatasetError("atomic evaluation output requires execution plan SHA-256")
     system = output.get("system")
@@ -148,15 +145,11 @@ def load_atomic_output(
         or system["source_file_count"] <= 0
         or len(system["source_sha256"]) != 64
         or any(
-            character not in SHA256_CHARACTERS
-            for character in system["source_sha256"].casefold()
+            character not in SHA256_CHARACTERS for character in system["source_sha256"].casefold()
         )
         or not isinstance(system.get("environment_sha256"), str)
         or len(system["environment_sha256"]) != 64
-        or any(
-            character not in SHA256_CHARACTERS
-            for character in system["environment_sha256"]
-        )
+        or any(character not in SHA256_CHARACTERS for character in system["environment_sha256"])
     ):
         raise DatasetError("atomic evaluation output requires system metadata")
     cases = output.get("cases")
@@ -187,10 +180,8 @@ def load_atomic_output(
                 or prediction_id in prediction_ids
                 or not isinstance(prediction.get("statement"), str)
                 or not prediction["statement"]
-                or prediction.get("fact_type")
-                not in {"long_term", "stage", "current", "observed"}
-                or prediction.get("memory_state")
-                not in {"active", "candidate", "evidence_only"}
+                or prediction.get("fact_type") not in {"long_term", "stage", "current", "observed"}
+                or prediction.get("memory_state") not in {"active", "candidate", "evidence_only"}
                 or not isinstance(prediction.get("recallable"), bool)
                 or isinstance(prediction.get("evidence_index"), bool)
                 or not isinstance(prediction.get("evidence_index"), int)
@@ -290,9 +281,7 @@ def evaluate_atomic_quality(
             item["query_id"]: set(item["expected_fact_ids"])
             for item in case["expected"].get("recall_queries", [])
         }
-        supplied_query_ids = {
-            item["query_id"] for item in output_cases[case_id].get("recalls", [])
-        }
+        supplied_query_ids = {item["query_id"] for item in output_cases[case_id].get("recalls", [])}
         unknown_query_ids = supplied_query_ids - set(query_gold)
         if unknown_query_ids:
             raise DatasetError(
@@ -312,9 +301,7 @@ def evaluate_atomic_quality(
                 continue
             source_ids = set(recall["source_ids"])
             prediction = next(
-                item
-                for item in predictions
-                if item["prediction_id"] == recall["prediction_id"]
+                item for item in predictions if item["prediction_id"] == recall["prediction_id"]
             )
             expected = expected_facts[matched_fact_id]
             expected_source = evidence_ids[expected["evidence_index"]]
@@ -360,6 +347,7 @@ def evaluate_atomic_quality(
             "gold_claims": len(gold_claims),
             "predictions": prediction_count,
             "matched_claims": len(matched_claims),
+            "exact_spans": exact_span_count,
             "recall_queries": recall_count,
             "correct_citations": correct_citations,
         },
@@ -382,11 +370,7 @@ def main() -> None:
     try:
         dataset = load_dataset_snapshot(arguments.manifest)
         manifest = dataset.manifest
-        cases = tuple(
-            case
-            for case in dataset.cases
-            if case["suite"] == "atomic_fact"
-        )
+        cases = tuple(case for case in dataset.cases if case["suite"] == "atomic_fact")
         if not cases:
             raise DatasetError("dataset has no atomic_fact cases")
         output = load_atomic_output(
@@ -408,9 +392,7 @@ def main() -> None:
         )
         scorer_environment = runtime_environment_identity()
         if plan["environment"] != scorer_environment:
-            raise DatasetError(
-                "quality scorer runtime environment differs from the execution plan"
-            )
+            raise DatasetError("quality scorer runtime environment differs from the execution plan")
         scorer_identity = resolve_runtime_identity()
         if (
             plan["run"]["system_revision"] != scorer_identity.revision
@@ -431,6 +413,8 @@ def main() -> None:
         if output["dataset_manifest_sha256"] != manifest_sha256:
             raise DatasetError("atomic output dataset SHA-256 does not match the manifest")
         result = evaluate_atomic_quality(cases, output)
+        result["schema_version"] = "am-eval-atomic-quality-result-v3"
+        result["dataset_blind"] = manifest.get("blind") is True
         result["scorer_runtime_identity"] = {
             "provenance": scorer_identity.provenance,
             "revision": scorer_identity.revision,

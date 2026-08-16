@@ -110,6 +110,7 @@ def test_oracle_proves_metric_arithmetic_without_claiming_model_quality() -> Non
         "gold_claims": 24,
         "predictions": 24,
         "matched_claims": 24,
+        "exact_spans": 24,
         "recall_queries": 21,
         "correct_citations": 21,
     }

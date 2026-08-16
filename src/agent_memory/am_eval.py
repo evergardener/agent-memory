@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from .am_eval_atomic_runner import resolve_runtime_identity
+from .am_eval_attestation import (
+    EFFICIENCY_ATTESTATION_SCHEMA_VERSION,
+    QUALITY_ATTESTATION_SCHEMA_VERSION,
+    validate_attested_source,
+)
 from .am_eval_dataset import DatasetError, read_file_snapshot
 from .am_eval_environment import runtime_environment_identity
 
@@ -21,10 +26,8 @@ MODEL_QUALITY_METRIC_IDS = frozenset({"M01", "M02", "M03", "M07"})
 EFFICIENCY_METRIC_IDS = frozenset({"M22", "M23"})
 ARTIFACT_PRODUCERS = {
     "am-eval-measurement-attestation-v1": "agent-memory-am-eval-attestation-assembler",
-    "am-eval-atomic-quality-attestation-v1": (
-        "agent-memory-am-eval-attestation-assembler"
-    ),
-    "am-eval-efficiency-attestation-v1": "agent-memory-am-eval-attestation-assembler",
+    QUALITY_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
+    EFFICIENCY_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
     "am-eval-lifecycle-attestation-v1": "agent-memory-am-eval-attestation-assembler",
 }
 
@@ -66,9 +69,7 @@ def _validate_execution_artifact(payload: object) -> dict[str, str]:
     if (
         not isinstance(manifest_digest, str)
         or not manifest_digest.startswith("sha256:")
-        or not _is_hex_digest(
-            manifest_digest.removeprefix("sha256:"), lengths=frozenset({64})
-        )
+        or not _is_hex_digest(manifest_digest.removeprefix("sha256:"), lengths=frozenset({64}))
     ):
         raise ValueError("formal run requires an OCI manifest SHA-256 digest")
     platform_name = payload.get("platform")
@@ -129,9 +130,7 @@ def _validate_run_identity(run: dict[str, Any], *, formal: bool) -> None:
             )
         if not _is_hex_digest(system.get("source_sha256"), lengths=frozenset({64})):
             raise ValueError("formal run system requires a lowercase source SHA-256")
-        if not _is_hex_digest(
-            system.get("environment_sha256"), lengths=frozenset({64})
-        ):
+        if not _is_hex_digest(system.get("environment_sha256"), lengths=frozenset({64})):
             raise ValueError("formal run system requires a runtime environment SHA-256")
         source_file_count = system.get("source_file_count")
         if (
@@ -253,6 +252,15 @@ def _validate_artifact(
         raise ValueError(f"attestation artifact {artifact_id} has an unsupported schema")
     if producer != ARTIFACT_PRODUCERS[schema_version]:
         raise ValueError(f"attestation artifact {artifact_id} has an ineligible producer")
+    source_result: dict[str, Any] | None = None
+    if schema_version in {
+        QUALITY_ATTESTATION_SCHEMA_VERSION,
+        EFFICIENCY_ATTESTATION_SCHEMA_VERSION,
+    }:
+        try:
+            source_result = validate_attested_source(artifact)
+        except DatasetError as error:
+            raise ValueError(f"attestation artifact {artifact_id}: {error}") from error
     measurement_ids = artifact.get("measurement_ids")
     if (
         not isinstance(measurement_ids, list)
@@ -315,7 +323,7 @@ def _validate_artifact(
     quality_ids = artifact_measurements & MODEL_QUALITY_METRIC_IDS
     efficiency_ids = artifact_measurements & EFFICIENCY_METRIC_IDS
     if quality_ids:
-        if schema_version != "am-eval-atomic-quality-attestation-v1":
+        if schema_version != QUALITY_ATTESTATION_SCHEMA_VERSION:
             raise ValueError("formal model-quality metrics require an atomic-quality artifact")
         if artifact_measurements - MODEL_QUALITY_METRIC_IDS:
             raise ValueError("atomic-quality artifact cannot attest unrelated measurements")
@@ -329,11 +337,19 @@ def _validate_artifact(
             raise ValueError("formal model-quality artifact requires private-blind scope")
         if not _is_hex_digest(artifact.get("execution_plan_sha256"), lengths=frozenset({64})):
             raise ValueError("formal model-quality artifact requires an execution plan SHA-256")
-    elif schema_version == "am-eval-atomic-quality-attestation-v1":
+        assert source_result is not None
+        if (
+            source_result["run_id"] != run["run_id"]
+            or source_result["dataset_id"] != dataset["id"]
+            or source_result["system"]["version"] != system["version"]
+            or source_result["system"]["source_file_count"] != system["source_file_count"]
+        ):
+            raise ValueError("formal model-quality source identity binding mismatch")
+    elif schema_version == QUALITY_ATTESTATION_SCHEMA_VERSION:
         raise ValueError("atomic-quality artifact must attest model-quality metrics")
 
     if efficiency_ids:
-        if schema_version != "am-eval-efficiency-attestation-v1":
+        if schema_version != EFFICIENCY_ATTESTATION_SCHEMA_VERSION:
             raise ValueError("formal efficiency metrics require an efficiency artifact")
         if artifact_measurements - EFFICIENCY_METRIC_IDS:
             raise ValueError("efficiency artifact cannot attest unrelated measurements")
@@ -344,7 +360,15 @@ def _validate_artifact(
                 raise ValueError("formal M23 requires real model terminal jobs")
             if artifact.get("terminal_jobs_complete") is not True:
                 raise ValueError("formal M23 requires all model jobs to be terminal")
-    elif schema_version == "am-eval-efficiency-attestation-v1":
+            assert source_result is not None
+            if (
+                source_result["run_id"] != run["run_id"]
+                or source_result["dataset_id"] != dataset["id"]
+                or source_result["system_version"] != system["version"]
+                or source_result["system_source_file_count"] != system["source_file_count"]
+            ):
+                raise ValueError("formal efficiency source identity binding mismatch")
+    elif schema_version == EFFICIENCY_ATTESTATION_SCHEMA_VERSION:
         raise ValueError("efficiency artifact must attest M22 or M23")
 
     if (
@@ -371,12 +395,15 @@ def _validate_artifact(
         "producer",
         "schema_version",
         "scope",
+        "source_artifact_base64",
+        "source_artifact_schema_version",
+        "source_artifact_sha256",
         "system_environment_sha256",
         "system_revision",
         "system_source_sha256",
         "track",
     }
-    if quality_ids:
+    if quality_ids or efficiency_ids:
         allowed_keys.add("execution_plan_sha256")
     if "M23" in efficiency_ids:
         allowed_keys.add("terminal_jobs_complete")

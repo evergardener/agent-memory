@@ -110,18 +110,14 @@ def validate_efficiency_input(payload: dict[str, Any]) -> None:
             not isinstance(execution_plan_sha, str)
             or len(execution_plan_sha) != 64
             or any(
-                character not in SHA256_CHARACTERS
-                for character in execution_plan_sha.casefold()
+                character not in SHA256_CHARACTERS for character in execution_plan_sha.casefold()
             )
         ):
             raise DatasetError("isolated efficiency input requires execution plan SHA-256")
         if (
             not isinstance(source_sha, str)
             or len(source_sha) != 64
-            or any(
-                character not in SHA256_CHARACTERS
-                for character in source_sha.casefold()
-            )
+            or any(character not in SHA256_CHARACTERS for character in source_sha.casefold())
         ):
             raise DatasetError("isolated efficiency input requires runtime source SHA-256")
         if (
@@ -181,9 +177,7 @@ def validate_efficiency_input(payload: dict[str, Any]) -> None:
             raise DatasetError("isolated efficiency terminal counts differ from the run ledger")
 
 
-def validate_efficiency_plan_binding(
-    payload: dict[str, Any], *, plan: dict[str, Any]
-) -> None:
+def validate_efficiency_plan_binding(payload: dict[str, Any], *, plan: dict[str, Any]) -> None:
     if payload.get("scope") != "isolated":
         return
     case_count = plan["case_count"]
@@ -229,7 +223,7 @@ def evaluate_efficiency(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         missing.append("M23")
     result = {
-        "schema_version": "am-eval-efficiency-result-v4",
+        "schema_version": "am-eval-efficiency-result-v5",
         "run_id": payload["run_id"],
         "scope": payload["scope"],
         "window_start": payload["window_start"],
@@ -242,6 +236,7 @@ def evaluate_efficiency(payload: dict[str, Any]) -> dict[str, Any]:
         "contains_memory_text": False,
         "contains_production_data": payload["contains_production_data"],
         "external_data_sent": payload["external_data_sent"],
+        "counts": dict(payload["counts"]),
     }
     if payload.get("execution_plan_sha256") is not None:
         result["run_status"] = payload["run_status"]
@@ -289,11 +284,7 @@ def main() -> None:
             plan = json.loads(plan_payload.decode("utf-8"))
             dataset = load_dataset_snapshot(arguments.manifest)
             manifest = dataset.manifest
-            cases = tuple(
-                case
-                for case in dataset.cases
-                if case["suite"] == "atomic_fact"
-            )
+            cases = tuple(case for case in dataset.cases if case["suite"] == "atomic_fact")
             if not cases:
                 raise DatasetError("dataset has no atomic_fact cases")
             plan = validate_execution_plan(
@@ -350,6 +341,11 @@ def main() -> None:
             )
         result = evaluate_efficiency(payload)
         if plan is not None:
+            result["schema_version"] = "am-eval-efficiency-result-v5"
+            result["dataset_id"] = plan["dataset"]["id"]
+            result["dataset_manifest_sha256"] = plan["dataset"]["manifest_sha256"]
+            result["dataset_visibility"] = plan["dataset"]["visibility"]
+            result["dataset_blind"] = manifest.get("blind") is True
             result["scorer_runtime_identity"] = {
                 "provenance": scorer_identity.provenance,
                 "revision": scorer_identity.revision,

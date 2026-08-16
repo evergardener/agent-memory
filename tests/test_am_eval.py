@@ -13,6 +13,23 @@ from agent_memory.am_eval import (
     render_markdown,
 )
 from agent_memory.am_eval_atomic_runner import RuntimeIdentity
+from agent_memory.am_eval_attestation import assemble_attestation
+from agent_memory.am_eval_environment import (
+    RUNTIME_DISTRIBUTIONS,
+    build_runtime_environment_identity,
+)
+
+
+def _environment() -> dict:
+    return build_runtime_environment_identity(
+        distribution_versions={name: "1" for name in RUNTIME_DISTRIBUTIONS},
+        distribution_content_sha256={name: "1" * 64 for name in RUNTIME_DISTRIBUTIONS},
+        distribution_file_counts={name: 1 for name in RUNTIME_DISTRIBUTIONS},
+        python_implementation="cpython",
+        python_version="3.12.0",
+        python_cache_tag="cpython-312",
+        platform_tag="macosx-test",
+    )
 
 
 def _spec() -> dict:
@@ -52,7 +69,7 @@ def _spec() -> dict:
 def _run() -> dict:
     revision = "a" * 40
     source_sha256 = "b" * 64
-    environment_sha256 = "9" * 64
+    environment_sha256 = _environment()["sha256"]
     dataset_sha256 = "c" * 64
     track = "recommended-product"
     dataset_visibility = "private"
@@ -128,7 +145,7 @@ def _run() -> dict:
             },
             "M02": {
                 "value": 0.01,
-                "sample_count": 100,
+                "sample_count": 900,
                 "evidence": ["atomic-quality"],
             },
         },
@@ -152,7 +169,7 @@ def _run() -> dict:
                     scope="official",
                 ),
                 "atomic-quality": artifact(
-                    schema_version="am-eval-atomic-quality-attestation-v1",
+                    schema_version="am-eval-atomic-quality-attestation-v2",
                     producer="agent-memory-am-eval-attestation-assembler",
                     sha256="e" * 64,
                     measurement_ids=["M01", "M02"],
@@ -175,14 +192,94 @@ def _artifact_payloads(run: dict) -> dict[str, bytes]:
     supplied = {**run["hard_gates"], **run["metrics"]}
     payloads: dict[str, bytes] = {}
     for artifact_id, descriptor in tuple(run["attestation"]["artifacts"].items()):
-        artifact = {key: value for key, value in descriptor.items() if key != "sha256"}
-        artifact["measurements"] = {
-            item_id: {
-                "sample_count": supplied[item_id]["sample_count"],
-                "value": supplied[item_id]["value"],
+        if artifact_id == "atomic-quality":
+            system = run["system"]
+            quality_metrics = {
+                "M01": {
+                    "sample_count": run["metrics"].get("M01", {}).get("sample_count", 10),
+                    "value": run["metrics"].get("M01", {}).get("value", 0.9),
+                },
+                "M02": {
+                    "sample_count": run["metrics"].get("M02", {}).get("sample_count", 900),
+                    "value": run["metrics"].get("M02", {}).get("value", 0.01),
+                },
+                "M03": {"sample_count": 9, "value": 1.0},
+                "M07": {"sample_count": 10, "value": 1.0},
             }
-            for item_id in artifact["measurement_ids"]
-        }
+            source = {
+                "schema_version": "am-eval-atomic-quality-result-v3",
+                "runner_version": "am-eval-atomic-runner-v7",
+                "dataset_id": run["dataset"]["id"],
+                "run_id": run["run_id"],
+                "run_status": "complete",
+                "case_count": 10,
+                "job_statuses": {"done": 10},
+                "model_invocations": {
+                    "budget": 10,
+                    "attempted": 10,
+                    "terminal_success": 10,
+                    "terminal_failure": 0,
+                },
+                "system": system,
+                "dataset_manifest_sha256": run["dataset"]["sha256"],
+                "execution_plan_sha256": "f" * 64,
+                "model": "ocg/qwen3.7-plus",
+                "policy_version": "atomic-admission-v3",
+                "model_called": True,
+                "contains_production_data": False,
+                "external_data_sent": True,
+                "dataset_visibility": run["dataset"]["visibility"],
+                "dataset_blind": run["dataset"]["blind"],
+                "sample_counts": {
+                    "gold_claims": 900,
+                    "predictions": 10,
+                    "matched_claims": 9,
+                    "exact_spans": 9,
+                    "recall_queries": 10,
+                    "correct_citations": 10,
+                },
+                "metrics": quality_metrics,
+                "missing_metric_ids": [],
+                "complete": True,
+                "contains_memory_text": False,
+                "scorer_runtime_identity": {
+                    "provenance": "image-build-metadata",
+                    "revision": system["revision"],
+                    "source_file_count": system["source_file_count"],
+                    "source_sha256": system["source_sha256"],
+                    "version": system["version"],
+                },
+                "scorer_runtime_environment": _environment(),
+                "input_artifact_sha256": "7" * 64,
+            }
+            source_payload = json.dumps(
+                source,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode()
+            artifact = assemble_attestation(
+                source_payload,
+                source_sha256=hashlib.sha256(source_payload).hexdigest(),
+                kind="quality",
+                track=run["track"],
+                image_reference=(
+                    f"{run['execution_artifact']['image_name']}@"
+                    f"{run['execution_artifact']['manifest_digest']}"
+                ),
+                image_platform=run["execution_artifact"]["platform"],
+                measurement_ids=frozenset(descriptor["measurement_ids"]),
+            )
+            artifact.update({key: value for key, value in descriptor.items() if key != "sha256"})
+        else:
+            artifact = {key: value for key, value in descriptor.items() if key != "sha256"}
+            artifact["measurements"] = {
+                item_id: {
+                    "sample_count": supplied[item_id]["sample_count"],
+                    "value": supplied[item_id]["value"],
+                }
+                for item_id in artifact["measurement_ids"]
+            }
         payload = json.dumps(
             artifact,
             allow_nan=False,
@@ -197,9 +294,7 @@ def _artifact_payloads(run: dict) -> dict[str, bytes]:
     return payloads
 
 
-def _evaluate_with_payloads(
-    spec: dict, run: dict, payloads: dict[str, bytes] | None
-) -> dict:
+def _evaluate_with_payloads(spec: dict, run: dict, payloads: dict[str, bytes] | None) -> dict:
     execution_artifact = run["execution_artifact"]
     return evaluate_run(
         spec,
@@ -233,7 +328,7 @@ def _formal_scorer_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         am_eval,
         "runtime_environment_identity",
-        lambda: {"sha256": "9" * 64},
+        _environment,
     )
 
 
@@ -253,7 +348,7 @@ def test_complete_run_passes_and_renders_markdown() -> None:
     assert result["quality_summary"]["measured_score"] == 100
     assert result["quality_summary"]["coverage_percent"] == 100
     assert result["scorer_runtime_identity"]["source_sha256"] == "b" * 64
-    assert result["scorer_runtime_environment"]["sha256"] == "9" * 64
+    assert result["scorer_runtime_environment"]["sha256"] == _environment()["sha256"]
     assert "| G01 | no leaks | pass |" in render_markdown(result)
 
 
@@ -291,7 +386,7 @@ def test_unknown_or_invalid_measurements_fail_closed() -> None:
     run = _run()
     run["metrics"]["M01"]["sample_count"] = 0
     _resign(run)
-    with pytest.raises(ValueError, match="positive sample_count"):
+    with pytest.raises(ValueError, match="invalid value"):
         _evaluate(_spec(), run)
 
     run = _run()
@@ -308,7 +403,7 @@ def test_non_finite_or_out_of_range_measurements_fail_closed() -> None:
     run = _run()
     run["metrics"]["M01"]["value"] = 1.1
     _resign(run)
-    with pytest.raises(ValueError, match="exceeds its maximum"):
+    with pytest.raises(ValueError, match="differs from scorer counts"):
         _evaluate(spec, run)
 
     run["metrics"]["M01"]["value"] = float("nan")
@@ -326,13 +421,13 @@ def test_formal_run_rejects_fabricated_identity_dataset_and_empty_evidence() -> 
     run = _run()
     run["system"]["revision"] = "not-a-git-sha"
     _resign(run)
-    with pytest.raises(ValueError, match="full lowercase Git object ID"):
+    with pytest.raises(ValueError, match="system identity is invalid"):
         _evaluate(_spec(), run)
 
     run = _run()
     run["dataset"]["sha256"] = "not-a-sha"
     _resign(run)
-    with pytest.raises(ValueError, match="dataset sha256"):
+    with pytest.raises(ValueError, match="dataset_manifest_sha256"):
         _evaluate(_spec(), run)
 
     run = _run()
@@ -352,13 +447,13 @@ def test_formal_run_rejects_fixture_oracle_and_synthetic_quality_claims() -> Non
     run = _run()
     run["system"]["name"] = "fixture-oracle"
     _resign(run)
-    with pytest.raises(ValueError, match="fixture, mock, fake, or oracle"):
+    with pytest.raises(ValueError, match="must identify agent-memory"):
         _evaluate(_spec(), run)
 
     run = _run()
     run["attestation"]["artifacts"]["atomic-quality"]["model_called"] = False
     _resign(run)
-    with pytest.raises(ValueError, match="real model call"):
+    with pytest.raises(ValueError, match="model_called differs"):
         _evaluate(_spec(), run)
 
     run = _run()
@@ -370,7 +465,7 @@ def test_formal_run_rejects_fixture_oracle_and_synthetic_quality_claims() -> Non
         {"dataset_visibility": "open", "blind": False}
     )
     _resign(run)
-    with pytest.raises(ValueError, match="private blind dataset"):
+    with pytest.raises(ValueError, match="private or restricted dataset"):
         _evaluate(_spec(), run)
 
 
