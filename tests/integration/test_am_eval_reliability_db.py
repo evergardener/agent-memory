@@ -19,15 +19,17 @@ MANIFEST = (
     not os.getenv("AGENT_MEMORY_DATABASE_URL"),
     reason="set AGENT_MEMORY_DATABASE_URL to an isolated migrated database",
 )
-def test_reliability_prepare_ledger_uses_real_database_state() -> None:
+def test_reliability_prepare_ledger_uses_real_database_state(
+    isolated_migrated_database_url: str,
+) -> None:
     dataset = load_dataset_snapshot(MANIFEST)
     validate_reliability_dataset(dataset.manifest, dataset.cases)
 
-    with psycopg.connect(os.environ["AGENT_MEMORY_DATABASE_URL"]) as connection:
+    with psycopg.connect(isolated_migrated_database_url) as connection:
         result = run_prepare_cases(
             connection,
             cases=dataset.cases,
-            database_url=os.environ["AGENT_MEMORY_DATABASE_URL"],
+            database_url=isolated_migrated_database_url,
             namespace="hermes:automated-tests:reliability-integration",
             crypto=VaultCrypto(bytes(range(32))),
         )

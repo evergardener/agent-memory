@@ -23,15 +23,16 @@ MANIFEST = (
     Path(__file__).parents[2]
     / "benchmarks/am-eval-v1/datasets/episode-procedure-gold-v1/manifest.json"
 )
-DATABASE_URL = os.getenv("AGENT_MEMORY_DATABASE_URL", "")
 NAMESPACE = "hermes:automated-tests:am-eval-episode-integration"
 
 
-def test_episode_procedure_database_ledger_is_complete_and_metadata_only() -> None:
+def test_episode_procedure_database_ledger_is_complete_and_metadata_only(
+    isolated_migrated_database_url: str,
+) -> None:
     snapshot = load_dataset_snapshot(MANIFEST)
     validate_episode_procedure_dataset(snapshot.manifest, snapshot.cases)
 
-    with psycopg.connect(DATABASE_URL) as connection:
+    with psycopg.connect(isolated_migrated_database_url) as connection:
         result = run_episode_procedure_cases(
             connection,
             cases=snapshot.cases,
