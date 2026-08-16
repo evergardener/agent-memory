@@ -624,6 +624,43 @@ def test_formal_run_rejects_scorer_source_or_environment_drift(
         _evaluate(_spec(), run)
 
 
+def test_formal_run_rejects_system_identity_laundering() -> None:
+    run = _run()
+    payloads = _artifact_payloads(run)
+    run["system"]["name"] = "honcho"
+    _resign(run)
+
+    with pytest.raises(ValueError, match="must identify agent-memory"):
+        _evaluate_with_payloads(_spec(), run, payloads)
+
+
+def test_formal_run_rejects_unregistered_execution_image_repository() -> None:
+    run = _run()
+    payloads = _artifact_payloads(run)
+    run["execution_artifact"]["image_name"] = "ghcr.io/example/honcho"
+    image_reference = (
+        f"{run['execution_artifact']['image_name']}@"
+        f"{run['execution_artifact']['manifest_digest']}"
+    )
+    run["attestation"]["image_reference"] = image_reference
+    artifact = json.loads(payloads["atomic-quality"])
+    artifact["image_reference"] = image_reference
+    payload = json.dumps(
+        artifact,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    payloads["atomic-quality"] = payload
+    run["attestation"]["artifacts"]["atomic-quality"] = {
+        "sha256": hashlib.sha256(payload).hexdigest()
+    }
+    _resign(run)
+
+    with pytest.raises(ValueError, match="registered Agent Memory execution image"):
+        _evaluate_with_payloads(_spec(), run, payloads)
+
+
 def test_formal_run_requires_confirmed_digest_image_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

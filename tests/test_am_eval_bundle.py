@@ -14,7 +14,7 @@ from agent_memory.am_eval_attestation import (
 from agent_memory.am_eval_bundle import ArtifactRecord, assemble_deterministic_run
 from agent_memory.am_eval_dataset import DatasetError
 
-IMAGE_REFERENCE = "local.agent-memory.test/agent-memory-api@sha256:" + "9" * 64
+IMAGE_REFERENCE = "ghcr.io/evergardener/agent-memory-api@sha256:" + "9" * 64
 RUN_ID = "hermes:automated-tests:am-eval-unified-test"
 TRACK = "deterministic-composite"
 
@@ -165,5 +165,22 @@ def test_assemble_deterministic_run_rejects_confirmation_drift() -> None:
             confirm_run_id=RUN_ID + "-other",
             confirm_track=TRACK,
             confirm_image_reference=IMAGE_REFERENCE,
+            confirm_image_platform="linux/arm64",
+        )
+
+
+def test_assemble_deterministic_run_rejects_unregistered_image_repository() -> None:
+    records = _records()
+    forged_reference = "ghcr.io/example/honcho@sha256:" + "9" * 64
+    for record in records.values():
+        record.artifact["image_reference"] = forged_reference
+
+    with pytest.raises(DatasetError, match="registered Agent Memory repository"):
+        assemble_deterministic_run(
+            records,
+            benchmark_id="am-eval-v1",
+            confirm_run_id=RUN_ID,
+            confirm_track=TRACK,
+            confirm_image_reference=forged_reference,
             confirm_image_platform="linux/arm64",
         )

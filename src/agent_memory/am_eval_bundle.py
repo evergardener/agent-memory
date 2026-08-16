@@ -26,6 +26,7 @@ from .am_eval_attestation import (
     validate_attested_source,
 )
 from .am_eval_dataset import DatasetError, read_file_snapshot
+from .am_eval_formal_contract import OFFICIAL_EXECUTION_IMAGE_NAMES
 
 DETERMINISTIC_ARTIFACT_SCHEMAS = {
     "episode-procedure": EPISODE_PROCEDURE_ATTESTATION_SCHEMA_VERSION,
@@ -92,12 +93,16 @@ def _execution_artifact(image_reference: str, image_platform: str) -> dict[str, 
     if (
         not separator
         or not image_name
+        or image_name not in OFFICIAL_EXECUTION_IMAGE_NAMES
         or ":" in image_name.rsplit("/", maxsplit=1)[-1]
         or not manifest_digest.startswith("sha256:")
         or len(manifest_digest) != 71
         or any(character not in "0123456789abcdef" for character in manifest_digest[7:])
     ):
-        raise DatasetError("deterministic run requires an exact untagged OCI image reference")
+        raise DatasetError(
+            "deterministic run requires an exact untagged OCI image reference from the "
+            "registered Agent Memory repository"
+        )
     if image_platform not in {"linux/amd64", "linux/arm64"}:
         raise DatasetError("deterministic run requires a supported OCI platform")
     return {

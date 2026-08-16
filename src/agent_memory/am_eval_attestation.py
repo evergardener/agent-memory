@@ -45,6 +45,7 @@ from .am_eval_evidence import (
 from .am_eval_evidence import (
     EXPECTED_MANIFEST_SHA256 as EVIDENCE_MANIFEST_SHA256,
 )
+from .am_eval_formal_contract import OFFICIAL_EXECUTION_IMAGE_NAMES
 from .am_eval_lifecycle import (
     DATASET_ID as LIFECYCLE_DATASET_ID,
 )
@@ -1666,13 +1667,23 @@ def assemble_attestation(
         raise DatasetError("unsupported attestation source kind")
     if not isinstance(track, str) or not track.strip() or track != track.strip():
         raise DatasetError("attestation requires a track")
+    if not isinstance(image_reference, str):
+        raise DatasetError(
+            "attestation requires an exact OCI image reference from the registered "
+            "Agent Memory repository"
+        )
+    image_name, separator, image_digest = image_reference.rpartition("@")
     if (
-        not isinstance(image_reference, str)
-        or "@sha256:" not in image_reference
+        not separator
+        or image_name not in OFFICIAL_EXECUTION_IMAGE_NAMES
+        or not image_digest.startswith("sha256:")
         or any(character.isspace() for character in image_reference)
-        or not _is_sha256(image_reference.rsplit("@sha256:", maxsplit=1)[-1])
+        or not _is_sha256(image_digest.removeprefix("sha256:"))
     ):
-        raise DatasetError("attestation requires an exact OCI image reference")
+        raise DatasetError(
+            "attestation requires an exact OCI image reference from the registered "
+            "Agent Memory repository"
+        )
     if image_platform not in {"linux/amd64", "linux/arm64"}:
         raise DatasetError("attestation requires a supported OCI platform")
     artifact = {

@@ -20,6 +20,10 @@ from .am_eval_attestation import (
 )
 from .am_eval_dataset import DatasetError, read_file_snapshot
 from .am_eval_environment import runtime_environment_identity
+from .am_eval_formal_contract import (
+    OFFICIAL_EXECUTION_IMAGE_NAMES,
+    OFFICIAL_SYSTEM_NAME,
+)
 
 RUN_SCHEMA_VERSION = "am-eval-run-v2"
 ATTESTATION_SCHEMA_VERSION = "am-eval-run-attestation-v1"
@@ -116,6 +120,8 @@ def _validate_execution_artifact(payload: object) -> dict[str, str]:
         or ":" in image_name.rsplit("/", maxsplit=1)[-1]
     ):
         raise ValueError("formal run image name must be an untagged OCI repository name")
+    if image_name not in OFFICIAL_EXECUTION_IMAGE_NAMES:
+        raise ValueError("formal run requires a registered Agent Memory execution image")
     manifest_digest = payload.get("manifest_digest")
     if (
         not isinstance(manifest_digest, str)
@@ -227,6 +233,8 @@ def _validate_run_identity(run: dict[str, Any], *, formal: bool) -> None:
             raise ValueError(
                 "formal run system identity cannot be a fixture, mock, fake, or oracle"
             )
+        if system_name != OFFICIAL_SYSTEM_NAME:
+            raise ValueError("formal run system identity must identify agent-memory")
         if not _is_hex_digest(system.get("source_sha256"), lengths=frozenset({64})):
             raise ValueError("formal run system requires a lowercase source SHA-256")
         if not _is_hex_digest(system.get("environment_sha256"), lengths=frozenset({64})):

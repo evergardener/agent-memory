@@ -958,6 +958,15 @@ def test_assembler_requires_confirmed_source_and_exact_oci_digest() -> None:
             image_reference="ghcr.io/evergardener/agent-memory-api:latest",
             image_platform="linux/arm64",
         )
+    with pytest.raises(DatasetError, match="registered Agent Memory repository"):
+        assemble_attestation(
+            payload,
+            source_sha256=hashlib.sha256(payload).hexdigest(),
+            kind="quality",
+            track="recommended-product",
+            image_reference="ghcr.io/example/honcho@sha256:" + "9" * 64,
+            image_platform="linux/arm64",
+        )
 
 
 def test_assembler_cli_writes_a_private_sourced_artifact(
