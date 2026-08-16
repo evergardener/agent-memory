@@ -29,9 +29,7 @@ docker run --rm \
   --cpus 1 \
   --cap-drop ALL \
   --security-opt no-new-privileges:true \
-  --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m,mode=1777 \
   --env PYTHONDONTWRITEBYTECODE=1 \
-  --env PYTHONPYCACHEPREFIX=/tmp/agent-memory-identity-pycache \
   --env AGENT_MEMORY_SCORING_RUNTIME_IDENTITY=true \
   --entrypoint /app/.venv/bin/python \
   "$image" -c '

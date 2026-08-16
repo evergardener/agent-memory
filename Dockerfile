@@ -17,7 +17,6 @@ LABEL org.opencontainers.image.title="Agent Memory for Hermes" \
       io.evergarden.agent-memory.source-sha256="${AGENT_MEMORY_BUILD_SOURCE_SHA256}"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPYCACHEPREFIX=/tmp/agent-memory-pycache \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
@@ -39,9 +38,12 @@ RUN /app/.venv/bin/agent-memory-write-build-identity \
       --version "$AGENT_MEMORY_BUILD_VERSION" \
     && chmod 0444 /app/build-identity.json
 
-RUN useradd --create-home --uid 10001 agent-memory
+RUN useradd --create-home --uid 10001 agent-memory \
+    && install --directory --owner=agent-memory --group=agent-memory --mode=0700 \
+      /tmp/agent-memory-pycache
 USER agent-memory
 
-ENV PATH="/app/.venv/bin:${PATH}"
+ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONPYCACHEPREFIX=/tmp/agent-memory-pycache
 
 CMD ["agent-memory-api"]

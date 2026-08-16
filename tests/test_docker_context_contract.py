@@ -26,10 +26,19 @@ def test_dockerfile_binds_build_metadata_to_the_expected_runtime_source() -> Non
     assert "--source-sha256 \"$AGENT_MEMORY_BUILD_SOURCE_SHA256\"" in dockerfile
     assert "PYTHONDONTWRITEBYTECODE=1" in dockerfile
     assert "PYTHONPYCACHEPREFIX=/tmp/agent-memory-pycache" in dockerfile
+    assert "--owner=agent-memory --group=agent-memory --mode=0700" in dockerfile
     assert dockerfile.index("agent-memory-write-build-identity") < dockerfile.index(
         "USER agent-memory"
     )
+    assert dockerfile.index("useradd --create-home --uid 10001 agent-memory") < dockerfile.index(
+        "--owner=agent-memory --group=agent-memory --mode=0700"
+    ) < dockerfile.index("USER agent-memory")
+    assert dockerfile.index("USER agent-memory") < dockerfile.index("PYTHONPYCACHEPREFIX=")
     assert "chmod 0444 /app/build-identity.json" in dockerfile
+
+    verifier = (ROOT / "scripts/verify-image-build-identity.sh").read_text(encoding="utf-8")
+    assert "PYTHONPYCACHEPREFIX=/tmp/agent-memory-identity-pycache" not in verifier
+    assert "--tmpfs /tmp" not in verifier
 
 
 def test_release_and_predeploy_gates_verify_full_image_build_identity() -> None:
