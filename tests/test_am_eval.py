@@ -298,6 +298,20 @@ def _registered_test_spec(spec: dict):
             am_eval.OFFICIAL_SPECIFICATIONS[benchmark_id] = previous
 
 
+def _canonical_json_payload(value: dict) -> bytes:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+
+
+def _canonical_json_sha256(value: dict) -> str:
+    return hashlib.sha256(_canonical_json_payload(value)).hexdigest()
+
+
 def _evaluate_with_payloads(spec: dict, run: dict, payloads: dict[str, bytes] | None) -> dict:
     execution_artifact = run["execution_artifact"]
     with _registered_test_spec(spec) as spec_sha256:
@@ -306,6 +320,8 @@ def _evaluate_with_payloads(spec: dict, run: dict, payloads: dict[str, bytes] | 
             run,
             artifact_payloads=payloads,
             confirm_spec_sha256=spec_sha256,
+            confirm_run_sha256=_canonical_json_sha256(run),
+            run_artifact_payload=_canonical_json_payload(run),
             confirm_image_reference=(
                 f"{execution_artifact['image_name']}@{execution_artifact['manifest_digest']}"
             ),
@@ -347,9 +363,10 @@ def _drop_metric(run: dict, metric_id: str) -> None:
 
 def test_complete_run_passes_and_renders_markdown() -> None:
     spec = _spec()
-    result = _evaluate(spec, _run())
+    run = _run()
+    result = _evaluate(spec, run)
 
-    assert result["schema_version"] == "am-eval-result-v3"
+    assert result["schema_version"] == "am-eval-result-v4"
     assert result["decision"] == "PASS"
     assert result["release_ready"] is True
     assert result["attestation"]["status"] == "verified"
@@ -360,7 +377,182 @@ def test_complete_run_passes_and_renders_markdown() -> None:
     )
     assert result["scorer_runtime_identity"]["source_sha256"] == "b" * 64
     assert result["scorer_runtime_environment"]["sha256"] == _environment()["sha256"]
-    assert "| M01 | quality | accuracy | measured |" in render_markdown(result)
+    assert result["input_artifacts"] == {
+        "evidence_sha256s": {
+            artifact_id: descriptor["sha256"]
+            for artifact_id, descriptor in run["attestation"]["artifacts"].items()
+        },
+        "run_file_sha256": _canonical_json_sha256(run),
+        "run_payload_sha256": run["attestation"]["run_payload_sha256"],
+        "specification_file_sha256": am_eval.specification_semantic_sha256(spec),
+    }
+    markdown = render_markdown(result)
+    assert "| M01 | quality | accuracy | measured |" in markdown
+    assert f"- Run file SHA-256: `{_canonical_json_sha256(run)}`" in markdown
+    assert "- Evidence artifacts:" in markdown
+    assert "`atomic-quality`" in markdown
+
+
+def test_formal_run_requires_a_confirmed_input_run_artifact_sha256() -> None:
+    spec = _spec()
+    run = _run()
+    payloads = _artifact_payloads(run)
+    execution_artifact = run["execution_artifact"]
+
+    with (
+        _registered_test_spec(spec) as spec_sha256,
+        pytest.raises(ValueError, match="confirmed input run artifact SHA-256"),
+    ):
+        evaluate_run(
+            spec,
+            run,
+            artifact_payloads=payloads,
+            confirm_spec_sha256=spec_sha256,
+            run_artifact_payload=_canonical_json_payload(run),
+            confirm_image_reference=(
+                f"{execution_artifact['image_name']}@"
+                f"{execution_artifact['manifest_digest']}"
+            ),
+            confirm_image_platform=execution_artifact["platform"],
+        )
+
+
+def test_formal_run_rejects_unbound_or_different_input_run_bytes() -> None:
+    spec = _spec()
+    run = _run()
+    payloads = _artifact_payloads(run)
+    execution_artifact = run["execution_artifact"]
+    image_reference = (
+        f"{execution_artifact['image_name']}@{execution_artifact['manifest_digest']}"
+    )
+    run_payload = _canonical_json_payload(run)
+
+    with (
+        _registered_test_spec(spec) as spec_sha256,
+        pytest.raises(ValueError, match="input artifact SHA-256 confirmation mismatch"),
+    ):
+        evaluate_run(
+            spec,
+            run,
+            artifact_payloads=payloads,
+            confirm_spec_sha256=spec_sha256,
+            confirm_run_sha256=hashlib.sha256(run_payload).hexdigest(),
+            run_artifact_payload=run_payload + b"\n",
+            confirm_image_reference=image_reference,
+            confirm_image_platform=execution_artifact["platform"],
+        )
+
+    different_payload = b"{}"
+    with (
+        _registered_test_spec(spec) as spec_sha256,
+        pytest.raises(ValueError, match="bytes differ from the evaluated run"),
+    ):
+        evaluate_run(
+            spec,
+            run,
+            artifact_payloads=payloads,
+            confirm_spec_sha256=spec_sha256,
+            confirm_run_sha256=hashlib.sha256(different_payload).hexdigest(),
+            run_artifact_payload=different_payload,
+            confirm_image_reference=image_reference,
+            confirm_image_platform=execution_artifact["platform"],
+        )
+
+    bool_as_integer_payload = run_payload.replace(b'"blind":true', b'"blind":1', 1)
+    with (
+        _registered_test_spec(spec) as spec_sha256,
+        pytest.raises(ValueError, match="bytes differ from the evaluated run"),
+    ):
+        evaluate_run(
+            spec,
+            run,
+            artifact_payloads=payloads,
+            confirm_spec_sha256=spec_sha256,
+            confirm_run_sha256=hashlib.sha256(bool_as_integer_payload).hexdigest(),
+            run_artifact_payload=bool_as_integer_payload,
+            confirm_image_reference=image_reference,
+            confirm_image_platform=execution_artifact["platform"],
+        )
+
+    duplicate_key_payload = b'{"benchmark_id":"shadow",' + run_payload[1:]
+    with (
+        _registered_test_spec(spec) as spec_sha256,
+        pytest.raises(ValueError, match="not strict UTF-8 JSON"),
+    ):
+        evaluate_run(
+            spec,
+            run,
+            artifact_payloads=payloads,
+            confirm_spec_sha256=spec_sha256,
+            confirm_run_sha256=hashlib.sha256(duplicate_key_payload).hexdigest(),
+            run_artifact_payload=duplicate_key_payload,
+            confirm_image_reference=image_reference,
+            confirm_image_platform=execution_artifact["platform"],
+        )
+
+
+def test_benchmark_cli_emits_bound_input_artifact_digests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    spec = _spec()
+    run = _run()
+    payloads = _artifact_payloads(run)
+    spec_payload = json.dumps(
+        spec,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    run_payload = json.dumps(
+        run,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    spec_path = tmp_path / "spec.json"
+    run_path = tmp_path / "run.json"
+    artifact_path = tmp_path / "quality-attestation.json"
+    spec_path.write_bytes(spec_payload)
+    run_path.write_bytes(run_payload)
+    artifact_path.write_bytes(payloads["atomic-quality"])
+    image = run["execution_artifact"]
+    image_reference = f"{image['image_name']}@{image['manifest_digest']}"
+
+    with _registered_test_spec(spec) as spec_sha256:
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "agent-memory-benchmark",
+                str(spec_path),
+                str(run_path),
+                "--confirm-spec-sha256",
+                spec_sha256,
+                "--confirm-run-sha256",
+                hashlib.sha256(run_payload).hexdigest(),
+                "--confirm-image-reference",
+                image_reference,
+                "--confirm-image-platform",
+                image["platform"],
+                "--artifact",
+                f"atomic-quality={artifact_path}",
+            ],
+        )
+        am_eval.main()
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["schema_version"] == "am-eval-result-v4"
+    assert result["input_artifacts"] == {
+        "evidence_sha256s": {
+            "atomic-quality": hashlib.sha256(payloads["atomic-quality"]).hexdigest()
+        },
+        "run_file_sha256": hashlib.sha256(run_payload).hexdigest(),
+        "run_payload_sha256": run["attestation"]["run_payload_sha256"],
+        "specification_file_sha256": hashlib.sha256(spec_payload).hexdigest(),
+    }
 
 
 def test_registered_official_specification_matches_the_repository_artifact() -> None:

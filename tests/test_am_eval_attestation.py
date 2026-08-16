@@ -1089,6 +1089,8 @@ def test_formal_run_accepts_sourced_isolated_m23_artifact(
         run,
         artifact_payloads={"efficiency": artifact_payload},
         confirm_spec_sha256=spec_sha256,
+        confirm_run_sha256=hashlib.sha256(_payload(run)).hexdigest(),
+        run_artifact_payload=_payload(run),
         confirm_image_reference=image_reference,
         confirm_image_platform="linux/arm64",
     )
@@ -1195,6 +1197,8 @@ def test_formal_run_accepts_sourced_lifecycle_measurements(
         run,
         artifact_payloads={"lifecycle": artifact_payload},
         confirm_spec_sha256=spec_sha256,
+        confirm_run_sha256=hashlib.sha256(_payload(run)).hexdigest(),
+        run_artifact_payload=_payload(run),
         confirm_image_reference=image_reference,
         confirm_image_platform="linux/arm64",
     )
@@ -1325,6 +1329,8 @@ def test_formal_multi_dataset_run_accepts_two_sourced_datasets(
         run,
         artifact_payloads=artifact_payloads,
         confirm_spec_sha256=spec_sha256,
+        confirm_run_sha256=hashlib.sha256(_payload(run)).hexdigest(),
+        run_artifact_payload=_payload(run),
         confirm_image_reference=image_reference,
         confirm_image_platform="linux/arm64",
     )

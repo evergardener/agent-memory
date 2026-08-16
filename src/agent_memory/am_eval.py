@@ -29,7 +29,7 @@ RUN_SCHEMA_VERSION = "am-eval-run-v2"
 ATTESTATION_SCHEMA_VERSION = "am-eval-run-attestation-v1"
 MULTI_DATASET_RUN_SCHEMA_VERSION = "am-eval-run-v3"
 MULTI_DATASET_ATTESTATION_SCHEMA_VERSION = "am-eval-run-attestation-v2"
-RESULT_SCHEMA_VERSION = "am-eval-result-v3"
+RESULT_SCHEMA_VERSION = "am-eval-result-v4"
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
 GIT_REVISION_LENGTHS = frozenset({40, 64})
 PROHIBITED_FORMAL_IDENTITY_MARKERS = ("fake", "fixture", "mock", "oracle")
@@ -52,18 +52,46 @@ ARTIFACT_PRODUCERS = {
 }
 
 
-def specification_semantic_sha256(spec: dict[str, Any]) -> str:
+def _canonical_json_payload(value: dict[str, Any]) -> bytes:
     try:
-        payload = json.dumps(
-            spec,
+        return json.dumps(
+            value,
             ensure_ascii=False,
             allow_nan=False,
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
     except (TypeError, ValueError) as error:
-        raise ValueError("AM-Eval specification is not canonical JSON") from error
-    return hashlib.sha256(payload).hexdigest()
+        raise ValueError("AM-Eval value is not canonical JSON") from error
+
+
+def specification_semantic_sha256(spec: dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical_json_payload(spec)).hexdigest()
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        value[key] = item
+    return value
+
+
+def _decode_json_object(payload: bytes, *, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=_unique_json_object,
+            parse_constant=lambda constant: (_ for _ in ()).throw(
+                ValueError(f"non-finite JSON value {constant}")
+            ),
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError(f"{label} is not strict UTF-8 JSON") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    return value
 
 
 def _validate_official_specification(
@@ -291,36 +319,20 @@ def _validate_legacy_evidence(measurement: dict[str, Any], *, item_id: str) -> N
 
 
 def _decode_artifact(artifact_id: str, payload: bytes) -> dict[str, Any]:
-    try:
-        artifact = json.loads(
-            payload.decode("utf-8"),
-            parse_constant=lambda value: (_ for _ in ()).throw(
-                ValueError(f"non-finite JSON value {value}")
-            ),
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
-        raise ValueError(f"attestation artifact {artifact_id} is not strict UTF-8 JSON") from error
-    if not isinstance(artifact, dict):
-        raise ValueError(f"attestation artifact {artifact_id} must be a JSON object")
-    return artifact
+    return _decode_json_object(payload, label=f"attestation artifact {artifact_id}")
 
 
-def _load_confirmed_json(path: Path, expected_sha256: str, *, label: str) -> dict[str, Any]:
+def _load_confirmed_json(
+    path: Path, expected_sha256: str, *, label: str
+) -> tuple[dict[str, Any], bytes]:
     snapshot = read_file_snapshot(path)
     if snapshot.sha256 != expected_sha256.casefold():
         raise DatasetError(f"{label} SHA-256 confirmation mismatch")
     try:
-        value = json.loads(
-            snapshot.payload.decode("utf-8"),
-            parse_constant=lambda constant: (_ for _ in ()).throw(
-                ValueError(f"non-finite JSON value {constant}")
-            ),
-        )
-    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
-        raise DatasetError(f"{label} is not strict UTF-8 JSON") from error
-    if not isinstance(value, dict):
-        raise DatasetError(f"{label} must be a JSON object")
-    return value
+        value = _decode_json_object(snapshot.payload, label=label)
+    except ValueError as error:
+        raise DatasetError(str(error)) from error
+    return value, snapshot.payload
 
 
 def _validate_artifact(
@@ -778,6 +790,8 @@ def evaluate_run(
     *,
     artifact_payloads: dict[str, bytes] | None = None,
     confirm_spec_sha256: str | None = None,
+    confirm_run_sha256: str | None = None,
+    run_artifact_payload: bytes | None = None,
     confirm_image_reference: str | None = None,
     confirm_image_platform: str | None = None,
 ) -> dict[str, Any]:
@@ -819,6 +833,7 @@ def evaluate_run(
     _validate_run_identity(run, formal=formal)
     scorer_identity: dict[str, Any] | None = None
     scorer_environment: dict[str, Any] | None = None
+    confirmed_run_sha256: str | None = None
     if formal:
         execution_artifact = _validate_execution_artifact(run["execution_artifact"])
         expected_image_reference = (
@@ -829,6 +844,18 @@ def evaluate_run(
         if confirm_image_platform != execution_artifact["platform"]:
             raise ValueError("formal run OCI platform confirmation mismatch")
         scorer_identity, scorer_environment = _validate_formal_scorer_identity(run)
+        confirmed_run_sha256 = (
+            confirm_run_sha256.casefold() if isinstance(confirm_run_sha256, str) else None
+        )
+        if not _is_hex_digest(confirmed_run_sha256, lengths=frozenset({64})):
+            raise ValueError("formal run requires a confirmed input run artifact SHA-256")
+        if not isinstance(run_artifact_payload, bytes):
+            raise ValueError("formal run requires the actual input run artifact bytes")
+        if hashlib.sha256(run_artifact_payload).hexdigest() != confirmed_run_sha256:
+            raise ValueError("formal run input artifact SHA-256 confirmation mismatch")
+        decoded_run = _decode_json_object(run_artifact_payload, label="formal run input artifact")
+        if _canonical_json_payload(decoded_run) != _canonical_json_payload(run):
+            raise ValueError("formal run input artifact bytes differ from the evaluated run")
 
     gate_rules = {str(item["id"]): item for item in spec["hard_gates"]}
     metric_rules = {str(item["id"]): item for item in spec["metrics"]}
@@ -970,6 +997,19 @@ def evaluate_run(
         "track": run["track"],
         "specification": specification_identity,
         "execution_artifact": run.get("execution_artifact"),
+        "input_artifacts": (
+            {
+                "evidence_sha256s": {
+                    artifact_id: hashlib.sha256(payload).hexdigest()
+                    for artifact_id, payload in sorted((artifact_payloads or {}).items())
+                },
+                "run_file_sha256": confirmed_run_sha256,
+                "run_payload_sha256": run["attestation"]["run_payload_sha256"],
+                "specification_file_sha256": specification_identity["artifact_sha256"],
+            }
+            if formal and specification_identity is not None
+            else None
+        ),
         "decision": decision,
         "release_ready": decision == "PASS",
         "attestation": {
@@ -1027,12 +1067,39 @@ def render_markdown(result: dict[str, Any]) -> str:
             f"- Hard gates: `{gates['passed']} passed / {gates['failed']} failed / "
             f"{gates['not_measured']} not measured`"
         ),
-        "",
-        "## Hard gates",
-        "",
-        "| ID | Gate | Status | Value |",
-        "| --- | --- | --- | ---: |",
     ]
+    input_artifacts = result.get("input_artifacts")
+    execution_artifact = result.get("execution_artifact")
+    if isinstance(input_artifacts, dict) and isinstance(execution_artifact, dict):
+        lines.extend(
+            [
+                "",
+                "## Input provenance",
+                "",
+                (
+                    "- Execution: `"
+                    f"{execution_artifact['image_name']}@{execution_artifact['manifest_digest']}"
+                    f"` (`{execution_artifact['platform']}`)"
+                ),
+                f"- Specification file SHA-256: `{input_artifacts['specification_file_sha256']}`",
+                f"- Run file SHA-256: `{input_artifacts['run_file_sha256']}`",
+                f"- Run payload SHA-256: `{input_artifacts['run_payload_sha256']}`",
+                "- Evidence artifacts:",
+            ]
+        )
+        lines.extend(
+            f"  - `{artifact_id}`: `{sha256}`"
+            for artifact_id, sha256 in input_artifacts["evidence_sha256s"].items()
+        )
+    lines.extend(
+        [
+            "",
+            "## Hard gates",
+            "",
+            "| ID | Gate | Status | Value |",
+            "| --- | --- | --- | ---: |",
+        ]
+    )
     for item in result["hard_gates"]:
         lines.append(
             f"| {item['id']} | {item['name']} | {item['status']} | {item.get('value', '—')} |"
@@ -1073,12 +1140,12 @@ def main() -> None:
     parser.add_argument("--format", choices=("json", "markdown"), default="json")
     arguments = parser.parse_args()
     try:
-        spec = _load_confirmed_json(
+        spec, _ = _load_confirmed_json(
             arguments.spec,
             arguments.confirm_spec_sha256,
             label="AM-Eval specification",
         )
-        run = _load_confirmed_json(
+        run, run_artifact_payload = _load_confirmed_json(
             arguments.run,
             arguments.confirm_run_sha256,
             label="AM-Eval run",
@@ -1099,6 +1166,8 @@ def main() -> None:
             run,
             artifact_payloads=artifact_payloads or None,
             confirm_spec_sha256=arguments.confirm_spec_sha256.casefold(),
+            confirm_run_sha256=arguments.confirm_run_sha256.casefold(),
+            run_artifact_payload=run_artifact_payload,
             confirm_image_reference=arguments.confirm_image_reference,
             confirm_image_platform=arguments.confirm_image_platform,
         )
