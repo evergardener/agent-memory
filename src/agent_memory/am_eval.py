@@ -10,6 +10,7 @@ from typing import Any
 from .am_eval_atomic_runner import resolve_runtime_identity
 from .am_eval_attestation import (
     EFFICIENCY_ATTESTATION_SCHEMA_VERSION,
+    EVIDENCE_ATTESTATION_SCHEMA_VERSION,
     LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
     QUALITY_ATTESTATION_SCHEMA_VERSION,
     RECALL_ATTESTATION_SCHEMA_VERSION,
@@ -32,6 +33,7 @@ ARTIFACT_PRODUCERS = {
     EFFICIENCY_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
     LIFECYCLE_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
     RECALL_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
+    EVIDENCE_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
 }
 
 
@@ -261,6 +263,7 @@ def _validate_artifact(
         EFFICIENCY_ATTESTATION_SCHEMA_VERSION,
         LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
         RECALL_ATTESTATION_SCHEMA_VERSION,
+        EVIDENCE_ATTESTATION_SCHEMA_VERSION,
     }:
         try:
             source_result = validate_attested_source(artifact)
@@ -412,6 +415,22 @@ def _validate_artifact(
         if artifact.get("scope") != "isolated-recall":
             raise ValueError("recall artifact requires isolated-recall scope")
 
+    if schema_version == EVIDENCE_ATTESTATION_SCHEMA_VERSION:
+        assert source_result is not None
+        if artifact_measurements != {"G01", "G03", "G09"}:
+            raise ValueError("evidence artifact has invalid measurement coverage")
+        if (
+            source_result["run_id"] != run["run_id"]
+            or source_result["dataset_id"] != dataset["id"]
+            or source_result["system"]["version"] != system["version"]
+            or source_result["system"]["source_file_count"] != system["source_file_count"]
+        ):
+            raise ValueError("formal evidence source identity binding mismatch")
+        if artifact.get("model_called") is not False:
+            raise ValueError("evidence artifact must not claim a model call")
+        if artifact.get("scope") != "isolated-evidence":
+            raise ValueError("evidence artifact requires isolated-evidence scope")
+
     if (
         not quality_ids
         and not efficiency_ids
@@ -420,6 +439,7 @@ def _validate_artifact(
             "am-eval-measurement-attestation-v1",
             LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
             RECALL_ATTESTATION_SCHEMA_VERSION,
+            EVIDENCE_ATTESTATION_SCHEMA_VERSION,
         }
     ):
         raise ValueError(f"attestation artifact {artifact_id} is ineligible for its measurements")

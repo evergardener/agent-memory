@@ -1,0 +1,27 @@
+{
+  "schema_version": "am-eval-dataset-manifest-v1",
+  "dataset_id": "agent-memory-evidence-integrity-gold-v1",
+  "frozen_at": "2026-08-16",
+  "case_count": 9,
+  "contains_production_data": false,
+  "contains_memory_text": true,
+  "external_data_sent": false,
+  "visibility": "open",
+  "blind_cases": 0,
+  "files": [
+    {
+      "path": "evidence.jsonl",
+      "sha256": "30e2fd9536cc5bf3211d55cb118dbed2672deece3ee807254d1b41a49387d2f5",
+      "case_count": 9,
+      "suites": ["evidence_integrity"]
+    }
+  ],
+  "suite_counts": {
+    "evidence_integrity": 9
+  },
+  "notes": [
+    "All values are synthetic redaction probes authored for this project.",
+    "No production transcript, real credential, or Vault value is present.",
+    "Results must persist only redacted values and metadata-only ledgers."
+  ]
+}

@@ -11,6 +11,7 @@ from agent_memory.am_eval import evaluate_run, formal_run_payload_sha256
 from agent_memory.am_eval_atomic_runner import RuntimeIdentity
 from agent_memory.am_eval_attestation import (
     assemble_attestation,
+    evidence_measurements,
     lifecycle_measurements,
     recall_measurements,
     validate_attested_source,
@@ -20,6 +21,7 @@ from agent_memory.am_eval_environment import (
     RUNTIME_DISTRIBUTIONS,
     build_runtime_environment_identity,
 )
+from agent_memory.am_eval_evidence import EXPECTED_MANIFEST_SHA256 as EVIDENCE_MANIFEST_SHA256
 from agent_memory.am_eval_lifecycle import (
     EXPECTED_MANIFEST_SHA256,
     REQUIRED_ACTION_COUNTS,
@@ -276,6 +278,70 @@ def _recall_result() -> dict:
     }
 
 
+def _evidence_result() -> dict:
+    expected_findings = (
+        {"credential_assignment": 1, "cn_id": 1},
+        {"credential_assignment": 1},
+        {"provider_api_key": 1},
+        {"provider_api_key": 1},
+        {"aws_access_key": 1},
+        {"private_key": 1},
+        {"cn_id": 1},
+        {"credential_assignment": 2, "cn_id": 1},
+        {},
+    )
+    cases = [
+        {
+            "case_id": f"evidence-redaction-{index:03d}",
+            "finding_counts": dict(finding_counts),
+            "expected_finding_counts": dict(finding_counts),
+            "persisted_surface_count": 3,
+            "remaining_sensitive_finding_count": 0,
+            "forbidden_fragment_occurrences": 0,
+            "sensitive_leak_surface_count": 0,
+            "active_fact_has_evidence": True,
+            "trace_complete": True,
+        }
+        for index, finding_counts in enumerate(expected_findings, start=1)
+    ]
+    return {
+        "schema_version": "am-eval-evidence-integrity-run-v1",
+        "run_id": "hermes:automated-tests:evidence-formal",
+        "dataset_id": "agent-memory-evidence-integrity-gold-v1",
+        "manifest_sha256": EVIDENCE_MANIFEST_SHA256,
+        "dataset_visibility": "open",
+        "dataset_blind": False,
+        "dataset_contains_memory_text": True,
+        "dataset_validation": "PASS",
+        "case_count": 9,
+        "cases": cases,
+        "counts": {
+            "cases": 9,
+            "persisted_surfaces": 27,
+            "sensitive_leak_surfaces": 0,
+            "active_facts": 9,
+            "active_facts_without_evidence": 0,
+            "traceable_facts": 9,
+            "trace_failures": 0,
+        },
+        "quality_report_snapshot": {
+            "evidence_traceability": True,
+            "raw_sensitive_fact_leakage": True,
+            "facts": 9,
+            "traceable_facts": 9,
+            "raw_sensitive_facts": 0,
+        },
+        "status": "PASS",
+        "contains_memory_text": False,
+        "contains_production_data": False,
+        "external_data_sent": False,
+        "model_called": False,
+        "system": _system(),
+        "runner_runtime_identity": _scorer_identity(),
+        "runner_runtime_environment": _environment(),
+    }
+
+
 def _payload(value: dict) -> bytes:
     return json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
 
@@ -430,6 +496,68 @@ def test_formal_artifact_validator_accepts_sourced_recall_measurements() -> None
     )
 
     assert covered == {"G02", "M05", "M06", "M08", "M21"}
+
+
+def test_evidence_attestation_derives_persistence_and_trace_gates() -> None:
+    source = _evidence_result()
+    artifact = _assemble(source, kind="evidence", track="deterministic-evidence")
+
+    validate_attested_source(artifact)
+
+    assert artifact["measurement_ids"] == ["G01", "G03", "G09"]
+    assert artifact["measurements"] == evidence_measurements(source)
+    assert artifact["measurements"]["G01"] == {"sample_count": 27, "value": 0}
+    assert artifact["measurements"]["G09"] == {"sample_count": 9, "value": 1.0}
+
+
+def test_evidence_attestation_rejects_leak_trace_and_summary_retyping() -> None:
+    source = _evidence_result()
+    source["cases"][0]["remaining_sensitive_finding_count"] = 1
+    with pytest.raises(DatasetError, match="did not pass persistence"):
+        _assemble(source, kind="evidence")
+
+    source = _evidence_result()
+    source["cases"][0]["trace_complete"] = False
+    with pytest.raises(DatasetError, match="did not pass persistence"):
+        _assemble(source, kind="evidence")
+
+    source = _evidence_result()
+    source["counts"]["active_facts_without_evidence"] = 1
+    with pytest.raises(DatasetError, match="counts differ"):
+        _assemble(source, kind="evidence")
+
+
+def test_formal_artifact_validator_accepts_sourced_evidence_measurements() -> None:
+    source = _evidence_result()
+    artifact = _assemble(source, kind="evidence", track="deterministic-evidence")
+    payload = _payload(artifact)
+    measurements = evidence_measurements(source)
+    run = {
+        "run_id": source["run_id"],
+        "track": "deterministic-evidence",
+        "system": _system(),
+        "dataset": {
+            "id": source["dataset_id"],
+            "sha256": EVIDENCE_MANIFEST_SHA256,
+            "visibility": "open",
+            "blind": False,
+        },
+        "execution_artifact": {
+            "image_name": "ghcr.io/evergardener/agent-memory-api",
+            "manifest_digest": "sha256:" + "9" * 64,
+            "platform": "linux/arm64",
+        },
+    }
+
+    covered = am_eval._validate_artifact(
+        "evidence",
+        {"sha256": hashlib.sha256(payload).hexdigest()},
+        payload,
+        run=run,
+        supplied_measurements=measurements,
+    )
+
+    assert covered == {"G01", "G03", "G09"}
 
 
 def test_assembler_requires_confirmed_source_and_exact_oci_digest() -> None:

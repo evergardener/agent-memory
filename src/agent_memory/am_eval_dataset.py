@@ -41,6 +41,7 @@ ALLOWED_CASE_SUITES = {
     "atomic_fact",
     "date_range",
     "episode",
+    "evidence_integrity",
     "preference",
     "procedure",
     "recall",
@@ -75,6 +76,13 @@ LIFECYCLE_INVARIANTS = {
     "recall_excluded",
     "state_changed",
     "stale_version_rejected",
+}
+EVIDENCE_FINDING_KINDS = {
+    "aws_access_key",
+    "cn_id",
+    "credential_assignment",
+    "private_key",
+    "provider_api_key",
 }
 
 
@@ -354,6 +362,36 @@ def validate_lifecycle_case(case: dict[str, Any]) -> None:
         raise DatasetError(f"lifecycle case {case['case_id']} has unsupported expected fields")
 
 
+def validate_evidence_integrity_case(case: dict[str, Any]) -> None:
+    """Validate one synthetic persisted-redaction and evidence-trace probe."""
+    if case.get("suite") != "evidence_integrity":
+        return
+    evidence_input = case["input"]
+    expected = case["expected"]
+    if set(evidence_input) != {"forbidden_fragments", "text"}:
+        raise DatasetError(
+            f"evidence integrity case {case['case_id']} has unsupported input fields"
+        )
+    text = evidence_input.get("text")
+    forbidden = evidence_input.get("forbidden_fragments")
+    if (
+        not isinstance(text, str)
+        or not text
+        or not isinstance(forbidden, list)
+        or len(forbidden) != len(set(forbidden))
+        or not all(isinstance(item, str) and item and item in text for item in forbidden)
+    ):
+        raise DatasetError(f"evidence integrity case {case['case_id']} has invalid probes")
+    finding_kinds = expected.get("finding_kinds")
+    if (
+        set(expected) != {"finding_kinds", "persisted_surface_count"}
+        or not isinstance(finding_kinds, list)
+        or any(item not in EVIDENCE_FINDING_KINDS for item in finding_kinds)
+        or expected.get("persisted_surface_count") != 3
+    ):
+        raise DatasetError(f"evidence integrity case {case['case_id']} has invalid expectations")
+
+
 def load_dataset_snapshot(manifest_path: Path) -> DatasetSnapshot:
     manifest_snapshot = read_file_snapshot(manifest_path)
     try:
@@ -395,6 +433,7 @@ def load_dataset_snapshot(manifest_path: Path) -> DatasetSnapshot:
         cases = _parse_jsonl(file_snapshot.payload, path=file_snapshot.path)
         for case in cases:
             validate_atomic_fact_case(case)
+            validate_evidence_integrity_case(case)
             validate_lifecycle_case(case)
         if len(cases) != int(item.get("case_count", -1)):
             raise DatasetError(f"dataset case count mismatch: {relative}")

@@ -17,8 +17,20 @@ from .am_eval_atomic_runner import (
     validate_private_output,
     write_private_json,
 )
-from .am_eval_dataset import DatasetError, read_file_snapshot
+from .am_eval_dataset import EVIDENCE_FINDING_KINDS, DatasetError, read_file_snapshot
 from .am_eval_environment import validate_runtime_environment_identity
+from .am_eval_evidence import (
+    DATASET_ID as EVIDENCE_DATASET_ID,
+)
+from .am_eval_evidence import (
+    EVIDENCE_RESULT_SCHEMA_VERSION,
+)
+from .am_eval_evidence import (
+    EXPECTED_CASE_COUNT as EVIDENCE_CASE_COUNT,
+)
+from .am_eval_evidence import (
+    EXPECTED_MANIFEST_SHA256 as EVIDENCE_MANIFEST_SHA256,
+)
 from .am_eval_lifecycle import (
     DATASET_ID as LIFECYCLE_DATASET_ID,
 )
@@ -61,12 +73,14 @@ QUALITY_ATTESTATION_SCHEMA_VERSION = "am-eval-atomic-quality-attestation-v2"
 EFFICIENCY_ATTESTATION_SCHEMA_VERSION = "am-eval-efficiency-attestation-v2"
 LIFECYCLE_ATTESTATION_SCHEMA_VERSION = "am-eval-lifecycle-attestation-v2"
 RECALL_ATTESTATION_SCHEMA_VERSION = "am-eval-recall-attestation-v1"
+EVIDENCE_ATTESTATION_SCHEMA_VERSION = "am-eval-evidence-integrity-attestation-v1"
 QUALITY_RESULT_SCHEMA_VERSION = "am-eval-atomic-quality-result-v3"
 EFFICIENCY_RESULT_SCHEMA_VERSION = "am-eval-efficiency-result-v5"
 LIFECYCLE_RESULT_SCHEMA_VERSION = "am-eval-lifecycle-run-v2"
 QUALITY_METRIC_IDS = frozenset({"M01", "M02", "M03", "M07"})
 LIFECYCLE_MEASUREMENT_IDS = frozenset({"G05", "G06", "M15", "M16", "M17"})
 RECALL_MEASUREMENT_IDS = frozenset({"G02", "M05", "M06", "M08", "M21"})
+EVIDENCE_MEASUREMENT_IDS = frozenset({"G01", "G03", "G09"})
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
 
 
@@ -784,6 +798,170 @@ def validate_recall_result(payload: object) -> dict[str, Any]:
     return payload
 
 
+def evidence_measurements(payload: dict[str, Any]) -> dict[str, dict[str, float | int]]:
+    counts = payload["counts"]
+    return {
+        "G01": {
+            "sample_count": counts["persisted_surfaces"],
+            "value": counts["sensitive_leak_surfaces"],
+        },
+        "G03": {
+            "sample_count": counts["active_facts"],
+            "value": counts["active_facts_without_evidence"],
+        },
+        "G09": {
+            "sample_count": counts["active_facts"],
+            "value": counts["traceable_facts"] / counts["active_facts"],
+        },
+    }
+
+
+def _validate_finding_counts(value: object, *, label: str) -> dict[str, int]:
+    if (
+        not isinstance(value, dict)
+        or not set(value) <= EVIDENCE_FINDING_KINDS
+        or any(
+            not isinstance(key, str)
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or count <= 0
+            for key, count in value.items()
+        )
+    ):
+        raise DatasetError(f"{label} has invalid redaction finding counts")
+    return value
+
+
+def validate_evidence_result(payload: object) -> dict[str, Any]:
+    required_keys = {
+        "case_count",
+        "cases",
+        "contains_memory_text",
+        "contains_production_data",
+        "counts",
+        "dataset_blind",
+        "dataset_contains_memory_text",
+        "dataset_id",
+        "dataset_validation",
+        "dataset_visibility",
+        "external_data_sent",
+        "manifest_sha256",
+        "model_called",
+        "quality_report_snapshot",
+        "run_id",
+        "runner_runtime_environment",
+        "runner_runtime_identity",
+        "schema_version",
+        "status",
+        "system",
+    }
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != required_keys
+        or payload.get("schema_version") != EVIDENCE_RESULT_SCHEMA_VERSION
+    ):
+        raise DatasetError("evidence result has an invalid schema")
+    if (
+        payload.get("dataset_id") != EVIDENCE_DATASET_ID
+        or payload.get("manifest_sha256") != EVIDENCE_MANIFEST_SHA256
+        or payload.get("dataset_visibility") != "open"
+        or payload.get("dataset_blind") is not False
+        or payload.get("dataset_contains_memory_text") is not True
+        or payload.get("dataset_validation") != "PASS"
+        or payload.get("contains_memory_text") is not False
+        or payload.get("contains_production_data") is not False
+        or payload.get("external_data_sent") is not False
+        or payload.get("model_called") is not False
+        or payload.get("status") != "PASS"
+    ):
+        raise DatasetError("evidence result dataset or data-governance binding is invalid")
+    run_id = _require_string(payload, "run_id", label="evidence result")
+    if not run_id.startswith("hermes:automated-tests:"):
+        raise DatasetError("evidence result requires an automated run ID")
+    cases = payload.get("cases")
+    case_keys = {
+        "active_fact_has_evidence",
+        "case_id",
+        "expected_finding_counts",
+        "finding_counts",
+        "forbidden_fragment_occurrences",
+        "persisted_surface_count",
+        "remaining_sensitive_finding_count",
+        "sensitive_leak_surface_count",
+        "trace_complete",
+    }
+    if (
+        not isinstance(cases, list)
+        or len(cases) != EVIDENCE_CASE_COUNT
+        or payload.get("case_count") != EVIDENCE_CASE_COUNT
+    ):
+        raise DatasetError("evidence result case ledger is incomplete")
+    expected_ids = {f"evidence-redaction-{index:03d}" for index in range(1, 10)}
+    seen_ids: set[str] = set()
+    persisted_surfaces = 0
+    sensitive_leak_surfaces = 0
+    active_with_evidence = 0
+    traceable = 0
+    for item in cases:
+        if not isinstance(item, dict) or set(item) != case_keys:
+            raise DatasetError("evidence result case entry has an invalid schema")
+        case_id = item.get("case_id")
+        if not isinstance(case_id, str) or case_id in seen_ids:
+            raise DatasetError("evidence result case IDs are missing or duplicated")
+        seen_ids.add(case_id)
+        finding_counts = _validate_finding_counts(
+            item.get("finding_counts"), label="evidence result case"
+        )
+        expected_finding_counts = _validate_finding_counts(
+            item.get("expected_finding_counts"), label="evidence result case"
+        )
+        if finding_counts != expected_finding_counts:
+            raise DatasetError("evidence result persisted findings differ from the frozen case")
+        if (
+            item.get("persisted_surface_count") != 3
+            or item.get("remaining_sensitive_finding_count") != 0
+            or item.get("forbidden_fragment_occurrences") != 0
+            or item.get("sensitive_leak_surface_count") != 0
+            or item.get("active_fact_has_evidence") is not True
+            or item.get("trace_complete") is not True
+        ):
+            raise DatasetError("evidence result case did not pass persistence and trace checks")
+        persisted_surfaces += item["persisted_surface_count"]
+        sensitive_leak_surfaces += item["sensitive_leak_surface_count"]
+        active_with_evidence += item["active_fact_has_evidence"]
+        traceable += item["trace_complete"]
+    if seen_ids != expected_ids:
+        raise DatasetError("evidence result case IDs differ from the frozen dataset")
+    counts = payload.get("counts")
+    expected_counts = {
+        "cases": EVIDENCE_CASE_COUNT,
+        "persisted_surfaces": persisted_surfaces,
+        "sensitive_leak_surfaces": sensitive_leak_surfaces,
+        "active_facts": EVIDENCE_CASE_COUNT,
+        "active_facts_without_evidence": EVIDENCE_CASE_COUNT - active_with_evidence,
+        "traceable_facts": traceable,
+        "trace_failures": EVIDENCE_CASE_COUNT - traceable,
+    }
+    if counts != expected_counts:
+        raise DatasetError("evidence result counts differ from the case ledger")
+    if payload.get("quality_report_snapshot") != {
+        "evidence_traceability": True,
+        "raw_sensitive_fact_leakage": True,
+        "facts": EVIDENCE_CASE_COUNT,
+        "traceable_facts": EVIDENCE_CASE_COUNT,
+        "raw_sensitive_facts": 0,
+    }:
+        raise DatasetError("evidence result quality report binding is invalid")
+    _validate_system_identity(
+        payload.get("system"),
+        payload.get("runner_runtime_identity"),
+        payload.get("runner_runtime_environment"),
+        label="evidence result",
+    )
+    evidence_measurements(payload)
+    return payload
+
+
 def decode_attested_source(artifact: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
     encoded = artifact.get("source_artifact_base64")
     expected_sha256 = artifact.get("source_artifact_sha256")
@@ -828,6 +1006,10 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
         validated = validate_recall_result(source)
         measurement_ids = RECALL_MEASUREMENT_IDS
         expected_scope = "isolated-recall"
+    elif schema == EVIDENCE_ATTESTATION_SCHEMA_VERSION:
+        validated = validate_evidence_result(source)
+        measurement_ids = EVIDENCE_MEASUREMENT_IDS
+        expected_scope = "isolated-evidence"
     else:
         raise DatasetError("unsupported sourced attestation schema")
     if artifact.get("source_artifact_schema_version") != validated["schema_version"]:
@@ -838,6 +1020,8 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
         source_measurements = lifecycle_measurements(validated)
     elif schema == RECALL_ATTESTATION_SCHEMA_VERSION:
         source_measurements = recall_measurements(validated)
+    elif schema == EVIDENCE_ATTESTATION_SCHEMA_VERSION:
+        source_measurements = evidence_measurements(validated)
     else:
         source_measurements = validated["metrics"]
     expected_measurements = {
@@ -856,6 +1040,7 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
             QUALITY_ATTESTATION_SCHEMA_VERSION,
             LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
             RECALL_ATTESTATION_SCHEMA_VERSION,
+            EVIDENCE_ATTESTATION_SCHEMA_VERSION,
         }
         else {
             "environment_sha256": validated["system_environment_sha256"],
@@ -867,7 +1052,12 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
         "blind": validated["dataset_blind"],
         "dataset_manifest_sha256": (
             validated["manifest_sha256"]
-            if schema in {LIFECYCLE_ATTESTATION_SCHEMA_VERSION, RECALL_ATTESTATION_SCHEMA_VERSION}
+            if schema
+            in {
+                LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
+                RECALL_ATTESTATION_SCHEMA_VERSION,
+                EVIDENCE_ATTESTATION_SCHEMA_VERSION,
+            }
             else validated["dataset_manifest_sha256"]
         ),
         "dataset_visibility": validated["dataset_visibility"],
@@ -876,7 +1066,11 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
         "system_revision": source_system["revision"],
         "system_source_sha256": source_system["source_sha256"],
     }
-    if schema not in {LIFECYCLE_ATTESTATION_SCHEMA_VERSION, RECALL_ATTESTATION_SCHEMA_VERSION}:
+    if schema not in {
+        LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
+        RECALL_ATTESTATION_SCHEMA_VERSION,
+        EVIDENCE_ATTESTATION_SCHEMA_VERSION,
+    }:
         source_bindings["execution_plan_sha256"] = validated["execution_plan_sha256"]
     for key, expected in source_bindings.items():
         if artifact.get(key) != expected:
@@ -935,6 +1129,14 @@ def assemble_attestation(
         system = source["system"]
         source_measurements = recall_measurements(source)
         source_manifest_sha256 = source["manifest_sha256"]
+    elif kind == "evidence":
+        source = validate_evidence_result(source)
+        schema = EVIDENCE_ATTESTATION_SCHEMA_VERSION
+        selected_measurements = EVIDENCE_MEASUREMENT_IDS
+        scope = "isolated-evidence"
+        system = source["system"]
+        source_measurements = evidence_measurements(source)
+        source_manifest_sha256 = source["manifest_sha256"]
     else:
         raise DatasetError("unsupported attestation source kind")
     if not isinstance(track, str) or not track.strip() or track != track.strip():
@@ -971,7 +1173,7 @@ def assemble_attestation(
         "model_called": source["model_called"],
         "scope": scope,
     }
-    if kind not in {"lifecycle", "recall"}:
+    if kind not in {"lifecycle", "recall", "evidence"}:
         artifact["execution_plan_sha256"] = source["execution_plan_sha256"]
     if kind == "efficiency":
         artifact["terminal_jobs_complete"] = source["job_statuses"] == {
@@ -985,7 +1187,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Bind a verified AM-Eval scorer result into a sourced attestation."
     )
-    parser.add_argument("kind", choices=("quality", "efficiency", "lifecycle", "recall"))
+    parser.add_argument(
+        "kind", choices=("quality", "efficiency", "lifecycle", "recall", "evidence")
+    )
     parser.add_argument("source_result", type=Path)
     parser.add_argument("--confirm-source-sha256", required=True)
     parser.add_argument("--track", required=True)
