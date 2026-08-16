@@ -1,0 +1,79 @@
+{
+  "schema_version": "am-eval-image-official-spec-gate-v1",
+  "run_id": "hermes:automated-tests:image-official-spec-r22-20260816",
+  "recorded_at": "2026-08-16",
+  "scope": {
+    "production_touched": false,
+    "external_model_called": false,
+    "contains_memory_text": false,
+    "contains_production_data": false,
+    "container_network": "none",
+    "container_root_filesystem": "read-only"
+  },
+  "source_identity": {
+    "revision": "d5d0515a3ba8a85f1fa515eac8b2e0d6c5b25eeb",
+    "version": "1.0.0-rc.9",
+    "source_file_count": 80,
+    "source_sha256": "58818faafb6e386547fc4e916416729c3e4637b349d66ae8fa036b3965e7f577"
+  },
+  "local_image": {
+    "tag": "agent-memory-r22:d5d0515",
+    "image_id": "sha256:a71d0b149a56724fbcf3f61220a5ca96ad40309ab59749e909078107b8c35796",
+    "repo_digest": "agent-memory-r22@sha256:a71d0b149a56724fbcf3f61220a5ca96ad40309ab59749e909078107b8c35796",
+    "platform": "linux/arm64",
+    "size_bytes": 130887222,
+    "runtime_identity_provenance": "image-build-metadata",
+    "build_identity_verified": true
+  },
+  "official_specification": {
+    "artifact_sha256": "a4ce9232ecafc37f9a3142a8e29020168af96aa6b4165e21fd64395186c7b679",
+    "semantic_sha256": "b25f605699051d7a611afbaeb9a31a0a6de46ef342b5a2be88b898b917f10a80",
+    "read_only_container_check": "PASS",
+    "cli_progressed_to_run_schema_validation": true
+  },
+  "forged_specification": {
+    "self_confirmed_artifact_sha256": "802a14af812d066bafef16ec39850b093621a0a5796c7fc7d2bf3c672b970d07",
+    "direct_semantic_gate": "REJECTED",
+    "direct_semantic_reason": "formal AM-Eval specification semantics differ from the official contract",
+    "benchmark_cli_exit_code": 2,
+    "benchmark_cli_reason": "formal AM-Eval official specification SHA-256 confirmation mismatch"
+  },
+  "sandbox": {
+    "user": "10001:10001",
+    "pids_limit": 64,
+    "memory_limit": "256m",
+    "cpu_limit": 1,
+    "capabilities": "all dropped",
+    "no_new_privileges": true
+  },
+  "validation": {
+    "docker_build": "PASS",
+    "frontend_build_stage": "PASS",
+    "image_build_identity": "PASS",
+    "image_runtime_identity": "PASS",
+    "official_spec_double_digest": "PASS",
+    "forged_spec_self_confirmation": "REJECTED",
+    "forged_spec_semantic_drift": "REJECTED"
+  },
+  "cleanup": {
+    "local_image_removed": true,
+    "temporary_container_residue": 0,
+    "temporary_input_directory_removed": true,
+    "temporary_database_created": false,
+    "temporary_credentials_created": false,
+    "production_containers_modified": false
+  },
+  "formal_evaluation": {
+    "official_metrics_updated": false,
+    "decision_remains": "INCOMPLETE",
+    "release_ready": false,
+    "missing_required_metric_ids": [
+      "M01",
+      "M02",
+      "M03",
+      "M07",
+      "M22",
+      "M23"
+    ]
+  }
+}

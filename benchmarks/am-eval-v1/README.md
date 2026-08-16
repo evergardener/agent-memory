@@ -93,6 +93,11 @@ source-result validator 的旧通用 measurement artifact。攻击性回归证�
 语义漂移和通用 artifact 均会 fail-closed；评分输出升级为 `am-eval-result-v3`。证据见
 [`round-21-official-spec-provenance-gate.json`](round-21-official-spec-provenance-gate.json) 及
 [`../../docs/V1.0-AM-Eval第二十一轮官方Spec来源门禁报告.md`](../../docs/V1.0-AM-Eval第二十一轮官方Spec来源门禁报告.md)。
+第二十二轮在当前 clean revision 构建的真实本地镜像中，以无网络、只读、非 root 和资源限制容器执行
+实际 benchmark CLI。官方 spec 通过双摘要后进入 run schema 门禁；自证自身 SHA 的宽松伪造 spec 和
+语义漂移均被拒绝。测试镜像与输入已清理，不产生正式指标。证据见
+[`round-22-image-official-spec-gate.json`](round-22-image-official-spec-gate.json) 及
+[`../../docs/V1.0-AM-Eval第二十二轮镜像内官方Spec门禁报告.md`](../../docs/V1.0-AM-Eval第二十二轮镜像内官方Spec门禁报告.md)。
 
 验证冻结数据集：
 
