@@ -14,7 +14,12 @@ from .am_eval_atomic_runner import (
     validate_execution_plan,
     validate_output_runtime_identity,
 )
-from .am_eval_dataset import DatasetError, load_dataset_snapshot, read_file_snapshot
+from .am_eval_dataset import (
+    DatasetError,
+    decode_strict_json_object,
+    load_dataset_snapshot,
+    read_file_snapshot,
+)
 from .am_eval_environment import runtime_environment_identity
 
 INPUT_SCHEMA_VERSION = "am-eval-efficiency-input-v4"
@@ -268,7 +273,7 @@ def main() -> None:
         input_snapshot = read_file_snapshot(arguments.input)
         if input_snapshot.sha256 != arguments.confirm_input_sha256.casefold():
             raise DatasetError("efficiency input SHA-256 confirmation mismatch")
-        payload = json.loads(input_snapshot.payload.decode("utf-8"))
+        payload = decode_strict_json_object(input_snapshot.payload, label="efficiency input")
         validate_efficiency_input(payload)
         plan = None
         if payload["scope"] == "isolated":
@@ -281,7 +286,7 @@ def main() -> None:
                 confirm_sha256=arguments.confirm_plan_sha256 or "",
                 forbidden_root=discover_runtime_source_root(),
             )
-            plan = json.loads(plan_payload.decode("utf-8"))
+            plan = decode_strict_json_object(plan_payload, label="atomic execution plan")
             dataset = load_dataset_snapshot(arguments.manifest)
             manifest = dataset.manifest
             cases = tuple(case for case in dataset.cases if case["suite"] == "atomic_fact")

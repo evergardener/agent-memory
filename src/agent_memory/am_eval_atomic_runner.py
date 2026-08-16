@@ -20,7 +20,12 @@ from psycopg import Connection, connect
 from psycopg.conninfo import conninfo_to_dict
 
 from . import __version__
-from .am_eval_dataset import DatasetError, load_dataset_snapshot, sha256_file
+from .am_eval_dataset import (
+    DatasetError,
+    decode_strict_json_object,
+    load_dataset_snapshot,
+    sha256_file,
+)
 from .am_eval_environment import (
     runtime_environment_identity,
     validate_runtime_environment_identity,
@@ -471,8 +476,10 @@ def resolve_runtime_identity(
         if identity_path.is_symlink() or not identity_path.is_file():
             raise DatasetError("atomic runner requires image build identity metadata")
         try:
-            identity = json.loads(identity_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
+            identity = decode_strict_json_object(
+                identity_path.read_bytes(), label="atomic runner image build identity"
+            )
+        except (OSError, DatasetError) as error:
             raise DatasetError("atomic runner image build identity is invalid") from error
         if not isinstance(identity, dict) or set(identity) != {
             "schema_version",
@@ -2122,8 +2129,8 @@ def validate_run_preflight(
         forbidden_root=runtime_identity.source_root,
     )
     try:
-        plan = json.loads(plan_payload.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as error:
+        plan = decode_strict_json_object(plan_payload, label="atomic execution plan")
+    except DatasetError as error:
         raise DatasetError("atomic execution plan is not valid JSON") from error
     plan = validate_execution_plan(
         plan,

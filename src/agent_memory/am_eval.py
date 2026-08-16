@@ -18,7 +18,7 @@ from .am_eval_attestation import (
     RELIABILITY_ATTESTATION_SCHEMA_VERSION,
     validate_attested_source,
 )
-from .am_eval_dataset import DatasetError, read_file_snapshot
+from .am_eval_dataset import DatasetError, decode_strict_json_object, read_file_snapshot
 from .am_eval_environment import runtime_environment_identity
 from .am_eval_formal_contract import (
     OFFICIAL_EXECUTION_IMAGE_NAMES,
@@ -67,31 +67,6 @@ def _canonical_json_payload(value: dict[str, Any]) -> bytes:
 
 def specification_semantic_sha256(spec: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_json_payload(spec)).hexdigest()
-
-
-def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    value: dict[str, Any] = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError(f"duplicate JSON object key: {key}")
-        value[key] = item
-    return value
-
-
-def _decode_json_object(payload: bytes, *, label: str) -> dict[str, Any]:
-    try:
-        value = json.loads(
-            payload.decode("utf-8"),
-            object_pairs_hook=_unique_json_object,
-            parse_constant=lambda constant: (_ for _ in ()).throw(
-                ValueError(f"non-finite JSON value {constant}")
-            ),
-        )
-    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
-        raise ValueError(f"{label} is not strict UTF-8 JSON") from error
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} must be a JSON object")
-    return value
 
 
 def _validate_official_specification(
@@ -319,7 +294,7 @@ def _validate_legacy_evidence(measurement: dict[str, Any], *, item_id: str) -> N
 
 
 def _decode_artifact(artifact_id: str, payload: bytes) -> dict[str, Any]:
-    return _decode_json_object(payload, label=f"attestation artifact {artifact_id}")
+    return decode_strict_json_object(payload, label=f"attestation artifact {artifact_id}")
 
 
 def _load_confirmed_json(
@@ -329,8 +304,8 @@ def _load_confirmed_json(
     if snapshot.sha256 != expected_sha256.casefold():
         raise DatasetError(f"{label} SHA-256 confirmation mismatch")
     try:
-        value = _decode_json_object(snapshot.payload, label=label)
-    except ValueError as error:
+        value = decode_strict_json_object(snapshot.payload, label=label)
+    except DatasetError as error:
         raise DatasetError(str(error)) from error
     return value, snapshot.payload
 
@@ -853,7 +828,9 @@ def evaluate_run(
             raise ValueError("formal run requires the actual input run artifact bytes")
         if hashlib.sha256(run_artifact_payload).hexdigest() != confirmed_run_sha256:
             raise ValueError("formal run input artifact SHA-256 confirmation mismatch")
-        decoded_run = _decode_json_object(run_artifact_payload, label="formal run input artifact")
+        decoded_run = decode_strict_json_object(
+            run_artifact_payload, label="formal run input artifact"
+        )
         if _canonical_json_payload(decoded_run) != _canonical_json_payload(run):
             raise ValueError("formal run input artifact bytes differ from the evaluated run")
 

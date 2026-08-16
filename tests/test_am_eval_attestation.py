@@ -598,6 +598,28 @@ def test_attestation_rejects_retyped_metrics_and_embedded_source_drift() -> None
         validate_attested_source(artifact)
 
 
+def test_attestation_rejects_duplicate_keys_in_embedded_source_result() -> None:
+    source = _quality_result()
+    source_payload = _payload(source)
+    duplicate_payload = b'{"run_id":"shadow",' + source_payload[1:]
+
+    with pytest.raises(DatasetError, match="not strict UTF-8 JSON"):
+        assemble_attestation(
+            duplicate_payload,
+            source_sha256=hashlib.sha256(duplicate_payload).hexdigest(),
+            kind="quality",
+            track="recommended-product",
+            image_reference="ghcr.io/evergardener/agent-memory-api@sha256:" + "9" * 64,
+            image_platform="linux/arm64",
+        )
+
+    artifact = _assemble(source, kind="quality")
+    artifact["source_artifact_base64"] = base64.b64encode(duplicate_payload).decode()
+    artifact["source_artifact_sha256"] = hashlib.sha256(duplicate_payload).hexdigest()
+    with pytest.raises(DatasetError, match="not strict UTF-8 JSON"):
+        validate_attested_source(artifact)
+
+
 def test_quality_result_metrics_must_match_scorer_counts() -> None:
     source = _quality_result()
     source["metrics"]["M01"]["value"] = 1.0

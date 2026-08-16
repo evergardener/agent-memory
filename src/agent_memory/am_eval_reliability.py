@@ -22,7 +22,12 @@ from .am_eval_atomic_runner import (
     validate_private_output,
     write_private_json,
 )
-from .am_eval_dataset import DatasetError, load_dataset_snapshot, read_file_snapshot
+from .am_eval_dataset import (
+    DatasetError,
+    decode_strict_json_object,
+    load_dataset_snapshot,
+    read_file_snapshot,
+)
 from .am_eval_environment import runtime_environment_identity
 from .repository import ingest_turn
 from .schemas import IngestEvent, IngestTurnRequest, ProviderContext
@@ -714,8 +719,12 @@ def build_verify_output(
         "reliability prepare SHA does not match confirmation",
     )
     try:
-        prepare = _validate_prepare(json.loads(prepare_snapshot.payload.decode("utf-8")))
-    except (UnicodeError, json.JSONDecodeError) as error:
+        prepare = _validate_prepare(
+            decode_strict_json_object(
+                prepare_snapshot.payload, label="reliability prepare receipt"
+            )
+        )
+    except DatasetError as error:
         raise DatasetError("reliability prepare receipt is invalid JSON") from error
     backup = _private_file_snapshot(backup_artifact, label="reliability backup artifact")
     _require(

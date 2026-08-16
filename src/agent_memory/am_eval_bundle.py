@@ -25,7 +25,7 @@ from .am_eval_attestation import (
     RELIABILITY_ATTESTATION_SCHEMA_VERSION,
     validate_attested_source,
 )
-from .am_eval_dataset import DatasetError, read_file_snapshot
+from .am_eval_dataset import DatasetError, decode_strict_json_object, read_file_snapshot
 from .am_eval_formal_contract import OFFICIAL_EXECUTION_IMAGE_NAMES
 
 DETERMINISTIC_ARTIFACT_SCHEMAS = {
@@ -51,18 +51,7 @@ class ArtifactRecord:
 
 
 def _strict_json(payload: bytes, *, label: str) -> dict[str, Any]:
-    try:
-        value = json.loads(
-            payload.decode("utf-8"),
-            parse_constant=lambda constant: (_ for _ in ()).throw(
-                ValueError(f"non-finite JSON value {constant}")
-            ),
-        )
-    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
-        raise DatasetError(f"{label} is not strict UTF-8 JSON") from error
-    if not isinstance(value, dict):
-        raise DatasetError(f"{label} must be a JSON object")
-    return value
+    return decode_strict_json_object(payload, label=label)
 
 
 def load_artifact_record(kind: str, path: Path) -> ArtifactRecord:

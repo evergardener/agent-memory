@@ -15,6 +15,31 @@ class DatasetError(ValueError):
     """Raised when an AM-Eval dataset fails its frozen-data contract."""
 
 
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        value[key] = item
+    return value
+
+
+def decode_strict_json_object(payload: bytes, *, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=_unique_json_object,
+            parse_constant=lambda constant: (_ for _ in ()).throw(
+                ValueError(f"non-finite JSON value {constant}")
+            ),
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise DatasetError(f"{label} is not strict UTF-8 JSON") from error
+    if not isinstance(value, dict):
+        raise DatasetError(f"{label} must be a JSON object")
+    return value
+
+
 class PathLike(Protocol):
     def __fspath__(self) -> str: ...
 
@@ -248,11 +273,11 @@ def _parse_jsonl(payload: bytes, *, path: Path) -> tuple[dict[str, Any], ...]:
         if not line or line.startswith("#"):
             continue
         try:
-            case = json.loads(line)
-        except json.JSONDecodeError as error:
+            case = decode_strict_json_object(
+                line.encode("utf-8"), label=f"dataset case {path}:{line_number}"
+            )
+        except DatasetError as error:
             raise DatasetError(f"invalid JSONL at {path}:{line_number}") from error
-        if not isinstance(case, dict):
-            raise DatasetError(f"case at {path}:{line_number} must be an object")
         if case.get("schema_version") != "am-eval-case-v1":
             raise DatasetError(f"unsupported case schema at {path}:{line_number}")
         case_id = str(case.get("case_id") or "")
@@ -508,11 +533,11 @@ def validate_reliability_case(case: dict[str, Any]) -> None:
 def load_dataset_snapshot(manifest_path: Path) -> DatasetSnapshot:
     manifest_snapshot = read_file_snapshot(manifest_path)
     try:
-        manifest = json.loads(manifest_snapshot.payload.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as error:
+        manifest = decode_strict_json_object(
+            manifest_snapshot.payload, label=f"dataset manifest {manifest_snapshot.path}"
+        )
+    except DatasetError as error:
         raise DatasetError(f"invalid dataset manifest: {manifest_snapshot.path}") from error
-    if not isinstance(manifest, dict):
-        raise DatasetError(f"invalid dataset manifest: {manifest_snapshot.path}")
     if manifest.get("schema_version") != "am-eval-dataset-manifest-v1":
         raise DatasetError("unsupported dataset manifest schema")
     if not isinstance(manifest.get("dataset_id"), str) or not manifest["dataset_id"]:

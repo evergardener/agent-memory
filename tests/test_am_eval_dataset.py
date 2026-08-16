@@ -32,6 +32,13 @@ DATASET_MANIFEST = (
 CASES = load_dataset(DATASET_MANIFEST)
 
 
+def test_strict_json_object_rejects_duplicate_keys_at_every_depth() -> None:
+    with pytest.raises(DatasetError, match="not strict UTF-8 JSON"):
+        dataset_module.decode_strict_json_object(
+            b'{"outer":{"value":1,"value":2}}', label="test object"
+        )
+
+
 def _cases(suite: str) -> tuple[dict, ...]:
     return tuple(case for case in CASES if case["suite"] == suite)
 

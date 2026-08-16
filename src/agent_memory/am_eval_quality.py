@@ -16,7 +16,12 @@ from .am_eval_atomic_runner import (
     validate_execution_plan,
     validate_output_runtime_identity,
 )
-from .am_eval_dataset import DatasetError, load_dataset_snapshot, read_file_snapshot
+from .am_eval_dataset import (
+    DatasetError,
+    decode_strict_json_object,
+    load_dataset_snapshot,
+    read_file_snapshot,
+)
 from .am_eval_environment import runtime_environment_identity
 
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
@@ -62,11 +67,11 @@ def load_atomic_output(
     if confirm_sha256 is not None and snapshot.sha256 != confirm_sha256.casefold():
         raise DatasetError("atomic evaluation output SHA-256 confirmation mismatch")
     try:
-        output = json.loads(snapshot.payload.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as error:
+        output = decode_strict_json_object(
+            snapshot.payload, label=f"atomic evaluation output {path}"
+        )
+    except DatasetError as error:
         raise DatasetError(f"invalid atomic evaluation output: {path}") from error
-    if not isinstance(output, dict):
-        raise DatasetError("atomic evaluation output must be an object")
     required_keys = {
         "case_count",
         "cases",
@@ -383,7 +388,7 @@ def main() -> None:
             confirm_sha256=arguments.confirm_plan_sha256,
             forbidden_root=discover_runtime_source_root(),
         )
-        plan = json.loads(plan_payload.decode("utf-8"))
+        plan = decode_strict_json_object(plan_payload, label="atomic execution plan")
         plan = validate_execution_plan(
             plan,
             manifest=manifest,

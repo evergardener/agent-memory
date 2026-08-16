@@ -24,7 +24,7 @@ from .am_eval_atomic_runner import (
     validate_private_output,
     write_private_json,
 )
-from .am_eval_dataset import DatasetError, load_dataset_snapshot
+from .am_eval_dataset import DatasetError, decode_strict_json_object, load_dataset_snapshot
 from .am_eval_environment import runtime_environment_identity
 from .ids import stable_uuid
 
@@ -254,10 +254,10 @@ def _http_recall_client(api_base: str, service_token: str) -> RecallClient:
             raise DatasetError("recall runner could not reach the loopback API") from error
         latency_ms = (time.perf_counter_ns() - started) / 1_000_000
         try:
-            decoded = json.loads(payload.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError) as error:
+            decoded = decode_strict_json_object(payload, label="recall API response")
+        except DatasetError as error:
             raise DatasetError("recall API returned invalid JSON") from error
-        items = decoded.get("items", []) if isinstance(decoded, dict) else []
+        items = decoded.get("items", [])
         if not isinstance(items, list):
             raise DatasetError("recall API returned an invalid items list")
         memory_ids: list[str] = []
