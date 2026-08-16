@@ -1,0 +1,145 @@
+{
+  "schema_version": "am-eval-unified-image-sourced-attestation-gate-v1",
+  "run_id": "hermes:automated-tests:am-eval-unified-r19-20260816",
+  "recorded_at": "2026-08-16",
+  "scope": {
+    "production_touched": false,
+    "external_model_called": false,
+    "contains_memory_text": false,
+    "contains_production_data": false,
+    "database_endpoint": "127.0.0.1:55438",
+    "database_names": [
+      "am_eval_r19_episode",
+      "am_eval_r19_evidence",
+      "am_eval_r19_lifecycle",
+      "am_eval_r19_recall",
+      "am_eval_r19_reliability_restore",
+      "am_eval_r19_reliability_source"
+    ],
+    "api_exposure": "container-network-only; no host port published"
+  },
+  "execution_artifact": {
+    "local_tag": "agent-memory-r19:c138d13",
+    "image_reference": "docker.io/library/agent-memory-r19@sha256:d5eb393734b88f113a5df437d96f3357dff54d240d89b8f4922089095e479c7d",
+    "manifest_digest": "sha256:d5eb393734b88f113a5df437d96f3357dff54d240d89b8f4922089095e479c7d",
+    "platform": "linux/arm64",
+    "build_metadata_sha256": "7ba1988dcf9ce8925146acc28c85452e5596a5d5dab20101cb8bc2ac17e19396",
+    "build_identity_verified": true,
+    "runtime_identity_provenance": "image-build-metadata",
+    "revision": "c138d13c97d599ad389320b0d72657f927ef9c99",
+    "version": "1.0.0-rc.9",
+    "source_file_count": 80,
+    "source_sha256": "3ee66f872951393a303f6dce4d3c9b2f659af94f3edeef52c273e8986ea3dc59",
+    "environment_sha256": "6f71fd894ad9ca0bec288cf44fe2d536d3d95d3eab1ac42f14337c2dd60ad01f"
+  },
+  "datasets": {
+    "lifecycle": "fe14754d58113181fb0b49a42169a5cd1acf52ccea75a3ce40d5375ccbc757c5",
+    "recall": "6b06f88949f0acd135368ce8d8b4564e66f922eb54b083699d4ebb60c495f2cf",
+    "evidence": "3734605eb7ad5cc3a491d46b97c96a63862594e24e15b487832cc59072310c18",
+    "episode_procedure": "8f212b3c435a7109a03ada28cf0a015f0f07339354e79a92dad4f4e3ed9b6fb7",
+    "reliability": "e66d612909e010f6f95f2724d52b49b921cafcb135b836d2ceca1fa68cdc3490"
+  },
+  "source_results": {
+    "lifecycle": {
+      "sha256": "e677feec5fb1273b178c80c86a7979e58d51b26d1a2cb536a6c12fef96550808",
+      "status": "PASS",
+      "case_count": 20,
+      "passed": 20,
+      "failed": 0
+    },
+    "recall": {
+      "sha256": "eeb980f3cf4204ea0ae90336deadf66759d0b4721fcfb51da08eb206145669fa",
+      "status": "PASS",
+      "query_count": 110,
+      "namespace_probes": 6,
+      "p95_ms": 3.260294
+    },
+    "evidence": {
+      "sha256": "ab59acaed8023e457e9199dcef31584e8ed46250a06ec42c133695f88e22f7c0",
+      "status": "PASS",
+      "case_count": 9,
+      "persisted_surfaces": 27,
+      "sensitive_leak_surfaces": 0,
+      "trace_failures": 0
+    },
+    "episode_procedure": {
+      "sha256": "b51cf9cc12b912388b79cb7b75a33294b33541afb6c3c37fa7b04f2593d1c5d2",
+      "status": "PASS",
+      "case_count": 21,
+      "temporal_passed": 10,
+      "episode_passed": 4,
+      "procedure_status_passed": 4,
+      "database_passed": 3
+    },
+    "reliability": {
+      "sha256": "e8197e385e1d82081e61aa74251d8b99696f789ee16ea8b7b9af2b7e319c4af3",
+      "status": "PASS",
+      "case_count": 5,
+      "worker_recovered": 2,
+      "evidence_loss_count": 0,
+      "idempotency_passed": 2,
+      "restore_passed": 1,
+      "prepare_sha256": "fb4c1e40cd129e54d1f30f543c35c382bf4342c8a250483893a245bbf7a9843c",
+      "backup_artifact_sha256": "976aa599eed93ce92107ec1530cbaca230748e235b63026c89872dc30af719fa"
+    }
+  },
+  "sourced_attestations": {
+    "lifecycle": "49f384753ccaef350449a92f87e3a7e0e9879f55af0c115bd1c5666d1d977e1a",
+    "recall": "24571e0a2f45f4af7aa3852d0f98ea173acfb531aaed7ab2c8db1d5624fab55e",
+    "evidence": "217fd070677ce9fd0c2e53478e0fdc6ef66c97737f4376831861bd49c043b6dd",
+    "episode_procedure": "54898a26a05f16d4ab60377d5d55adcdfa5fded0ac07fb3401bd342e02e2cf06",
+    "reliability": "83150a7b75ca6f15668934f56945c29be717a8f94d8a2a0c217ba981ba09b980"
+  },
+  "formal_run": {
+    "run_schema_version": "am-eval-run-v3",
+    "attestation_schema_version": "am-eval-run-attestation-v2",
+    "run_sha256": "7eee17efcfba8255232d9417791aa4bbae87b2902614485db071d5db4d770452",
+    "artifact_count": 5,
+    "dataset_count": 5,
+    "decision": "INCOMPLETE",
+    "release_ready": false,
+    "hard_gates_passed": 10,
+    "hard_gates_failed": 0,
+    "hard_gates_not_measured": 0,
+    "measured_metric_count": 17,
+    "measured_score": 100.0,
+    "coverage_percent": 73.0,
+    "weighted_points": 73.0,
+    "missing_required_metric_ids": [
+      "M01",
+      "M02",
+      "M03",
+      "M07",
+      "M22",
+      "M23"
+    ],
+    "attestation_status": "verified"
+  },
+  "implementation_gates": {
+    "multi_dataset_v3_unit_tests": "PASS",
+    "legacy_v2_compatibility": "PASS",
+    "default_image_pycache_owner_mode": "10001:10001 0700",
+    "oci_read_only_hardlink_fingerprint": "PASS",
+    "python_non_integration": "524 passed, 46 deselected",
+    "frontend_tests": "6 passed",
+    "frontend_typecheck": "PASS",
+    "frontend_build": "PASS",
+    "ruff": "PASS",
+    "diff_check": "PASS",
+    "remote_ci": "REMOTE_CI_PENDING"
+  },
+  "cleanup": {
+    "temporary_database_residue": 0,
+    "temporary_role_removed": true,
+    "temporary_api_container_removed": true,
+    "vault_root_key_removed": true,
+    "backup_artifact_removed": true,
+    "production_containers_modified": false
+  },
+  "remaining_formal_work": [
+    "M01/M02/M03/M07 require a frozen private blind dataset and an explicitly authorized real external model run",
+    "M22 requires separately authorized production-shadow observation",
+    "M23 requires an explicitly authorized real-model terminal-job run",
+    "the branch has no pull request, so remote image-contract CI evidence remains pending"
+  ]
+}

@@ -74,6 +74,14 @@ pg_dump/pg_restore，将 G07、G10、M18–M20 从 job ledger、47 表快照、e
 [`round-18-reliability-sourced-attestation-gate.json`](round-18-reliability-sourced-attestation-gate.json) 及
 [`../../docs/V1.0-AM-Eval第十八轮可靠性来源证明门禁报告.md`](../../docs/V1.0-AM-Eval第十八轮可靠性来源证明门禁报告.md)，
 复现边界见 [`../../docs/V1.0-AM-Eval可靠性Gate运行手册.md`](../../docs/V1.0-AM-Eval可靠性Gate运行手册.md)。
+第十九轮把上述五类来源结果统一到同一 revision、source/environment identity 和精确 OCI digest，使用
+`am-eval-run-v3` / `am-eval-run-attestation-v2` 合法声明五个冻结数据集。正式部分聚合得到 10/10
+硬门禁通过、17 项确定性指标满分、73% 覆盖，因 M01/M02/M03/M07/M22/M23 未测而保持
+`INCOMPLETE`。证据见
+[`round-19-unified-image-sourced-attestation-gate.json`](round-19-unified-image-sourced-attestation-gate.json) 及
+[`../../docs/V1.0-AM-Eval第十九轮同镜像统一来源证明门禁报告.md`](../../docs/V1.0-AM-Eval第十九轮同镜像统一来源证明门禁报告.md)，
+复现边界见
+[`../../docs/V1.0-AM-Eval多数据集统一镜像Gate运行手册.md`](../../docs/V1.0-AM-Eval多数据集统一镜像Gate运行手册.md)。
 
 验证冻结数据集：
 
@@ -120,6 +128,8 @@ G04、G08、M04、M09–M14。
 可靠性 Gate 使用 `agent-memory-run-reliability-benchmark prepare|verify`，把 worker/lease、幂等、
 custom dump 和独立恢复库绑定为一个结果；`agent-memory-assemble-eval-attestation reliability` 从中复算
 G07、G10、M18–M20。
+五类确定性 attestation 使用共同 run ID、track 和 exact image reference 后，由
+`agent-memory-assemble-deterministic-run` 组装为多数据集部分正式 run；组装器不允许操作员手填指标。
 
 运行评分器：
 
