@@ -5,9 +5,11 @@ import base64
 import hashlib
 import json
 import math
+import statistics
 from collections import Counter
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from .am_eval_atomic_runner import (
     discover_runtime_source_root,
@@ -32,16 +34,39 @@ from .am_eval_lifecycle import (
 from .am_eval_lifecycle import (
     REQUIRED_INVARIANT_COUNTS as LIFECYCLE_INVARIANT_COUNTS,
 )
+from .am_eval_recall import (
+    DATASET_ID as RECALL_DATASET_ID,
+)
+from .am_eval_recall import (
+    EXPECTED_MANIFEST_SHA256 as RECALL_MANIFEST_SHA256,
+)
+from .am_eval_recall import (
+    EXPECTED_NAMESPACE_PROBE_COUNT as RECALL_NAMESPACE_PROBE_COUNT,
+)
+from .am_eval_recall import (
+    EXPECTED_NEGATIVE_COUNT as RECALL_NEGATIVE_COUNT,
+)
+from .am_eval_recall import (
+    EXPECTED_POSITIVE_COUNT as RECALL_POSITIVE_COUNT,
+)
+from .am_eval_recall import (
+    EXPECTED_QUERY_COUNT as RECALL_QUERY_COUNT,
+)
+from .am_eval_recall import (
+    RECALL_RESULT_SCHEMA_VERSION,
+)
 
 ASSEMBLER_NAME = "agent-memory-am-eval-attestation-assembler"
 QUALITY_ATTESTATION_SCHEMA_VERSION = "am-eval-atomic-quality-attestation-v2"
 EFFICIENCY_ATTESTATION_SCHEMA_VERSION = "am-eval-efficiency-attestation-v2"
 LIFECYCLE_ATTESTATION_SCHEMA_VERSION = "am-eval-lifecycle-attestation-v2"
+RECALL_ATTESTATION_SCHEMA_VERSION = "am-eval-recall-attestation-v1"
 QUALITY_RESULT_SCHEMA_VERSION = "am-eval-atomic-quality-result-v3"
 EFFICIENCY_RESULT_SCHEMA_VERSION = "am-eval-efficiency-result-v5"
 LIFECYCLE_RESULT_SCHEMA_VERSION = "am-eval-lifecycle-run-v2"
 QUALITY_METRIC_IDS = frozenset({"M01", "M02", "M03", "M07"})
 LIFECYCLE_MEASUREMENT_IDS = frozenset({"G05", "G06", "M15", "M16", "M17"})
+RECALL_MEASUREMENT_IDS = frozenset({"G02", "M05", "M06", "M08", "M21"})
 SHA256_CHARACTERS = frozenset("0123456789abcdef")
 
 
@@ -514,6 +539,251 @@ def validate_lifecycle_result(payload: object) -> dict[str, Any]:
     return payload
 
 
+def recall_measurements(payload: dict[str, Any]) -> dict[str, dict[str, float | int]]:
+    counts = payload["counts"]
+    return {
+        "G02": {
+            "sample_count": counts["namespace_probes"],
+            "value": counts["namespace_unauthorized_recall_items"],
+        },
+        "M05": {
+            "sample_count": counts["positive_queries"],
+            "value": counts["top1_matches"] / counts["positive_queries"],
+        },
+        "M06": {
+            "sample_count": counts["positive_queries"],
+            "value": counts["recall_at_5_matches"] / counts["positive_queries"],
+        },
+        "M08": {
+            "sample_count": counts["negative_queries"],
+            "value": counts["negative_false_matches"] / counts["negative_queries"],
+        },
+        "M21": {
+            "sample_count": payload["latency"]["sample_count"],
+            "value": payload["latency"]["p95_ms"],
+        },
+    }
+
+
+def _uuid_string(value: object) -> bool:
+    try:
+        return isinstance(value, str) and str(UUID(value)) == value
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def validate_recall_result(payload: object) -> dict[str, Any]:
+    required_keys = {
+        "contains_memory_text",
+        "contains_production_data",
+        "counts",
+        "dataset_blind",
+        "dataset_contains_memory_text",
+        "dataset_id",
+        "dataset_validation",
+        "dataset_visibility",
+        "expected_memory_id",
+        "external_data_sent",
+        "latency",
+        "manifest_sha256",
+        "model_called",
+        "namespace_ledger",
+        "query_count",
+        "query_ledger",
+        "run_id",
+        "runner_runtime_environment",
+        "runner_runtime_identity",
+        "schema_version",
+        "status",
+        "system",
+    }
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != required_keys
+        or payload.get("schema_version") != RECALL_RESULT_SCHEMA_VERSION
+    ):
+        raise DatasetError("recall result has an invalid schema")
+    if (
+        payload.get("dataset_id") != RECALL_DATASET_ID
+        or payload.get("manifest_sha256") != RECALL_MANIFEST_SHA256
+        or payload.get("dataset_visibility") != "open"
+        or payload.get("dataset_blind") is not False
+        or payload.get("dataset_contains_memory_text") is not True
+        or payload.get("dataset_validation") != "PASS"
+        or payload.get("contains_memory_text") is not False
+        or payload.get("contains_production_data") is not False
+        or payload.get("external_data_sent") is not False
+        or payload.get("model_called") is not False
+        or payload.get("status") != "PASS"
+    ):
+        raise DatasetError("recall result dataset or data-governance binding is invalid")
+    run_id = _require_string(payload, "run_id", label="recall result")
+    if not run_id.startswith("hermes:automated-tests:"):
+        raise DatasetError("recall result requires an automated run ID")
+    expected_memory_id = payload.get("expected_memory_id")
+    if not _uuid_string(expected_memory_id):
+        raise DatasetError("recall result expected memory ID is invalid")
+
+    query_ledger = payload.get("query_ledger")
+    query_keys = {
+        "case_id",
+        "false_match",
+        "kind",
+        "latency_ms",
+        "recall_at_5_match",
+        "returned_memory_ids",
+        "top1_match",
+    }
+    if (
+        not isinstance(query_ledger, list)
+        or len(query_ledger) != RECALL_QUERY_COUNT
+        or payload.get("query_count") != RECALL_QUERY_COUNT
+    ):
+        raise DatasetError("recall result query ledger is incomplete")
+    seen_case_ids: set[str] = set()
+    positive_count = 0
+    negative_count = 0
+    top1_matches = 0
+    recall_at_5_matches = 0
+    negative_false_matches = 0
+    latency_samples: list[float] = []
+    for item in query_ledger:
+        if not isinstance(item, dict) or set(item) != query_keys:
+            raise DatasetError("recall result query entry has an invalid schema")
+        case_id = item.get("case_id")
+        if not isinstance(case_id, str) or not case_id or case_id in seen_case_ids:
+            raise DatasetError("recall result query IDs are missing or duplicated")
+        seen_case_ids.add(case_id)
+        returned = item.get("returned_memory_ids")
+        if (
+            not isinstance(returned, list)
+            or len(returned) > 5
+            or len(returned) != len(set(returned))
+            or not all(_uuid_string(value) for value in returned)
+        ):
+            raise DatasetError("recall result returned memory IDs are invalid")
+        latency = item.get("latency_ms")
+        if (
+            isinstance(latency, bool)
+            or not isinstance(latency, (int, float))
+            or not math.isfinite(float(latency))
+            or latency < 0
+        ):
+            raise DatasetError("recall result latency sample is invalid")
+        latency_samples.append(float(latency))
+        if item.get("kind") == "positive":
+            if (
+                not case_id.startswith("recall-pos-")
+                or not isinstance(item.get("top1_match"), bool)
+                or not isinstance(item.get("recall_at_5_match"), bool)
+                or item.get("false_match") is not None
+                or item["top1_match"]
+                != bool(returned and returned[0] == expected_memory_id)
+                or item["recall_at_5_match"] != (expected_memory_id in returned)
+            ):
+                raise DatasetError("recall result positive query ledger is inconsistent")
+            positive_count += 1
+            top1_matches += item["top1_match"]
+            recall_at_5_matches += item["recall_at_5_match"]
+        elif item.get("kind") == "negative":
+            if (
+                not case_id.startswith("recall-neg-")
+                or item.get("top1_match") is not None
+                or item.get("recall_at_5_match") is not None
+                or not isinstance(item.get("false_match"), bool)
+                or item["false_match"] != bool(returned)
+            ):
+                raise DatasetError("recall result negative query ledger is inconsistent")
+            negative_count += 1
+            negative_false_matches += item["false_match"]
+        else:
+            raise DatasetError("recall result query kind is invalid")
+    if (positive_count, negative_count) != (RECALL_POSITIVE_COUNT, RECALL_NEGATIVE_COUNT):
+        raise DatasetError("recall result query coverage is incomplete")
+    expected_case_ids = {
+        *(f"recall-pos-{index:03d}" for index in range(1, 11)),
+        *(f"recall-neg-uuid-{index:03d}" for index in range(1, 26)),
+        *(f"recall-neg-hash-{index:03d}" for index in range(1, 26)),
+        *(f"recall-neg-text-{index:03d}" for index in range(1, 51)),
+    }
+    if seen_case_ids != expected_case_ids:
+        raise DatasetError("recall result query IDs differ from the frozen dataset")
+
+    namespace_ledger = payload.get("namespace_ledger")
+    namespace_keys = {"case_id", "denied", "returned_memory_ids", "status_code"}
+    if (
+        not isinstance(namespace_ledger, list)
+        or len(namespace_ledger) != RECALL_NAMESPACE_PROBE_COUNT
+    ):
+        raise DatasetError("recall result namespace ledger is incomplete")
+    namespace_denials = 0
+    unauthorized_items = 0
+    namespace_ids: set[str] = set()
+    for item in namespace_ledger:
+        if not isinstance(item, dict) or set(item) != namespace_keys:
+            raise DatasetError("recall result namespace entry has an invalid schema")
+        case_id = item.get("case_id")
+        returned = item.get("returned_memory_ids")
+        if (
+            not isinstance(case_id, str)
+            or not case_id.startswith("recall-pos-")
+            or case_id in namespace_ids
+            or not isinstance(returned, list)
+            or len(returned) > 5
+            or not all(_uuid_string(value) for value in returned)
+            or isinstance(item.get("status_code"), bool)
+            or not isinstance(item.get("status_code"), int)
+            or not isinstance(item.get("denied"), bool)
+            or item["denied"] != (item["status_code"] == 403 and not returned)
+        ):
+            raise DatasetError("recall result namespace ledger is inconsistent")
+        namespace_ids.add(case_id)
+        namespace_denials += item["denied"]
+        unauthorized_items += len(returned)
+    if namespace_ids != {f"recall-pos-{index:03d}" for index in range(1, 7)}:
+        raise DatasetError("recall result namespace probe IDs differ from the frozen contract")
+
+    counts = payload.get("counts")
+    expected_counts = {
+        "positive_queries": positive_count,
+        "top1_matches": top1_matches,
+        "recall_at_5_matches": recall_at_5_matches,
+        "negative_queries": negative_count,
+        "negative_false_matches": negative_false_matches,
+        "namespace_probes": len(namespace_ledger),
+        "namespace_unauthorized_recall_items": unauthorized_items,
+        "namespace_denials": namespace_denials,
+    }
+    if counts != expected_counts:
+        raise DatasetError("recall result counts differ from the query ledger")
+    latency = payload.get("latency")
+    p95 = round(statistics.quantiles(latency_samples, n=100, method="inclusive")[94], 6)
+    if latency != {
+        "boundary": "loopback-http-api",
+        "sample_count": RECALL_QUERY_COUNT,
+        "p95_ms": p95,
+        "quantile_method": "statistics.quantiles-inclusive-n100-index94",
+    }:
+        raise DatasetError("recall result latency summary differs from the query ledger")
+    if (
+        top1_matches < 9
+        or recall_at_5_matches < 9
+        or negative_false_matches > 1
+        or unauthorized_items != 0
+        or namespace_denials != RECALL_NAMESPACE_PROBE_COUNT
+        or p95 > 1000
+    ):
+        raise DatasetError("recall result does not pass the frozen thresholds")
+    _validate_system_identity(
+        payload.get("system"),
+        payload.get("runner_runtime_identity"),
+        payload.get("runner_runtime_environment"),
+        label="recall result",
+    )
+    recall_measurements(payload)
+    return payload
+
+
 def decode_attested_source(artifact: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
     encoded = artifact.get("source_artifact_base64")
     expected_sha256 = artifact.get("source_artifact_sha256")
@@ -554,17 +824,22 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
         validated = validate_lifecycle_result(source)
         measurement_ids = LIFECYCLE_MEASUREMENT_IDS
         expected_scope = "isolated-lifecycle"
+    elif schema == RECALL_ATTESTATION_SCHEMA_VERSION:
+        validated = validate_recall_result(source)
+        measurement_ids = RECALL_MEASUREMENT_IDS
+        expected_scope = "isolated-recall"
     else:
         raise DatasetError("unsupported sourced attestation schema")
     if artifact.get("source_artifact_schema_version") != validated["schema_version"]:
         raise DatasetError("attestation source schema binding mismatch")
     if artifact.get("source_artifact_sha256") != hashlib.sha256(payload).hexdigest():
         raise DatasetError("attestation source SHA-256 binding mismatch")
-    source_measurements = (
-        lifecycle_measurements(validated)
-        if schema == LIFECYCLE_ATTESTATION_SCHEMA_VERSION
-        else validated["metrics"]
-    )
+    if schema == LIFECYCLE_ATTESTATION_SCHEMA_VERSION:
+        source_measurements = lifecycle_measurements(validated)
+    elif schema == RECALL_ATTESTATION_SCHEMA_VERSION:
+        source_measurements = recall_measurements(validated)
+    else:
+        source_measurements = validated["metrics"]
     expected_measurements = {
         metric_id: source_measurements[metric_id] for metric_id in measurement_ids
     }
@@ -576,7 +851,12 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
         raise DatasetError("attestation scope differs from the source result")
     source_system = (
         validated["system"]
-        if schema in {QUALITY_ATTESTATION_SCHEMA_VERSION, LIFECYCLE_ATTESTATION_SCHEMA_VERSION}
+        if schema
+        in {
+            QUALITY_ATTESTATION_SCHEMA_VERSION,
+            LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
+            RECALL_ATTESTATION_SCHEMA_VERSION,
+        }
         else {
             "environment_sha256": validated["system_environment_sha256"],
             "revision": validated["system_revision"],
@@ -587,7 +867,7 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
         "blind": validated["dataset_blind"],
         "dataset_manifest_sha256": (
             validated["manifest_sha256"]
-            if schema == LIFECYCLE_ATTESTATION_SCHEMA_VERSION
+            if schema in {LIFECYCLE_ATTESTATION_SCHEMA_VERSION, RECALL_ATTESTATION_SCHEMA_VERSION}
             else validated["dataset_manifest_sha256"]
         ),
         "dataset_visibility": validated["dataset_visibility"],
@@ -596,7 +876,7 @@ def validate_attested_source(artifact: dict[str, Any]) -> dict[str, Any]:
         "system_revision": source_system["revision"],
         "system_source_sha256": source_system["source_sha256"],
     }
-    if schema != LIFECYCLE_ATTESTATION_SCHEMA_VERSION:
+    if schema not in {LIFECYCLE_ATTESTATION_SCHEMA_VERSION, RECALL_ATTESTATION_SCHEMA_VERSION}:
         source_bindings["execution_plan_sha256"] = validated["execution_plan_sha256"]
     for key, expected in source_bindings.items():
         if artifact.get(key) != expected:
@@ -647,6 +927,14 @@ def assemble_attestation(
         system = source["system"]
         source_measurements = lifecycle_measurements(source)
         source_manifest_sha256 = source["manifest_sha256"]
+    elif kind == "recall":
+        source = validate_recall_result(source)
+        schema = RECALL_ATTESTATION_SCHEMA_VERSION
+        selected_measurements = RECALL_MEASUREMENT_IDS
+        scope = "isolated-recall"
+        system = source["system"]
+        source_measurements = recall_measurements(source)
+        source_manifest_sha256 = source["manifest_sha256"]
     else:
         raise DatasetError("unsupported attestation source kind")
     if not isinstance(track, str) or not track.strip() or track != track.strip():
@@ -683,7 +971,7 @@ def assemble_attestation(
         "model_called": source["model_called"],
         "scope": scope,
     }
-    if kind != "lifecycle":
+    if kind not in {"lifecycle", "recall"}:
         artifact["execution_plan_sha256"] = source["execution_plan_sha256"]
     if kind == "efficiency":
         artifact["terminal_jobs_complete"] = source["job_statuses"] == {
@@ -697,7 +985,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Bind a verified AM-Eval scorer result into a sourced attestation."
     )
-    parser.add_argument("kind", choices=("quality", "efficiency", "lifecycle"))
+    parser.add_argument("kind", choices=("quality", "efficiency", "lifecycle", "recall"))
     parser.add_argument("source_result", type=Path)
     parser.add_argument("--confirm-source-sha256", required=True)
     parser.add_argument("--track", required=True)

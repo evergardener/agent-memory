@@ -12,6 +12,7 @@ from agent_memory.am_eval_atomic_runner import RuntimeIdentity
 from agent_memory.am_eval_attestation import (
     assemble_attestation,
     lifecycle_measurements,
+    recall_measurements,
     validate_attested_source,
 )
 from agent_memory.am_eval_dataset import DatasetError
@@ -24,6 +25,7 @@ from agent_memory.am_eval_lifecycle import (
     REQUIRED_ACTION_COUNTS,
     REQUIRED_INVARIANT_COUNTS,
 )
+from agent_memory.am_eval_recall import EXPECTED_MANIFEST_SHA256 as RECALL_MANIFEST_SHA256
 
 
 def _environment() -> dict:
@@ -198,6 +200,82 @@ def _lifecycle_result() -> dict:
     }
 
 
+def _recall_result() -> dict:
+    expected_memory_id = "00000000-0000-4000-8000-000000000001"
+    query_ledger = [
+        {
+            "case_id": f"recall-pos-{index:03d}",
+            "kind": "positive",
+            "returned_memory_ids": [expected_memory_id],
+            "top1_match": True,
+            "recall_at_5_match": True,
+            "false_match": None,
+            "latency_ms": 1.0,
+        }
+        for index in range(1, 11)
+    ]
+    for category, count in (("uuid", 25), ("hash", 25), ("text", 50)):
+        query_ledger.extend(
+            {
+                "case_id": f"recall-neg-{category}-{index:03d}",
+                "kind": "negative",
+                "returned_memory_ids": [],
+                "top1_match": None,
+                "recall_at_5_match": None,
+                "false_match": False,
+                "latency_ms": 1.0,
+            }
+            for index in range(1, count + 1)
+        )
+    namespace_ledger = [
+        {
+            "case_id": f"recall-pos-{index:03d}",
+            "status_code": 403,
+            "returned_memory_ids": [],
+            "denied": True,
+        }
+        for index in range(1, 7)
+    ]
+    return {
+        "schema_version": "am-eval-recall-run-v1",
+        "run_id": "hermes:automated-tests:recall-formal",
+        "dataset_id": "agent-memory-deterministic-gold-v1",
+        "manifest_sha256": RECALL_MANIFEST_SHA256,
+        "dataset_visibility": "open",
+        "dataset_blind": False,
+        "dataset_contains_memory_text": True,
+        "dataset_validation": "PASS",
+        "expected_memory_id": expected_memory_id,
+        "query_count": 110,
+        "query_ledger": query_ledger,
+        "namespace_ledger": namespace_ledger,
+        "counts": {
+            "positive_queries": 10,
+            "top1_matches": 10,
+            "recall_at_5_matches": 10,
+            "negative_queries": 100,
+            "negative_false_matches": 0,
+            "namespace_probes": 6,
+            "namespace_unauthorized_recall_items": 0,
+            "namespace_denials": 6,
+        },
+        "latency": {
+            "boundary": "loopback-http-api",
+            "sample_count": 110,
+            "p95_ms": 1.0,
+            "quantile_method": "statistics.quantiles-inclusive-n100-index94",
+        },
+        "status": "PASS",
+        "contains_memory_text": False,
+        "contains_production_data": False,
+        "external_data_sent": False,
+        "model_called": False,
+        "system": _system(),
+        "runner_runtime_identity": _scorer_identity(),
+        "runner_runtime_environment": _environment(),
+    }
+
+
 def _payload(value: dict) -> bytes:
     return json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
 
@@ -290,6 +368,68 @@ def test_lifecycle_attestation_rejects_invariant_counter_retyping() -> None:
 
     with pytest.raises(DatasetError, match="complete frozen lifecycle run"):
         _assemble(source, kind="lifecycle")
+
+
+def test_recall_attestation_derives_only_from_query_ledgers() -> None:
+    source = _recall_result()
+    artifact = _assemble(source, kind="recall", track="deterministic-recall")
+
+    validate_attested_source(artifact)
+
+    assert artifact["measurement_ids"] == ["G02", "M05", "M06", "M08", "M21"]
+    assert artifact["measurements"] == recall_measurements(source)
+    assert artifact["measurements"]["G02"] == {"sample_count": 6, "value": 0}
+    assert artifact["measurements"]["M21"] == {"sample_count": 110, "value": 1.0}
+
+
+def test_recall_attestation_rejects_count_rank_and_latency_retyping() -> None:
+    source = _recall_result()
+    source["counts"]["top1_matches"] = 9
+    with pytest.raises(DatasetError, match="counts differ"):
+        _assemble(source, kind="recall")
+
+    source = _recall_result()
+    source["query_ledger"][0]["top1_match"] = False
+    with pytest.raises(DatasetError, match="positive query ledger"):
+        _assemble(source, kind="recall")
+
+    source = _recall_result()
+    source["latency"]["p95_ms"] = 0.5
+    with pytest.raises(DatasetError, match="latency summary differs"):
+        _assemble(source, kind="recall")
+
+
+def test_formal_artifact_validator_accepts_sourced_recall_measurements() -> None:
+    source = _recall_result()
+    artifact = _assemble(source, kind="recall", track="deterministic-recall")
+    payload = _payload(artifact)
+    measurements = recall_measurements(source)
+    run = {
+        "run_id": source["run_id"],
+        "track": "deterministic-recall",
+        "system": _system(),
+        "dataset": {
+            "id": source["dataset_id"],
+            "sha256": RECALL_MANIFEST_SHA256,
+            "visibility": "open",
+            "blind": False,
+        },
+        "execution_artifact": {
+            "image_name": "ghcr.io/evergardener/agent-memory-api",
+            "manifest_digest": "sha256:" + "9" * 64,
+            "platform": "linux/arm64",
+        },
+    }
+
+    covered = am_eval._validate_artifact(
+        "recall",
+        {"sha256": hashlib.sha256(payload).hexdigest()},
+        payload,
+        run=run,
+        supplied_measurements=measurements,
+    )
+
+    assert covered == {"G02", "M05", "M06", "M08", "M21"}
 
 
 def test_assembler_requires_confirmed_source_and_exact_oci_digest() -> None:

@@ -12,6 +12,7 @@ from .am_eval_attestation import (
     EFFICIENCY_ATTESTATION_SCHEMA_VERSION,
     LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
     QUALITY_ATTESTATION_SCHEMA_VERSION,
+    RECALL_ATTESTATION_SCHEMA_VERSION,
     validate_attested_source,
 )
 from .am_eval_dataset import DatasetError, read_file_snapshot
@@ -30,6 +31,7 @@ ARTIFACT_PRODUCERS = {
     QUALITY_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
     EFFICIENCY_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
     LIFECYCLE_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
+    RECALL_ATTESTATION_SCHEMA_VERSION: "agent-memory-am-eval-attestation-assembler",
 }
 
 
@@ -258,6 +260,7 @@ def _validate_artifact(
         QUALITY_ATTESTATION_SCHEMA_VERSION,
         EFFICIENCY_ATTESTATION_SCHEMA_VERSION,
         LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
+        RECALL_ATTESTATION_SCHEMA_VERSION,
     }:
         try:
             source_result = validate_attested_source(artifact)
@@ -393,6 +396,22 @@ def _validate_artifact(
         if artifact.get("model_called") is not False:
             raise ValueError("lifecycle artifact must not claim a model call")
 
+    if schema_version == RECALL_ATTESTATION_SCHEMA_VERSION:
+        assert source_result is not None
+        if artifact_measurements != {"G02", "M05", "M06", "M08", "M21"}:
+            raise ValueError("recall artifact has invalid measurement coverage")
+        if (
+            source_result["run_id"] != run["run_id"]
+            or source_result["dataset_id"] != dataset["id"]
+            or source_result["system"]["version"] != system["version"]
+            or source_result["system"]["source_file_count"] != system["source_file_count"]
+        ):
+            raise ValueError("formal recall source identity binding mismatch")
+        if artifact.get("model_called") is not False:
+            raise ValueError("recall artifact must not claim a model call")
+        if artifact.get("scope") != "isolated-recall":
+            raise ValueError("recall artifact requires isolated-recall scope")
+
     if (
         not quality_ids
         and not efficiency_ids
@@ -400,6 +419,7 @@ def _validate_artifact(
         not in {
             "am-eval-measurement-attestation-v1",
             LIFECYCLE_ATTESTATION_SCHEMA_VERSION,
+            RECALL_ATTESTATION_SCHEMA_VERSION,
         }
     ):
         raise ValueError(f"attestation artifact {artifact_id} is ineligible for its measurements")
